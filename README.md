@@ -1,18 +1,44 @@
 # PCB Copilot (CircuitPilot)
 
-An AI-assisted schematic + PCB designer that runs entirely in the browser. Describe a circuit in plain language, and the copilot places parts, wires the schematic, runs ERC, then places and autoroutes a 2-layer PCB you can export as Gerbers.
+An AI copilot for electronics design: describe a circuit in plain language and it picks **real parts from the JLCPCB/LCSC database**, draws the schematic, runs ERC, then places and autoroutes a 2-layer PCB you can export as Gerbers. Use Claude, any OpenAI-compatible model or a **local model**, from the browser, your phone, or **Claude Code via MCP**.
+
+![CircuitPilot — ESP32-C3 board schematic](docs/media/schematic.png)
+
+## See it in action
+
+**AI copilot designing a circuit** (local Qwen 27B model, real tool calls, sped up)
+
+![AI copilot building a circuit](docs/media/ai-copilot.gif)
+
+The result, a fully routed board with a BOM and the design calculations, from a one-sentence prompt:
+
+![AI copilot result](docs/media/ai-copilot.png)
+
+| Generate & route the PCB | Search 600k+ real parts |
+|---|---|
+| ![PCB generation](docs/media/pcb.gif) | ![Parts database](docs/media/parts-database.gif) |
+
+| Create symbols & footprints | Real footprints from the database |
+|---|---|
+| ![Part editor](docs/media/part-editor.gif) | ![Edit a database part](docs/media/part-editor.png) |
+
+| Autorouted 2-layer PCB | Projects | Project knowledge |
+|---|---|---|
+| ![PCB](docs/media/pcb.png) | ![Projects](docs/media/projects.png) | ![Knowledge](docs/media/knowledge.png) |
 
 ## Features
 
-- **Model picker** — Claude (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5) or any OpenAI-compatible endpoint (OpenAI, Gemini, Grok, OpenRouter, Ollama, LM Studio).
-- **Three copilot modes**
-  - **Agent** — edits the design with tools (add parts, connect nets, auto-layout, ERC, generate PCB).
-  - **Ask** — read-only review and Q&A.
-  - **Plan** — writes a BOM + netlist plan; press **Execute plan** to build it.
+- **Model picker** — Claude (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5) or any OpenAI-compatible endpoint (OpenAI, Gemini, Grok, OpenRouter, Ollama, LM Studio, llama.cpp, local servers).
+- **Three copilot modes** — **Agent** edits the design with tools, **Ask** is read-only review and Q&A, **Plan** writes a BOM + netlist plan you approve with **Execute plan**.
+- **Real component database** — JLCPCB/LCSC search with stock and price; exact pinouts and footprints from the EasyEDA library, cached locally.
+- **Part editor** — create or modify symbols and footprints (generators for SOIC/TSSOP/QFN/DIP/SOT…, draggable pads); saved to *My Library*.
+- **Projects** — saved on the server with autosave; same projects on PC and phone.
+- **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
-- **Schematic editor** — 25 part types plus a generic IC with datasheet pin names, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
+- **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
 - **PCB** — auto-placement from the schematic, A* 2-layer autorouter with vias, ratsnest, draggable footprints.
-- **Exports** — Gerber + Excellon drill (.zip), BOM (.csv), netlist (.net), schematic and PCB SVG. Save/open projects as JSON.
+- **Exports** — Gerber + Excellon drill (.zip), BOM (.csv), netlist (.net), schematic and PCB SVG, project JSON.
+- **Automation** — MCP server for Claude Code / Claude Desktop / Cursor, plus a REST + OpenAPI interface.
 
 ## Run
 
@@ -37,6 +63,11 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 | `js/pcb.js` | Placement, autorouter, PCB view, Gerber/drill/zip export |
 | `js/ai.js` | Providers, tool definitions, agent loop |
 | `js/app.js` | Panels, chat, settings, exports |
+| `js/engine.js` | Design tools shared by the copilot, MCP server and REST API |
+| `js/projects.js`, `js/editor.js` | Project manager / autosave, part editor |
+| `server.py`, `store.py`, `partsdb.py`, `knowledge.py` | Server, project + library storage, parts database, knowledge folders |
+| `mcp/circuitpilot-mcp.mjs` | MCP server (Claude Code) and REST API |
+| `docs/capture.mjs` | Regenerates the README screenshots and GIFs (headless Chrome + ffmpeg) |
 
 ## Limitations
 
