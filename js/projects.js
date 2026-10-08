@@ -1,0 +1,149 @@
+'use strict';
+// Projects stored on the server (projects.db) with autosave, plus the user's part library ("My Library").
+const Projects = (() => {
+  const $ = s => document.querySelector(s);
+  let online = false, timer = null, lastSaved = '', saving = false, again = false;
+  let myLib = [];
+  let serverUpdated = 0; // server timestamp of the version we have
+
+  async function api(method, path, body) {
+    const r = await fetch(path, { method, headers: body ? { 'content-type': 'application/json' } : {}, body: body ? JSON.stringify(body) : undefined });
+    const j = await r.json().catch(() => ({ error: r.statusText }));
+    if (!r.ok) throw new Error(j.error || r.statusText);
+    return j;
+  }
+  function setStatus(s, title = '') {
+    const el = $('#saveState'); if (!el) return;
+    const map = { saved: ['✓ Saved', 'good'], saving: ['Saving…', 'muted'], dirty: ['● Unsaved', 'warn'], error: ['⚠ Not saved', 'bad'], local: ['Saved in this browser', 'muted'] };
+    const [t, c] = map[s] || ['', '']; el.textContent = t; el.className = c; el.title = title;
+  }
+
+  // ---------- autosave ----------
+  function schedule(kind) {
+    if (kind === 'move') return;
+    if (!online) { setStatus('local'); return; }
+    if (Model.snapshot() === lastSaved) { setStatus('saved'); return; }
+    setStatus('dirty'); clearTimeout(timer); timer = setTimeout(saveNow, 1200);
+  }
+  async function saveNow() {
+    clearTimeout(timer);
+    if (!online) { setStatus('local'); return false; }
+    if (saving) { again = true; return; }
+    const snap = Model.snapshot(); if (snap === lastSaved && Model.S.id) { setStatus('saved'); return true; }
+    saving = true; setStatus('saving');
+    try {
+      const r = await api('PUT', '/api/projects/' + (Model.S.id || ''), JSON.parse(snap));
+      serverUpdated = r.updated;
+      if (!Model.S.id) { Model.S.id = r.id; lastSaved = Model.snapshot(); Model.emit('meta'); }
+      else lastSaved = snap;
+      setStatus(Model.snapshot() === lastSaved ? 'saved' : 'dirty');
+      return true;
+    } catch (e) { setStatus('error', e.message); return false; }
+    finally { saving = false; if (again) { again = false; schedule(); } }
+  }
+
+  // ---------- project actions ----------
+  async function open(id) {
+    await saveNow();
+    const d = await api('GET', '/api/projects/' + id);
+    serverUpdated = (await api('GET', '/api/projects/' + id + '/meta')).updated;
+    Model.load(d); lastSaved = Model.snapshot(); setStatus('saved');
+    App.showView('sch'); Sch.select(null); Sch.fit(); App.toast('Opened “' + (d.name || 'Untitled') + '”');
+    close();
+  }
+  async function create(name) {
+    await saveNow();
+    const d = Model.blank(); d.name = name || 'Untitled';
+    Model.load(d); lastSaved = '';
+    await saveNow(); App.showView('sch'); Sch.select(null); Sch.fit();
+    App.toast('Created project “' + d.name + '”'); close();
+  }
+  async function duplicate(id) {
+    const d = await api('GET', '/api/projects/' + id);
+    delete d.id; d.name = (d.name || 'Untitled') + ' (copy)';
+    await api('PUT', '/api/projects/', d); render();
+  }
+  async function rename(id, name) {
+    if (id === Model.S.id) { Model.mutate(() => { Model.S.name = name; }); await saveNow(); }
+    else { const d = await api('GET', '/api/projects/' + id); d.name = name; await api('PUT', '/api/projects/' + id, d); }
+    render();
+  }
+  async function remove(id) {
+    await api('DELETE', '/api/projects/' + id);
+    if (id === Model.S.id) { const d = Model.blank(); d.name = 'Untitled'; Model.load(d); lastSaved = ''; await saveNow(); Sch.fit(); }
+    render();
+  }
+
+  // ---------- dialog ----------
+  const ago = t => { const s = Date.now() / 1000 - t; return s < 60 ? 'just now' : s < 3600 ? Math.floor(s / 60) + ' min ago' : s < 86400 ? Math.floor(s / 3600) + ' h ago' : new Date(t * 1000).toLocaleDateString(); };
+  async function render() {
+    const list = $('#projList');
+    if (!online) { list.innerHTML = '<div class="muted">Project storage needs the app to run with <code>server.py</code>. You can still download / import project files.</div>'; return; }
+    list.innerHTML = '<div class="muted">Loading…</div>';
+    try {
+      const ps = await api('GET', '/api/projects'), q = $('#projSearch').value.toLowerCase();
+      const rows = ps.filter(p => !q || (p.name || '').toLowerCase().includes(q));
+      list.innerHTML = rows.length ? rows.map(p => `<div class="proj${p.id === Model.S.id ? ' cur' : ''}" data-id="${esc(p.id)}">
+        <div class="pinfo"><div class="pname">${esc(p.name || 'Untitled')}${p.id === Model.S.id ? ' <span class="badge basic">open</span>' : ''}</div>
+        <div class="muted small">${p.parts} parts · ${p.nets} nets${p.pcb ? ' · PCB' : ''} · ${ago(p.updated)}</div></div>
+        <div class="pact"><button data-a="open" class="primary">Open</button><button data-a="dup" title="Duplicate">⧉</button><button data-a="ren" title="Rename">✎</button><button data-a="del" class="danger" title="Delete">🗑</button></div></div>`).join('')
+        : '<div class="muted">No projects yet.</div>';
+    } catch (e) { list.innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
+  }
+  function show() { $('#projModal').classList.remove('hidden'); $('#projSearch').value = ''; render(); }
+  function close() { $('#projModal').classList.add('hidden'); }
+
+  // ---------- My Library ----------
+  async function loadLibrary() {
+    if (!online) return myLib;
+    try { myLib = await api('GET', '/api/library'); } catch (e) { }
+    return myLib;
+  }
+  async function savePart(def) {
+    if (!online) throw new Error('Saving to My Library needs server.py');
+    await api('PUT', '/api/library/' + encodeURIComponent(def.key), def);
+    await loadLibrary(); return true;
+  }
+  async function deletePart(key) { await api('DELETE', '/api/library/' + encodeURIComponent(key)); await loadLibrary(); }
+
+  async function poll() {
+    if (!online || !Model.S.id || saving || document.hidden) return;
+    if (Model.snapshot() !== lastSaved) return; // local edits pending — they win
+    try {
+      const m = await api('GET', '/api/projects/' + Model.S.id + '/meta');
+      if (serverUpdated && m.updated > serverUpdated + 0.001) {
+        const d = await api('GET', '/api/projects/' + Model.S.id);
+        if (Model.snapshot() !== lastSaved) return;
+        serverUpdated = m.updated; Model.load(d, true); lastSaved = Model.snapshot(); setStatus('saved');
+        App.toast('Project updated by an external tool');
+      } else if (!serverUpdated) serverUpdated = m.updated;
+    } catch (e) { }
+  }
+  async function init() {
+    try { await api('GET', '/api/projects'); online = true; } catch (e) { online = false; }
+    Model.subscribe(schedule);
+    if (online) {
+      await loadLibrary();
+      if (Model.S.id) { // make sure the browser's copy still exists on the server
+        try { await api('GET', '/api/projects/' + Model.S.id); } catch (e) { delete Model.S.id; }
+      }
+      await saveNow();
+      setInterval(poll, 2500);
+    } else setStatus('local');
+    $('#projClose').onclick = close;
+    $('#projSearch').oninput = render;
+    $('#projNew').onclick = () => { const n = prompt('Project name', 'New project'); if (n !== null) create(n.trim() || 'Untitled'); };
+    $('#projImport').onclick = () => $('#fileIn').click();
+    $('#projList').onclick = async e => {
+      const b = e.target.closest('button[data-a]'), row = e.target.closest('.proj'); if (!b || !row) return;
+      const id = row.dataset.id, name = row.querySelector('.pname').firstChild.textContent;
+      try {
+        if (b.dataset.a === 'open') await open(id);
+        if (b.dataset.a === 'dup') await duplicate(id);
+        if (b.dataset.a === 'ren') { const n = prompt('Rename project', name); if (n && n.trim()) await rename(id, n.trim()); }
+        if (b.dataset.a === 'del' && confirm(`Delete project “${name}”? This cannot be undone.`)) await remove(id);
+      } catch (err) { App.toast(err.message); }
+    };
+  }
+  return { init, show, close, saveNow, create, get online() { return online; }, get myLib() { return myLib; }, loadLibrary, savePart, deletePart, markLoaded: () => { lastSaved = ''; } };
+})();

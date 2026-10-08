@@ -145,8 +145,9 @@ const Lib = (() => {
 
   // ---------- database parts (JLCPCB/LCSC + EasyEDA), definitions live in the design's lib ----------
   const partDef = c => (typeof Model !== 'undefined' && Model.S.lib && Model.S.lib[c.lcsc]) || null;
-  function partGeo(c) {
-    const d = partDef(c), all = d ? d.pins : [];
+  const partGeo = c => partGeoDef(partDef(c));
+  function partGeoDef(d) {
+    const all = d ? d.pins : [];
     let L = all.filter(p => p.side === 'L' || p.side === 'T'), R = all.filter(p => p.side === 'R' || p.side === 'B');
     if (all.length > 3 && (!L.length || !R.length)) { const s = L.length ? L : R, h = Math.ceil(s.length / 2); L = s.slice(0, h); R = s.slice(h); }
     const rows = Math.max(L.length, R.length, 1), ml = Math.max(1, ...all.map(p => String(p.name).length));
@@ -177,7 +178,7 @@ const Lib = (() => {
   function footprint(name) {
     if (cache[name]) return cache[name];
     let pads = null, m;
-    if ((m = /^LCSC:(C\d+)$/.exec(name))) {
+    if ((m = /^(?:LCSC|LIB):(.+)$/.exec(name))) {
       const d = typeof Model !== 'undefined' && Model.S.lib && Model.S.lib[m[1]];
       if (!d || !d.footprint) return null;
       const f = d.footprint, b = f.body;
@@ -206,6 +207,20 @@ const Lib = (() => {
       for (let i = 0; i < r; i++) pads.push({ num: String(i + 1), x: -2.7, y: -(r - 1) * 0.635 + i * 1.27, w: 1.55, h: 0.6, shape: 'rect' });
       for (let j = 0; j < r; j++) pads.push({ num: String(r + j + 1), x: 2.7, y: (r - 1) * 0.635 - j * 1.27, w: 1.55, h: 0.6, shape: 'rect' });
     }
+    if (!pads && name === 'SOT223') pads = [{ num: '1', x: -2.3, y: 3.15, w: 0.95, h: 2.0, shape: 'rect' }, { num: '2', x: 0, y: 3.15, w: 0.95, h: 2.0, shape: 'rect' }, { num: '3', x: 2.3, y: 3.15, w: 0.95, h: 2.0, shape: 'rect' }, { num: '4', x: 0, y: -3.15, w: 3.25, h: 2.0, shape: 'rect' }];
+    if (!pads && (m = /^TSSOP-(\d+)$/.exec(name))) {
+      const n = +m[1], r = n / 2; pads = [];
+      for (let i = 0; i < r; i++) pads.push({ num: String(i + 1), x: -2.9, y: -(r - 1) * 0.325 + i * 0.65, w: 1.45, h: 0.4, shape: 'rect' });
+      for (let j = 0; j < r; j++) pads.push({ num: String(r + j + 1), x: 2.9, y: (r - 1) * 0.325 - j * 0.65, w: 1.45, h: 0.4, shape: 'rect' });
+    }
+    if (!pads && (m = /^QFN-(\d+)(-EP)?$/.exec(name))) {
+      const n = +m[1], k = Math.max(1, Math.floor(n / 4)), span = (k - 1) * 0.5, e = span / 2 + 0.9; pads = [];
+      for (let i = 0; i < k; i++) pads.push({ num: String(i + 1), x: -e, y: -span / 2 + i * 0.5, w: 0.8, h: 0.25, shape: 'rect' });
+      for (let i = 0; i < k; i++) pads.push({ num: String(k + i + 1), x: -span / 2 + i * 0.5, y: e, w: 0.25, h: 0.8, shape: 'rect' });
+      for (let i = 0; i < k; i++) pads.push({ num: String(2 * k + i + 1), x: e, y: span / 2 - i * 0.5, w: 0.8, h: 0.25, shape: 'rect' });
+      for (let i = 0; i < k; i++) pads.push({ num: String(3 * k + i + 1), x: span / 2 - i * 0.5, y: -e, w: 0.25, h: 0.8, shape: 'rect' });
+      if (m[2]) pads.push({ num: String(4 * k + 1), x: 0, y: 0, w: Math.max(0.5, span - 0.4), h: Math.max(0.5, span - 0.4), shape: 'rect' });
+    }
     if (!pads && (m = /^PinHeader_1x(\d+)$/.exec(name))) {
       const n = +m[1]; pads = [];
       for (let i = 0; i < n; i++) pads.push(tht(i + 1, 0, -(n - 1) * 1.27 + i * 2.54, 1.7, 1.0));
@@ -217,7 +232,9 @@ const Lib = (() => {
     const fp = { name, pads, box: [Math.min(x0, body ? body[0] : x0) - 0.4, Math.min(y0, body ? body[1] : y0) - 0.4, Math.max(x1, body ? body[2] : x1) + 0.4, Math.max(y1, body ? body[3] : y1) + 0.4], body };
     return (cache[name] = fp);
   }
-  const FOOTPRINT_PATTERNS = ['0805', '1206', 'SOD123', 'SOT23', 'TO92', 'TO220', 'Pot_THT', 'THT_P2.54', 'THT_P5.08', 'THT_P7.62', 'THT_P10.16', 'DIP-<n>', 'SOIC-<n>', 'PinHeader_1x<n>'];
+  const FOOTPRINT_PATTERNS = ['0805', '1206', 'SOD123', 'SOT23', 'SOT223', 'TO92', 'TO220', 'Pot_THT', 'THT_P2.54', 'THT_P5.08', 'THT_P7.62', 'THT_P10.16', 'DIP-<n>', 'SOIC-<n>', 'TSSOP-<n>', 'QFN-<n>', 'QFN-<n>-EP', 'PinHeader_1x<n>'];
+  const clearCache = name => { if (name) delete cache[name]; else for (const k in cache) if (/^(LCSC|LIB):/.test(k)) delete cache[k]; };
+  const drawPart = d => { const g = partGeoDef(d); return { g, svg: `<rect class="body" x="${-g.hw}" y="${-g.hh}" width="${2 * g.hw}" height="${2 * g.hh}" rx="2"/>` + '<path d="' + g.pins.map(p => `M${p.x} ${p.y}H${p.x - p.dx * p.len}`).join('') + '"/>' }; };
 
   const type = t => T[t];
   const fpsFor = c => { const d = T[c.type]; return typeof d.fps === 'function' ? d.fps(c) : d.fps; };
@@ -228,5 +245,5 @@ const Lib = (() => {
     const a = rot(b[0], b[1], r), c = rot(b[2], b[3], r);
     return [Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[0], c[0]), Math.max(a[1], c[1])];
   }
-  return { T, type, types: () => Object.keys(T).filter(t => !T[t].hidden), footprint, fpsFor, rot, rotBox, FOOTPRINT_PATTERNS };
+  return { T, type, types: () => Object.keys(T).filter(t => !T[t].hidden), footprint, clearCache, drawPart, partGeoDef, fpsFor, rot, rotBox, FOOTPRINT_PATTERNS };
 })();

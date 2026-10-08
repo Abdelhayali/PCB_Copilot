@@ -61,9 +61,28 @@ const App = (() => {
       const m = await AI.loadPart(code);
       if (view !== 'sch') showView('sch');
       const vb = Sch.vp.vb || [0, 0, 0, 0];
-      const c = Model.mutate(() => { Model.S.lib[m.lcsc] = m; return Model.addComponent({ lcsc: m.lcsc, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2 }); });
+      const key = m.key || m.lcsc;
+      const c = Model.mutate(() => { if (!Model.S.lib[key]) Model.setLibPart(key, m); return Model.addComponent({ part: key, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2 }); });
       Sch.select(c.ref); toast(`Added ${c.ref} · ${m.name} (${m.pins.length} pins, ${m.footprint ? m.footprint.pads.length + ' pads' : 'no footprint'})`);
     } catch (e) { toast('Could not load ' + code + ': ' + e.message, 6000); }
+  }
+  function placeLibPart(key) {
+    const m = Projects.myLib.find(p => p.key === key) || Model.S.lib[key];
+    if (!m) { toast('Part not found: ' + key); return; }
+    if (view !== 'sch') showView('sch');
+    const vb = Sch.vp.vb || [0, 0, 0, 0];
+    try {
+      const c = Model.mutate(() => { if (!Model.S.lib[key]) Model.setLibPart(key, m); return Model.addComponent({ part: key, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2 }); });
+      Sch.select(c.ref); toast(`Added ${c.ref} · ${m.name}`);
+    } catch (e) { toast(e.message); }
+  }
+  function renderMyLib(q) {
+    const ps = Projects.myLib.filter(p => !q || `${p.name} ${p.value} ${p.key} ${p.mfr_part || ''}`.toLowerCase().includes(q));
+    if (!ps.length) return q ? '' : '<div class="pcat">My Library</div><div class="muted small">No custom parts yet. Click “＋ New part”, or edit any placed part and save it.</div>';
+    return '<div class="pcat">My Library</div>' + ps.map(p => `<div class="libpart"><button class="dbpart mylib" data-key="${esc(p.key)}" title="Place ${esc(p.name)}">
+      <div class="dbt"><b>${esc(p.name)}</b><span class="badge">${p.custom ? 'custom' : 'edited'}</span></div>
+      <div class="dbs">${(p.pins || []).length} pins · ${esc((p.footprint && p.footprint.name) || 'no footprint')}</div></button>
+      <button class="mini-btn" data-edit="${esc(p.key)}" title="Edit">✎</button><button class="mini-btn danger" data-del="${esc(p.key)}" title="Remove from My Library">✕</button></div>`).join('');
   }
   function renderDb() {
     if (!db.q && !db.loading) return '';
@@ -85,7 +104,7 @@ const App = (() => {
     $('#partList').innerHTML = Object.entries(cats).map(([c, ts]) => `<div class="pcat">${c}</div>` + ts.map(t => {
       const d = Lib.type(t), b = d.box({ type: t }), pad = 6;
       return `<button class="part" data-type="${t}" title="Add ${esc(d.name)}"><svg viewBox="${b[0] - pad} ${b[1] - pad} ${b[2] - b[0] + 2 * pad} ${b[3] - b[1] + 2 * pad}"><g class="comp mini">${d.draw({ type: t })}</g></svg><span>${esc(d.name)}</span></button>`;
-    }).join('')).join('') + renderDb();
+    }).join('')).join('') + renderMyLib(q) + renderDb();
   }
 
   // ---------- properties ----------
@@ -100,10 +119,11 @@ const App = (() => {
       el.innerHTML = `<div class="ph">${esc(c.ref)} <span class="muted">${esc(d.name)}</span></div>
         <label>Reference<input id="pRef" value="${esc(c.ref)}"></label>
         <label>Value<input id="pVal" value="${esc(c.value)}"></label>
-        ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(c.lcsc)}</span>${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
+        ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${Model.S.lib[c.lcsc].custom ? '<span class="muted">Custom part · ' + esc(c.lcsc) + '</span>' : `${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(c.lcsc)}</span>`}${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
         <label>Footprint<select id="pFp">${fps.map(f => `<option ${f === c.footprint ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
         <div class="row"><button id="pRot">⟳ Rotate (R)</button><button id="pDel" class="danger">Delete</button></div>
+        <div class="row"><button id="pEdit" style="flex:1">✎ ${c.type === 'part' ? 'Edit symbol &amp; footprint' : 'Make editable part'}</button></div>
         <div class="ph small">Pins</div><table class="pins">${Lib.type(c.type).pins(c).map(p => `<tr><td>${esc(p.num)}</td><td>${esc(p.name)}</td><td class="${idx[c.ref + '.' + p.num] ? '' : 'muted'}">${esc(idx[c.ref + '.' + p.num] || '—')}</td></tr>`).join('')}</table>`;
       const apply = (u) => { try { Model.mutate(() => Model.updateComponent(Object.assign({ ref: c.ref }, u))); if (u.new_ref) { Sch.ui.sel = u.new_ref; Pcb.ui.sel = u.new_ref; } } catch (e) { toast(e.message); } };
       $('#pRef').onchange = e => apply({ new_ref: e.target.value.trim() });
@@ -112,6 +132,7 @@ const App = (() => {
       if ($('#pPins')) $('#pPins').onchange = e => apply({ pins: e.target.value.split(',').map(s => s.trim()).filter(Boolean) });
       $('#pRot').onclick = () => (view === 'sch' ? Sch : Pcb).key({ key: 'r' });
       $('#pDel').onclick = () => { Sch.select(null); Pcb.ui.sel = null; Model.mutate(() => Model.removeComponent(c.ref)); };
+      $('#pEdit').onclick = () => editComponent(c.ref);
     } else if (net && Model.S.nets[net]) {
       el.innerHTML = `<div class="ph">Net</div><label>Name<input id="pNet" value="${esc(net)}"></label>
         <div class="ph small">Pins (${Model.S.nets[net].length})</div><div class="netpins">${Model.S.nets[net].map(esc).join(', ')}</div>
@@ -123,6 +144,46 @@ const App = (() => {
         ? '<b>Click</b> a part to select · <b>drag</b> to move · <b>R</b> rotate · <b>Del</b> delete<br><b>Click a pin, then another pin</b> to wire them<br><b>Drag empty space</b> to pan · <b>wheel</b> to zoom'
         : '<b>Drag</b> footprints to move · <b>R</b> rotate<br>Moving a part un-routes its nets — press <b>Route</b> again<br>Red = top copper · Blue = bottom · Yellow = ratsnest'}</div>`;
     }
+  }
+
+  // Edit a placed part (or convert a built-in one into an editable custom part).
+  function editComponent(ref) {
+    const c = Model.comp(ref); if (!c) return;
+    if (c.type === 'part' && Model.S.lib[c.lcsc]) { PartEditor.open(Model.S.lib[c.lcsc], { key: c.lcsc, saveLib: true }); return; }
+    const d = PartEditor.fromBuiltin(c), key = PartEditor.newKey(d.name);
+    PartEditor.open(d, {
+      key, isNew: true, saveLib: true, onDone: k => {
+        Model.mutate(() => { const cc = Model.comp(ref); if (!cc) return; cc.type = 'part'; cc.lcsc = k; delete cc.pins; cc.footprint = Model.fpNameFor(k); Model.invalidate(Model.netsOfComp(ref)); });
+        Sch.select(ref);
+      }
+    });
+  }
+
+  // ---------- project knowledge folder ----------
+  function knowState() {
+    const k = Model.S.knowledge; $('#btnKnow').classList.toggle('on', !!(k && k.path));
+    $('#btnKnow').title = k && k.path ? 'Knowledge folder: ' + k.path : 'Project knowledge folder: docs & guides the AI follows';
+  }
+  async function showKnowFiles() {
+    const k = Model.S.knowledge; $('#knowPath').value = (k && k.path) || '';
+    if (!k || !k.path) { $('#knowInfo').textContent = 'No folder set for this project.'; $('#knowFiles').innerHTML = ''; return; }
+    $('#knowInfo').textContent = 'Reading folder…';
+    try {
+      const j = await Engine.api('/api/knowledge/list?' + new URLSearchParams({ path: k.path }));
+      const d = await Engine.knowledgeDigest(true);
+      $('#knowInfo').innerHTML = `${j.files.length} documents in <b>${esc(j.folder)}</b> · ${(d.included_chars || 0).toLocaleString()} chars go straight into the AI context, the rest is searchable.`;
+      $('#knowFiles').innerHTML = j.files.map(f => `<div class="kf"><span>${esc(f.file)}</span><span class="muted">${f.chars.toLocaleString()} chars</span></div>`).join('') || '<div class="muted">No readable documents found.</div>';
+    } catch (e) { $('#knowInfo').innerHTML = `<span class="bad">${esc(e.message)}</span>`; $('#knowFiles').innerHTML = ''; }
+  }
+  function initKnowledge() {
+    $('#btnKnow').onclick = () => { $('#knowModal').classList.remove('hidden'); showKnowFiles(); };
+    $('#knowClose').onclick = () => $('#knowModal').classList.add('hidden');
+    $('#knowSet').onclick = async () => {
+      try { await Engine.exec('set_knowledge_folder', { path: $('#knowPath').value }); knowState(); showKnowFiles(); }
+      catch (e) { $('#knowInfo').innerHTML = `<span class="bad">${esc(e.message)}</span>`; }
+    };
+    $('#knowClear').onclick = async () => { await Engine.exec('set_knowledge_folder', { path: '' }); knowState(); showKnowFiles(); };
+    Model.subscribe(knowState); knowState();
   }
 
   // ---------- chat ----------
@@ -262,6 +323,7 @@ const App = (() => {
   function exportAs(kind) {
     const S = Model.S;
     try {
+      if (kind === 'json') download(fname('.circuit.json'), JSON.stringify(S, null, 1), 'application/json');
       if (kind === 'gerber') { download(fname('-gerbers.zip'), makeZip(Pcb.gerbers())); toast('Gerbers + drill exported — upload the zip to your PCB fab'); }
       if (kind === 'svg') download(fname('-schematic.svg'), Sch.exportSVG(), 'image/svg+xml');
       if (kind === 'pcbsvg') { if (!S.board.w) throw new Error('No PCB yet'); if (view !== 'pcb') Pcb.render(); download(fname('-pcb.svg'), Pcb.exportSVG(), 'image/svg+xml'); }
@@ -288,6 +350,12 @@ const App = (() => {
     let saved = null; try { saved = localStorage.getItem('cp.design'); } catch (e) { }
     if (saved) try { Model.load(saved); } catch (e) { }
     Model.subscribe(kind => { if (kind === 'move') { view === 'sch' ? Sch.render() : Pcb.render(); } else renderAll(); });
+    PartEditor.init();
+    Engine.env.myLib = () => Projects.myLib;
+    Engine.env.savePart = def => Projects.savePart(def).then(() => renderParts());
+    Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } };
+    initKnowledge();
+    Projects.init().then(renderParts);
 
     renderParts(); renderModels(); setMode('agent'); renderChat(); renderAll();
     requestAnimationFrame(() => Sch.fit());
@@ -295,6 +363,9 @@ const App = (() => {
     $('#partSearch').oninput = () => { renderParts(); searchDb($('#partSearch').value); };
     $('#partSearch').onkeydown = e => { if (e.key === 'Enter') { clearTimeout(dbTimer); searchDb($('#partSearch').value); } };
     $('#partList').onclick = e => {
+      const ed = e.target.closest('[data-edit]'); if (ed) { const m = Projects.myLib.find(p => p.key === ed.dataset.edit); if (m) PartEditor.open(m, { key: m.key, saveLib: true, allowPlace: true }); return; }
+      const dl = e.target.closest('[data-del]'); if (dl) { if (confirm('Remove this part from My Library? (Designs that use it keep their copy.)')) Projects.deletePart(dl.dataset.del).then(renderParts).catch(err => toast(err.message)); return; }
+      const ml = e.target.closest('.mylib'); if (ml) { placeLibPart(ml.dataset.key); return; }
       const d = e.target.closest('.dbpart'); if (d) { placeDbPart(d.dataset.lcsc); return; }
       const b = e.target.closest('.part'); if (b) { if (view !== 'sch') showView('sch'); Sch.placeNew(b.dataset.type); }
     };
@@ -316,10 +387,24 @@ const App = (() => {
     $('#btnGerber').onclick = () => exportAs('gerber');
 
     $('#btnUndo').onclick = () => Model.undo(); $('#btnRedo').onclick = () => Model.redo();
-    $('#btnNew').onclick = () => { if (confirm('Start a new empty design? (You can undo.)')) { Model.mutate(() => Model.clear()); Sch.select(null); } };
-    $('#btnSave').onclick = () => download(fname('.circuit.json'), JSON.stringify(Model.S, null, 1), 'application/json');
-    $('#btnOpen').onclick = () => $('#fileIn').click();
-    $('#fileIn').onchange = async e => { const f = e.target.files[0]; if (!f) return; try { Model.load(await f.text(), true); Sch.fit(); toast('Opened ' + f.name); } catch (err) { toast('Could not open: ' + err.message); } e.target.value = ''; };
+    $('#btnProjects').onclick = () => Projects.show();
+    $('#btnNew').onclick = () => {
+      if (!Projects.online) { if (confirm('Start a new empty design? (You can undo.)')) { Model.mutate(() => Model.clear()); Sch.select(null); } return; }
+      const n = prompt('New project name', 'New project'); if (n !== null) Projects.create(n.trim() || 'Untitled');
+    };
+    $('#btnSave').onclick = async () => {
+      if (!Projects.online) { exportAs('json'); return; }
+      toast((await Projects.saveNow()) ? 'Project saved' : 'Save failed — see the status next to the name');
+    };
+    $('#btnNewPart').onclick = () => PartEditor.open(PartEditor.blankDef(), { isNew: true, saveLib: true, allowPlace: true });
+    $('#fileIn').onchange = async e => {
+      const f = e.target.files[0]; if (!f) return;
+      try {
+        const d = JSON.parse(await f.text()); delete d.id; if (!d.name) d.name = f.name.replace(/\.circuit\.json$|\.json$/i, '');
+        Model.load(d); Projects.markLoaded(); await Projects.saveNow(); Projects.close(); Sch.fit(); toast('Imported ' + f.name + ' as a new project');
+      } catch (err) { toast('Could not open: ' + err.message); }
+      e.target.value = '';
+    };
     $('#projName').onchange = e => Model.mutate(() => { Model.S.name = e.target.value.trim() || 'Untitled'; });
     $$('[data-exp]').forEach(b => b.onclick = () => exportAs(b.dataset.exp));
 
@@ -347,6 +432,9 @@ const App = (() => {
     if (!AI.settings.anthropicKey && !AI.settings.oaiModels) setTimeout(() => toast('Tip: add an API key in ⚙ Settings to enable the AI Copilot', 5000), 800);
 
     document.addEventListener('keydown', e => {
+      if (!$('#edModal').classList.contains('hidden')) { if (PartEditor.key(e)) e.preventDefault(); return; }
+      if (!$('#projModal').classList.contains('hidden')) { if (e.key === 'Escape') Projects.close(); return; }
+      if (!$('#knowModal').classList.contains('hidden')) { if (e.key === 'Escape') $('#knowModal').classList.add('hidden'); return; }
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? Model.redo() : Model.undo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); Model.redo(); return; }
@@ -356,6 +444,6 @@ const App = (() => {
     });
     $('#schSvg').oncontextmenu = $('#pcbSvg').oncontextmenu = e => e.preventDefault();
   }
-  return { init, toast, showView, renderAll };
+  return { init, toast, showView, renderAll, placeLibPart, refreshParts: () => renderParts() };
 })();
 window.addEventListener('DOMContentLoaded', App.init);

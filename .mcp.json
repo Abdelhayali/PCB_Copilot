@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "circuitpilot": {
+      "command": "node",
+      "args": ["mcp/circuitpilot-mcp.mjs"],
+      "env": { "CP_URL": "http://localhost:5173" }
+    }
+  }
+}

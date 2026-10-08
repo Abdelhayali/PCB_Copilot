@@ -66,3 +66,44 @@ Type a part number in the Parts search box (e.g. `ESP32-C3`, `AMS1117`, `CH340C`
 The AI copilot has the same database through the `search_parts` and `get_part` tools, so you can ask for e.g. *"ESP32-C3 board with USB-C, AMS1117 regulator and a status LED"* and it will pick real in-stock parts.
 
 Everything fetched is cached in a local SQLite database (`parts.db`), so parts you've used keep working offline. Part definitions are also saved inside each design file.
+
+## Projects
+
+Projects are stored on the server (`projects.db`, SQLite) and saved automatically — the status next to the project name shows **✓ Saved**. Use **▤ Projects** to open, duplicate, rename, delete or import projects, and **＋ New** to start one. The same projects appear on every device that opens the app. **Export → Project file (.json)** downloads a portable copy.
+
+## Part editor (custom symbols & footprints)
+
+- **＋ New part** (Parts panel) opens the editor: pins (number, name, side L/R/T/B, bulk edit), live symbol preview, and a footprint editor with generators (0805, SOT-23, SOT-223, SOIC-n, TSSOP-n, QFN-n(-EP), DIP-n, pin headers…), draggable pads (0.05 mm snap) and per-pad size/shape/drill.
+- Select any placed part → **✎ Edit symbol & footprint** to fix a database part, or **✎ Make editable part** to turn a built-in part into a custom one.
+- Saved parts go to **My Library** (shared across projects); every placed instance updates when you edit a part.
+- The AI can do the same with the `create_part` / `update_part` tools.
+
+## Project knowledge folder
+
+Click **📚 Knowledge** in the copilot and enter a folder on the PC running the server. Design notes, requirements, coding/naming rules and datasheets (`.md .txt .pdf .docx .csv .json`, source code…) are given to the AI: small documents go straight into its context, the rest it searches and reads with `knowledge_search` / `knowledge_read`. Try it with [`examples/knowledge`](examples/knowledge).
+
+Only document-type files inside the chosen folder are read (no `..` escapes, hidden folders and `.git`/`node_modules` are skipped). Anyone who can log in to the app can point it at a folder on the server PC, so keep the password private.
+
+## Control from Claude Code (MCP) and other tools
+
+`mcp/circuitpilot-mcp.mjs` exposes all 29 design tools — projects, parts database, schematic editing, ERC, custom parts, knowledge, PCB generation, Gerber export — through the **Model Context Protocol**. It runs the same engine as the browser app and talks to the running `server.py`, so every change shows up live in the browser.
+
+**Claude Code** — this repo ships a `.mcp.json`, so just open the folder in Claude Code (with `server.py` running) and approve the `circuitpilot` server. Or add it globally:
+
+```bash
+claude mcp add circuitpilot -e CP_URL=http://localhost:5173 -- node /path/to/PCB_Copilot/mcp/circuitpilot-mcp.mjs
+```
+
+Then ask e.g. *"Using circuitpilot, create a project 'ESP32 sensor board' with an ESP32-C3-MINI-1, AMS1117 and USB-C, then generate the PCB and export Gerbers to ./fab"*.
+
+The password is read from `access-password.txt` (or set `CP_PASSWORD`). Other MCP clients (Claude Desktop, Cursor, VS Code…) use the same command.
+
+**REST / OpenAPI** for anything else (scripts, n8n, OpenAI function calling…):
+
+```bash
+node mcp/circuitpilot-mcp.mjs --http 5174
+curl -H "Authorization: Bearer <password>" http://127.0.0.1:5174/tools
+curl -H "Authorization: Bearer <password>" -X POST http://127.0.0.1:5174/tools/search_parts -d '{"query":"CH340C"}'
+```
+
+`GET /openapi.json` returns an OpenAPI 3.1 spec of every tool. Add `"project": "<id or name>"` to any call to switch project. The REST server listens on 127.0.0.1 only (add `--public` to expose it).

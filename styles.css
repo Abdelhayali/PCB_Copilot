@@ -154,7 +154,7 @@ details.tool pre.res { color: #b8f5d6; } details.tool.err pre.res { color: var(-
 #btnSend.stop { background: var(--bad); }
 
 /* modal & toast */
-#modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 50; }
+#modal, .modal { position: fixed; inset: 0; background: #000a; display: flex; align-items: center; justify-content: center; z-index: 50; }
 .dlg { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 18px 20px; width: min(560px, 94vw); max-height: 90vh; overflow: auto; }
 .dlg h2 { margin: 0 0 4px; } .dlg fieldset { border: 1px solid var(--line); border-radius: 8px; margin: 10px 0; }
 .dlg legend { color: var(--muted); font-size: 12px; padding: 0 4px; }
@@ -188,3 +188,47 @@ details.tool pre.res { color: #b8f5d6; } details.tool.err pre.res { color: var(-
 .attrib { font-size: 10px; color: var(--muted); padding: 4px 12px 8px; line-height: 1.4; } .attrib a { color: var(--muted); }
 .lcscinfo { font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 .lcscinfo a { color: var(--accent); }
+
+/* knowledge */
+#knowFiles { margin-top: 8px; max-height: 50vh; overflow: auto; font-size: 12px; }
+#knowFiles .kf { display: flex; justify-content: space-between; gap: 8px; padding: 3px 6px; border-bottom: 1px solid var(--line); }
+#btnKnow.on { border-color: var(--good); color: var(--good); }
+/* projects & part editor */
+.row-h { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.sec-h.row-h button { font-size: 11px; padding: 1px 8px; text-transform: none; letter-spacing: 0; }
+#saveState { font-size: 12px; white-space: nowrap; } #saveState.good { color: var(--good); } #saveState.warn { color: var(--warn); } #saveState.bad { color: var(--bad); }
+.dlg.wide { width: min(720px, 96vw); }
+#projList { margin-top: 10px; display: flex; flex-direction: column; gap: 6px; max-height: 60vh; overflow: auto; }
+.proj { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); }
+.proj.cur { border-color: var(--accent); }
+.proj .pinfo { flex: 1; min-width: 0; } .proj .pname { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.proj .pact { display: flex; gap: 4px; flex: none; }
+.dlg .bad { color: var(--bad); } .warn { color: var(--warn); }
+.dlg.editor { width: min(1180px, 98vw); height: min(860px, 96vh); display: flex; flex-direction: column; gap: 8px; }
+.edmeta { display: grid; grid-template-columns: 2fr 1fr 2fr; gap: 10px; }
+.edmeta label { margin: 0; }
+.edbody { flex: 1; min-height: 0; display: grid; grid-template-columns: minmax(300px, 2fr) 3fr; gap: 12px; }
+.edcol { display: flex; flex-direction: column; gap: 6px; min-height: 0; }
+.edpins { flex: 1; min-height: 120px; overflow: auto; border: 1px solid var(--line); border-radius: 8px; }
+.edpins table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.edpins th { position: sticky; top: 0; background: var(--panel2); text-align: left; padding: 4px; font-weight: 600; }
+.edpins td { padding: 2px 3px; border-top: 1px solid var(--line); }
+.edpins input, .edpins select { width: 100%; padding: 2px 5px; font-size: 12px; }
+.edpins td:first-child { width: 64px; } .edpins td:nth-child(3) { width: 54px; }
+.edpins .pbtn { white-space: nowrap; width: 84px; } .edpins .pbtn button { padding: 0 6px; font-size: 11px; }
+input.warnin { border-color: var(--warn); }
+.edsym { height: 34%; min-height: 140px; background: var(--canvas); border-radius: 8px; border: 1px solid var(--line); }
+.edfp { flex: 1; min-height: 220px; background: var(--canvas); border-radius: 8px; border: 1px solid var(--line); cursor: crosshair; user-select: none; }
+.edaxis { stroke: #ffffff30; fill: none; }
+.pad.padsel { fill: #7fb0ff; stroke: #fff; stroke-width: .04; }
+.pad.padorphan { fill: #a0782a; }
+.padnum { fill: #1a1a1a; font-weight: 700; }
+.edpad { display: flex; flex-wrap: wrap; gap: 6px; align-items: flex-end; font-size: 12px; min-height: 44px; }
+.edpad label { display: flex; flex-direction: column; font-size: 11px; color: var(--muted); }
+.edpad input, .edpad select { width: 70px; padding: 3px 5px; }
+.libpart { display: flex; align-items: center; gap: 4px; }
+.libpart .dbpart { flex: 1; min-width: 0; margin-bottom: 0; }
+.libpart .mini-btn { padding: 2px 6px; font-size: 11px; }
+@media (max-width: 800px) { .edbody { grid-template-columns: 1fr; overflow: auto; } .edmeta { grid-template-columns: 1fr 1fr; } .dlg.editor { height: 96vh; } }
+.dlg .edpad label input, .dlg .edpad label select { width: 72px; display: block; }
+.dlg .edmeta label input { width: 100%; }

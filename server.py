@@ -23,6 +23,8 @@ import urllib.parse
 import urllib.request
 
 import partsdb
+import store
+import knowledge
 
 PROXY_RE = re.compile(r"^/llm-proxy/(\d{1,5})(/.*)?$")
 STATIC_RE = re.compile(r"^/(|index\.html|styles\.css|favicon\.ico|js/[\w.-]+\.js)$")
@@ -46,6 +48,9 @@ def token():
 class Handler(http.server.SimpleHTTPRequestHandler):
     def _authed(self):
         if not PASSWORD:
+            return True
+        auth = self.headers.get("Authorization") or ""
+        if auth.startswith("Bearer ") and hmac.compare_digest(auth[7:].strip().lower(), PASSWORD.lower()):
             return True
         for part in (self.headers.get("Cookie") or "").split(";"):
             k, _, v = part.strip().partition("=")
@@ -90,6 +95,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._proxy()
         if path.startswith("/api/parts/"):
             return self._parts(path)
+        if path.startswith(("/api/projects", "/api/library")):
+            return self._store(path)
+        if path.startswith("/api/knowledge/"):
+            return self._knowledge(path)
         if not STATIC_RE.match(path):  # never serve parts.db, *.py, password file, .git ...
             return self._send(404, b"not found", "text/plain")
         super().do_GET()
@@ -114,9 +123,72 @@ class Handler(http.server.SimpleHTTPRequestHandler):
                        json.dumps({"error": str(e)}).encode(), "application/json")
 
     def do_POST(self):
-        if PROXY_RE.match(self.path.split("?")[0]):
+        path = self.path.split("?")[0]
+        if PROXY_RE.match(path):
             return self._proxy()
+        if path.startswith(("/api/projects", "/api/library")):
+            return self._store(path)
         self._send(404, b"not found", "text/plain")
+
+    do_PUT = do_DELETE = do_POST
+
+    def _knowledge(self, path):
+        q = urllib.parse.parse_qs(self.path.partition("?")[2])
+        arg = lambda k, d="": (q.get(k) or [d])[0]
+        try:
+            op = path.rsplit("/", 1)[1]
+            if op == "list":
+                out = knowledge.list_files(arg("path"))
+            elif op == "read":
+                out = knowledge.read_file(arg("path"), arg("file"), arg("offset", "0"), arg("length", "20000"))
+            elif op == "search":
+                out = knowledge.search(arg("path"), arg("q"), arg("limit", "12"))
+            elif op == "digest":
+                out = knowledge.digest(arg("path"), int(arg("budget", "24000")))
+            else:
+                return self._send(404, b'{"error":"unknown endpoint"}', "application/json")
+            self._send(200, json.dumps(out).encode(), "application/json")
+        except Exception as e:
+            self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
+
+    def _store(self, path):
+        parts = [p for p in path.split("/") if p][1:]  # ["projects", id?] / ["library", key?]
+        kind, key = parts[0], (parts[1] if len(parts) > 1 else None)
+        try:
+            body = None
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 30_000_000:
+                return self._send(413, b'{"error":"too large"}', "application/json")
+            if n:
+                body = json.loads(self.rfile.read(n).decode("utf-8"))
+            m = self.command
+            if kind == "projects":
+                if m == "GET" and key and len(parts) > 2 and parts[2] == "meta":
+                    out = store.get_meta(key)
+                elif m == "GET":
+                    out = store.get_project(key) if key else store.list_projects()
+                elif m in ("PUT", "POST"):
+                    out = store.save_project(key, body)
+                elif m == "DELETE" and key:
+                    out = store.delete_project(key)
+                else:
+                    raise ValueError("bad request")
+            elif kind == "library":
+                if m == "GET" and not key:
+                    out = store.list_parts()
+                elif m in ("PUT", "POST") and key:
+                    out = store.save_part(key, body)
+                elif m == "DELETE" and key:
+                    out = store.delete_part(key)
+                else:
+                    raise ValueError("bad request")
+            else:
+                return self._send(404, b'{"error":"unknown endpoint"}', "application/json")
+            self._send(200, json.dumps(out).encode(), "application/json")
+        except LookupError as e:
+            self._send(404, json.dumps({"error": str(e)}).encode(), "application/json")
+        except Exception as e:
+            self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
 
     def _send(self, code, body, ctype):
         self.send_response(code)

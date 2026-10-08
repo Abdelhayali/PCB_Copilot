@@ -10,11 +10,12 @@
 <header id="top">
   <div class="brand"><svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 12h4l2-5 4 10 2-5h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>CircuitPilot</div>
   <nav class="menu">
-    <button id="btnNew">New</button>
-    <button id="btnOpen">Open</button>
-    <button id="btnSave" title="Ctrl+S">Save</button>
+    <button id="btnProjects" title="All projects">▤ Projects</button>
+    <button id="btnNew" title="New project">＋ New</button>
+    <button id="btnSave" title="Save now (Ctrl+S)">Save</button>
     <div class="dd"><button>Export ▾</button>
       <div class="ddm">
+        <button data-exp="json">Project file (.json)</button>
         <button data-exp="gerber">Gerber + drill (.zip)</button>
         <button data-exp="bom">Bill of materials (.csv)</button>
         <button data-exp="net">Netlist (.net)</button>
@@ -26,14 +27,15 @@
     <button id="btnRedo" title="Redo (Ctrl+Y)">↷</button>
   </nav>
   <div class="spacer"></div>
-  <input id="projName" spellcheck="false" title="Project name">
+  <input id="projName" spellcheck="false" title="Project name — click to rename">
+  <span id="saveState"></span>
   <button id="btnSettings">⚙ Settings</button>
   <input type="file" id="fileIn" accept=".json" hidden>
 </header>
 
 <main>
   <aside id="left">
-    <div class="sec-h">Parts</div>
+    <div class="sec-h row-h">Parts <button id="btnNewPart" title="Create a new symbol + footprint">＋ New part</button></div>
     <input id="partSearch" placeholder="Search parts or database (e.g. ESP32-C3)…">
     <div id="partList"></div>
     <div class="attrib">Database: JLCPCB/LCSC · symbols &amp; footprints: <a href="https://easyeda.com" target="_blank" rel="noopener">EasyEDA</a> / <a href="https://lceda.cn" target="_blank" rel="noopener">JLCEDA</a> official library</div>
@@ -77,7 +79,7 @@
   <aside id="right">
     <div class="cp-head">
       <div class="title"><span class="spark">✦</span> AI Copilot</div>
-      <button id="btnNewChat" title="New chat">＋ New chat</button>
+      <div class="row" style="margin:0"><button id="btnKnow" title="Project knowledge folder: docs &amp; guides the AI follows">📚 Knowledge</button><button id="btnNewChat" title="New chat">＋ New chat</button></div>
     </div>
     <div class="cp-ctrl">
       <div class="seg" id="modeSeg">
@@ -114,6 +116,53 @@
     <div class="row end"><button id="sCancel">Cancel</button><button id="sSave" class="primary">Save</button></div>
   </div>
 </div>
+<div id="projModal" class="hidden modal">
+  <div class="dlg wide">
+    <div class="row-h"><h2>Projects</h2><button id="projClose">✕</button></div>
+    <div class="row"><input id="projSearch" placeholder="Search projects…" style="flex:1"><button id="projNew" class="primary">＋ New project</button><button id="projImport">Import .json</button></div>
+    <div id="projList"></div>
+  </div>
+</div>
+
+<div id="edModal" class="hidden modal">
+  <div class="dlg editor">
+    <div class="row-h"><h2 id="edTitle">Edit part</h2><span id="edKey" class="muted small"></span></div>
+    <div class="edmeta">
+      <label>Name<input id="edName"></label>
+      <label>Ref prefix<input id="edPrefix" maxlength="4"></label>
+      <label>Default value<input id="edValue"></label>
+    </div>
+    <div class="edbody">
+      <section class="edcol">
+        <div class="row-h"><b>Pins</b><span id="edPinInfo" class="muted small"></span></div>
+        <div class="row"><button id="edAddPin">＋ Pin</button><button id="edBulk" title="Edit all pins as text">Bulk edit</button><button id="edFromPads" title="Create a pin for every pad that has none">Pins from pads</button></div>
+        <div class="edpins"><table><thead><tr><th>#</th><th>Name</th><th>Side</th><th></th></tr></thead><tbody id="edPins"></tbody></table></div>
+        <div class="row-h"><b>Symbol</b></div>
+        <svg id="edSym" class="edsym"></svg>
+      </section>
+      <section class="edcol">
+        <div class="row-h"><b>Footprint</b><span id="edFpName" class="muted small"></span></div>
+        <div class="row"><select id="edGen"></select><input id="edGenN" type="number" min="1" value="8" title="n" style="width:56px"><button id="edGenBtn">Generate</button><button id="edAddPad">＋ Pad</button><button id="edFit">Fit</button></div>
+        <svg id="edFp" class="edfp"></svg>
+        <div id="edPad" class="edpad"></div>
+      </section>
+    </div>
+    <div class="row end">
+      <label class="chk"><input type="checkbox" id="edSaveLib" checked> Save to My Library</label>
+      <span style="flex:1"></span>
+      <button id="edCancel">Cancel</button><button id="edPlace">Save &amp; place</button><button id="edSave" class="primary">Save</button>
+    </div>
+  </div>
+</div>
+<div id="knowModal" class="hidden modal">
+  <div class="dlg wide">
+    <div class="row-h"><h2>📚 Project knowledge</h2><button id="knowClose">✕</button></div>
+    <p class="muted">Point this project at a folder on the PC running the server. Design notes, requirements, guides and datasheets (.md, .txt, .pdf, .docx, code, CSV…) are given to the AI: small files go straight into its context, everything else it can search and read with tools.</p>
+    <div class="row"><input id="knowPath" placeholder="e.g. D:\Projects\my-board\docs" style="flex:1"><button id="knowSet" class="primary">Use folder</button><button id="knowClear">Clear</button></div>
+    <div id="knowInfo" class="muted small" style="margin-top:8px"></div>
+    <div id="knowFiles"></div>
+  </div>
+</div>
 <div id="toast"></div>
 
 <script src="js/lib.js"></script>
@@ -121,7 +170,10 @@
 <script src="js/model.js"></script>
 <script src="js/schematic.js"></script>
 <script src="js/pcb.js"></script>
+<script src="js/engine.js"></script>
 <script src="js/ai.js"></script>
+<script src="js/projects.js"></script>
+<script src="js/editor.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>
