@@ -193,7 +193,33 @@ const App = (() => {
     $('#presets').innerHTML = Object.entries(AI.PRESETS).map(([n, u]) => `<button data-u="${esc(u)}">${esc(n)}</button>`).join('');
     $('#modal').classList.remove('hidden');
   }
+  let fetchSeq = 0;
+  async function fetchModelsUI() {
+    const base = $('#sBase').value.trim(), st = $('#sFetchStatus'), seq = ++fetchSeq;
+    if (!base) { st.textContent = ''; return; }
+    st.className = 'muted'; st.textContent = 'Fetching models…';
+    try {
+      const ids = await AI.fetchModels(base, $('#sOKey').value.trim());
+      if (seq !== fetchSeq) return;
+      $('#sOModels').value = ids.join(', ');
+      st.className = 'good'; st.textContent = `✓ ${ids.length} model${ids.length > 1 ? 's' : ''} found`;
+    } catch (e) {
+      if (seq !== fetchSeq) return;
+      st.className = 'bad'; st.textContent = '✗ ' + (e.name === 'TimeoutError' ? 'Timed out' : e.message);
+    }
+  }
+  async function autoFetchModels() { // on startup, refresh the list from the configured server
+    const s = AI.settings; if (!s.oaiBase) return;
+    try {
+      const ids = await AI.fetchModels(s.oaiBase, s.oaiKey);
+      const upd = { oaiModels: ids.join(', ') };
+      if (!AI.allModels().some(m => m.id === s.model) || (!s.anthropicKey && !ids.includes(s.model))) upd.model = ids[0];
+      AI.saveSettings(upd); renderModels();
+    } catch (e) { }
+  }
   function saveSettings() {
+    const ids = $('#sOModels').value.split(',').map(x => x.trim()).filter(Boolean);
+    if (ids.length && !$('#sAnth').value.trim() && !ids.includes(AI.settings.model)) AI.saveSettings({ model: ids[0] });
     AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || 'https://api.openai.com/v1', oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, includeContext: $('#sCtx').checked });
     $('#modal').classList.add('hidden'); renderModels(); toast('Settings saved (stored only in this browser)');
   }
@@ -276,7 +302,10 @@ const App = (() => {
     $('#btnSettings').onclick = openSettings;
     $('#sCancel').onclick = () => $('#modal').classList.add('hidden');
     $('#sSave').onclick = saveSettings;
-    $('#presets').onclick = e => { const b = e.target.closest('button'); if (b) $('#sBase').value = b.dataset.u; };
+    $('#presets').onclick = e => { const b = e.target.closest('button'); if (b) { $('#sBase').value = b.dataset.u; fetchModelsUI(); } };
+    $('#sFetch').onclick = fetchModelsUI;
+    let ft; $('#sBase').oninput = $('#sOKey').oninput = () => { clearTimeout(ft); ft = setTimeout(fetchModelsUI, 600); };
+    autoFetchModels();
     if (!AI.settings.anthropicKey && !AI.settings.oaiModels) setTimeout(() => toast('Tip: add an API key in ⚙ Settings to enable the AI Copilot', 5000), 800);
 
     document.addEventListener('keydown', e => {

@@ -103,7 +103,8 @@
       <div id="presets" class="presets"></div>
       <label>Base URL<input id="sBase" placeholder="https://api.openai.com/v1"></label>
       <label>API key<input id="sOKey" type="password" placeholder="optional for local servers" autocomplete="off"></label>
-      <label>Models (comma separated — they appear in the model picker)<input id="sOModels" placeholder="e.g. gpt-5.1, gemini-3-pro, llama3.1"></label>
+      <div class="row"><button id="sFetch">⟳ Fetch models</button><span id="sFetchStatus" class="muted"></span></div>
+      <label>Models (filled automatically from the server, or type comma separated)<input id="sOModels" placeholder="e.g. gpt-5.1, gemini-3-pro, llama3.1"></label>
     </fieldset>
     <fieldset><legend>Behaviour</legend>
       <label>Max output tokens (Claude)<input id="sMax" type="number" min="1024" step="1024"></label>

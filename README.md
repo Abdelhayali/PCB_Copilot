@@ -16,10 +16,10 @@ An AI-assisted schematic + PCB designer that runs entirely in the browser. Descr
 
 ## Run
 
-No build step and no dependencies — just serve the folder:
+No build step and no dependencies. Start the bundled server (static files + a proxy for local model servers):
 
 ```bash
-python -m http.server 5173
+python server.py 5173
 ```
 
 Open http://localhost:5173 (or `http://<your-PC-IP>:5173` from another device on your LAN), then open **⚙ Settings** and add an API key.
@@ -43,3 +43,9 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 - Footprints are simplified generators, not KiCad library footprints — verify pad sizes and pinouts (especially TO-92/TO-220) before fabrication.
 - The router is a basic grid router (0.25 mm trace/clearance, no copper pours or rip-up-and-retry); dense boards may leave nets unrouted.
 - Touch editing (drag/pinch) on phones is not implemented yet.
+
+## Local models (llama.cpp, TabbyAPI, LM Studio, Ollama…)
+
+In **⚙ Settings → OpenAI-compatible**, enter the server URL (e.g. `http://localhost:8080/v1` or click the **Local :8080** preset). The model list is fetched automatically from `/v1/models` and appears in the model picker. The model must support OpenAI-style tool calling for Agent mode.
+
+Requests to `localhost` servers are routed through `server.py` (`/llm-proxy/<port>/...`), so local models work even when they only listen on 127.0.0.1 or don't send CORS headers — including from a phone on your LAN.

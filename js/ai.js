@@ -12,6 +12,7 @@ const AI = (() => {
     'Google Gemini': 'https://generativelanguage.googleapis.com/v1beta/openai',
     'xAI Grok': 'https://api.x.ai/v1',
     'OpenRouter': 'https://openrouter.ai/api/v1',
+    'Local :8080': 'http://localhost:8080/v1',
     'Ollama (local)': 'http://localhost:11434/v1',
     'LM Studio (local)': 'http://localhost:1234/v1',
   };
@@ -19,6 +20,30 @@ const AI = (() => {
   let settings = Object.assign({}, defaults);
   try { Object.assign(settings, JSON.parse(localStorage.getItem('cp.settings') || '{}')); } catch (e) { }
   const saveSettings = s => { settings = Object.assign(settings, s); try { localStorage.setItem('cp.settings', JSON.stringify(settings)); } catch (e) { } };
+  // Local model servers (localhost / this PC) are reached through server.py's /llm-proxy/<port>/,
+  // which works from phones on the LAN and sidesteps missing CORS headers.
+  let proxyOk = null;
+  async function hasProxy() {
+    if (proxyOk !== null) return proxyOk;
+    try { const r = await fetch('/llm-proxy/_ping'); proxyOk = r.ok && (await r.json()).ok === true; } catch (e) { proxyOk = false; }
+    return proxyOk;
+  }
+  async function resolveBase(base) {
+    base = String(base || '').trim().replace(/\/+$/, '');
+    let u; try { u = new URL(base); } catch (e) { throw new Error('Invalid base URL: ' + base); }
+    const local = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', location.hostname].includes(u.hostname);
+    if (local && u.protocol === 'http:' && await hasProxy()) return `${location.origin}/llm-proxy/${u.port || 80}${u.pathname.replace(/\/+$/, '')}`;
+    return base;
+  }
+  async function fetchModels(base, key) {
+    const headers = {}; if (key) headers.authorization = 'Bearer ' + key;
+    const res = await fetch(await resolveBase(base) + '/models', { headers, signal: AbortSignal.timeout(8000) });
+    const j = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(`${res.status}: ${j.error?.message || res.statusText}`);
+    const ids = (j.data || j.models || []).map(m => m.id || m.name).filter(Boolean);
+    if (!ids.length) throw new Error('Server returned no models');
+    return ids;
+  }
   const allModels = () => [...MODELS, ...settings.oaiModels.split(',').map(s => s.trim()).filter(Boolean).map(id => ({ id, label: id, provider: 'openai' }))];
 
   // ---------- tools ----------
@@ -189,7 +214,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
         usage: j.usage ? { in: j.usage.input_tokens, out: j.usage.output_tokens } : null
       };
     }
-    const base = settings.oaiBase.replace(/\/+$/, '');
+    const base = await resolveBase(settings.oaiBase);
     const headers = { 'content-type': 'application/json' };
     if (settings.oaiKey) headers.authorization = 'Bearer ' + settings.oaiKey;
     const res = await fetch(base + '/chat/completions', {
@@ -252,5 +277,5 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   const busy = () => !!controller;
   const reset = () => { history = []; persist(); };
 
-  return { MODELS, PRESETS, allModels, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS };
+  return { MODELS, PRESETS, allModels, fetchModels, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS };
 })();
