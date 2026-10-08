@@ -14,6 +14,7 @@ import argparse
 import hashlib
 import hmac
 import http.server
+import json
 import os
 import re
 import sys
@@ -21,7 +22,10 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
+import partsdb
+
 PROXY_RE = re.compile(r"^/llm-proxy/(\d{1,5})(/.*)?$")
+STATIC_RE = re.compile(r"^/(|index\.html|styles\.css|favicon\.ico|js/[\w.-]+\.js)$")
 HOP_HEADERS = {"host", "origin", "referer", "connection", "content-length", "accept-encoding",
                "cookie", "cf-connecting-ip", "cf-ray", "cf-visitor", "cf-ipcountry", "cdn-loop",
                "x-forwarded-for", "x-forwarded-proto"}
@@ -79,11 +83,35 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return False
         return True
     def do_GET(self):
-        if self.path == "/llm-proxy/_ping":
+        path = self.path.split("?")[0]
+        if path == "/llm-proxy/_ping":
             return self._send(200, b'{"ok":true}', "application/json")
-        if PROXY_RE.match(self.path.split("?")[0]):
+        if PROXY_RE.match(path):
             return self._proxy()
+        if path.startswith("/api/parts/"):
+            return self._parts(path)
+        if not STATIC_RE.match(path):  # never serve parts.db, *.py, password file, .git ...
+            return self._send(404, b"not found", "text/plain")
         super().do_GET()
+
+    def _parts(self, path):
+        q = urllib.parse.parse_qs(self.path.partition("?")[2])
+        arg = lambda k, d="": (q.get(k) or [d])[0]
+        try:
+            if path == "/api/parts/search":
+                out = partsdb.search(arg("q"), arg("limit", "20"))
+            elif path == "/api/parts/local":
+                out = {"source": "local", "results": partsdb.search_local(arg("q"), int(arg("limit", "50")))}
+            elif path == "/api/parts/stats":
+                out = partsdb.stats()
+            elif path.startswith("/api/parts/get/"):
+                out = partsdb.get_part(path.rsplit("/", 1)[1])
+            else:
+                return self._send(404, b'{"error":"unknown endpoint"}', "application/json")
+            self._send(200, json.dumps(out).encode(), "application/json")
+        except Exception as e:
+            self._send(502 if isinstance(e, (urllib.error.URLError, TimeoutError)) else 400,
+                       json.dumps({"error": str(e)}).encode(), "application/json")
 
     def do_POST(self):
         if PROXY_RE.match(self.path.split("?")[0]):

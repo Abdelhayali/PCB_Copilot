@@ -1,0 +1,204 @@
+"""Component database: JLCPCB/LCSC catalogue search + EasyEDA symbols/footprints, cached in SQLite.
+
+Search results and every part model that is fetched are stored in parts.db, so the local
+database grows as you use it and keeps working offline for parts seen before.
+
+Data sources: JLCPCB parts catalogue (https://jlcpcb.com/parts) and the
+JLCEDA/EasyEDA official library (https://easyeda.com, https://lceda.cn).
+"""
+import json
+import os
+import re
+import sqlite3
+import threading
+import time
+import urllib.request
+
+DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parts.db")
+UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CircuitPilot"
+U = 0.254  # EasyEDA unit (10 mil) in mm
+SOURCE = "JLCPCB/LCSC catalogue · symbols & footprints: JLCEDA/EasyEDA official library (easyeda.com, lceda.cn)"
+_lock = threading.Lock()
+
+
+def _db():
+    con = sqlite3.connect(DB_PATH)
+    con.execute("""CREATE TABLE IF NOT EXISTS parts(
+        lcsc TEXT PRIMARY KEY, mfr_part TEXT, brand TEXT, package TEXT, category TEXT,
+        description TEXT, stock INTEGER, basic INTEGER, price REAL, datasheet TEXT, updated REAL)""")
+    con.execute("CREATE TABLE IF NOT EXISTS models(lcsc TEXT PRIMARY KEY, json TEXT, updated REAL)")
+    return con
+
+
+def _http(url, body=None):
+    headers = {"User-Agent": UA, "Accept": "application/json"}
+    data = None
+    if body is not None:
+        data = json.dumps(body).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+    with urllib.request.urlopen(req, timeout=20) as r:
+        return json.loads(r.read().decode("utf-8"))
+
+
+# ---------------------------------------------------------------- search
+def _row(x):
+    prices = x.get("componentPrices") or []
+    return {
+        "lcsc": x.get("componentCode"), "mfr_part": x.get("componentModelEn"), "brand": x.get("componentBrandEn"),
+        "package": x.get("componentSpecificationEn"), "category": x.get("componentTypeEn"),
+        "description": (x.get("describe") or "")[:300], "stock": x.get("stockCount") or 0,
+        "basic": 1 if x.get("componentLibraryType") == "base" else 0,
+        "price": prices[0].get("productPrice") if prices else None, "datasheet": x.get("dataManualUrl"),
+    }
+
+
+def search(q, limit=20):
+    q = (q or "").strip()
+    if not q:
+        return {"source": "none", "results": []}
+    limit = max(1, min(int(limit or 20), 50))
+    try:
+        j = _http("https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList",
+                  {"keyword": q, "currentPage": 1, "pageSize": limit})
+        rows = [_row(x) for x in (j.get("data") or {}).get("componentPageInfo", {}).get("list", []) or []]
+        rows = [r for r in rows if r["lcsc"]]
+        with _lock, _db() as con:
+            con.executemany("""INSERT OR REPLACE INTO parts VALUES(:lcsc,:mfr_part,:brand,:package,:category,
+                :description,:stock,:basic,:price,:datasheet,%f)""" % time.time(), rows)
+        return {"source": "jlcpcb", "results": rows}
+    except Exception as e:  # offline / blocked -> local cache
+        return {"source": "local", "error": str(e), "results": search_local(q, limit)}
+
+
+def search_local(q, limit=50):
+    like = "%" + "%".join((q or "").split()) + "%"
+    with _lock, _db() as con:
+        con.row_factory = sqlite3.Row
+        cur = con.execute("""SELECT * FROM parts WHERE lcsc LIKE ? OR mfr_part LIKE ? OR description LIKE ?
+                             OR package LIKE ? OR category LIKE ? ORDER BY stock DESC LIMIT ?""",
+                          (like, like, like, like, like, limit))
+        return [dict(r) for r in cur.fetchall()]
+
+
+def stats():
+    with _lock, _db() as con:
+        return {"parts": con.execute("SELECT COUNT(*) FROM parts").fetchone()[0],
+                "models": con.execute("SELECT COUNT(*) FROM models").fetchone()[0], "path": DB_PATH}
+
+
+# ---------------------------------------------------------------- part model (pins + footprint)
+def _num(s):
+    try:
+        return float(s)
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def _parse_pins(shapes, cx, cy):
+    pins = []
+    for s in shapes:
+        if not s.startswith("P~"):
+            continue
+        seg = s.split("^^")
+        f0 = seg[0].split("~")
+        num = name = None
+        x, y = _num(f0[4]) if len(f0) > 4 else 0, _num(f0[5]) if len(f0) > 5 else 0
+        if len(seg) > 4:
+            num = seg[4].split("~")[4] if len(seg[4].split("~")) > 4 else None
+        if len(seg) > 3:
+            name = seg[3].split("~")[4] if len(seg[3].split("~")) > 4 else None
+        num = (num or (f0[3] if len(f0) > 3 else "")).strip()
+        name = (name or num).strip()
+        side = "L" if x < cx else "R"
+        if len(seg) > 2:  # pin line "M x y h d" / "v d": direction from the tip into the body
+            m = re.search(r"([hv])\s*(-?[\d.]+)", seg[2])
+            if m:
+                d = float(m.group(2))
+                if m.group(1) == "h":
+                    side = "R" if d < 0 else "L"
+                else:
+                    side = "T" if d > 0 else "B"
+        if num:
+            pins.append({"num": num, "name": name, "side": side, "x": x, "y": y})
+    return pins
+
+
+def _pad_shape(f):
+    shape, x, y, w, h = f[1], _num(f[2]), _num(f[3]), _num(f[4]), _num(f[5])
+    layer, number, hole_r, points, rot = f[6], f[8], _num(f[9]), f[10], _num(f[11]) if len(f) > 11 else 0
+    if shape == "POLYGON" and points:
+        p = [_num(v) for v in points.split()]
+        xs, ys = p[0::2], p[1::2]
+        if xs and ys:
+            x, y, w, h = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2, max(xs) - min(xs), max(ys) - min(ys)
+            rot = 0
+    if round(rot) % 180 == 90:
+        w, h = h, w
+    kind = "rect" if shape in ("RECT", "POLYGON") else ("round" if abs(w - h) < 1e-6 else "oval")
+    return {"num": number.strip(), "x": x, "y": y, "w": w, "h": h, "shape": kind,
+            "drill": hole_r * 2 * U if hole_r > 0 else None, "layer": layer}
+
+
+def _parse_footprint(pkg):
+    ds = pkg.get("dataStr") or {}
+    pads, silk = [], []
+    for s in ds.get("shape", []):
+        f = s.split("~")
+        if s.startswith("PAD~") and len(f) > 10:
+            pads.append(_pad_shape(f))
+        elif s.startswith("TRACK~") and len(f) > 4 and f[2] == "3":  # top silkscreen
+            p = [_num(v) for v in f[4].split()]
+            silk += list(zip(p[0::2], p[1::2]))
+    if not pads:
+        return None
+    xs = [p["x"] - p["w"] / 2 for p in pads] + [p["x"] + p["w"] / 2 for p in pads]
+    ys = [p["y"] - p["h"] / 2 for p in pads] + [p["y"] + p["h"] / 2 for p in pads]
+    ox, oy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2  # center on the pads
+    out = []
+    for p in pads:
+        out.append({"num": p["num"], "x": round((p["x"] - ox) * U, 4), "y": round((p["y"] - oy) * U, 4),
+                    "w": round(p["w"] * U, 4), "h": round(p["h"] * U, 4), "shape": p["shape"],
+                    **({"drill": round(p["drill"], 3)} if p["drill"] else {})})
+    bx = [(x - ox) * U for x, _ in silk] + [(v - ox) * U for v in xs]
+    by = [(y - oy) * U for _, y in silk] + [(v - oy) * U for v in ys]
+    body = [round(min(bx), 3), round(min(by), 3), round(max(bx), 3), round(max(by), 3)]
+    return {"name": pkg.get("title") or "footprint", "pads": out, "body": body}
+
+
+def get_part(lcsc):
+    lcsc = (lcsc or "").strip().upper()
+    if not re.fullmatch(r"C\d{1,10}", lcsc):
+        raise ValueError(f'"{lcsc}" is not an LCSC part number (e.g. C2838502)')
+    with _lock, _db() as con:
+        row = con.execute("SELECT json FROM models WHERE lcsc=?", (lcsc,)).fetchone()
+    if row:
+        return json.loads(row[0])
+    j = _http(f"https://easyeda.com/api/products/{lcsc}/components")
+    r = j.get("result") if j.get("success") else None
+    if not r:
+        raise LookupError(f"No EasyEDA symbol/footprint found for {lcsc}")
+    ds = r.get("dataStr") or {}
+    head = ds.get("head") or {}
+    para = head.get("c_para") or {}
+    shapes = list(ds.get("shape") or [])
+    for sp in r.get("subparts") or []:  # multi-unit symbols
+        shapes += (sp.get("dataStr") or {}).get("shape") or []
+    pins = _parse_pins(shapes, _num(head.get("x")), _num(head.get("y")))
+    seen, uniq = set(), []
+    order = {"L": 0, "T": 1, "R": 2, "B": 3}
+    for p in sorted(pins, key=lambda p: (order[p["side"]], p["x"] if p["side"] in "TB" else p["y"], p["y"])):
+        if p["num"] not in seen:
+            seen.add(p["num"])
+            uniq.append({"num": p["num"], "name": p["name"], "side": p["side"]})
+    fp = _parse_footprint(r.get("packageDetail") or {})
+    model = {
+        "lcsc": lcsc, "name": para.get("name") or r.get("title"), "mfr_part": para.get("Manufacturer Part"),
+        "manufacturer": para.get("Manufacturer"), "package": para.get("package"), "prefix": (para.get("pre") or "U?").rstrip("?") or "U",
+        "value": para.get("Value") or para.get("Manufacturer Part") or r.get("title"),
+        "pins": uniq, "footprint": fp, "datasheet": ((r.get("packageDetail") or {}).get("dataStr") or {}).get("head", {}).get("c_para", {}).get("link"),
+        "source": SOURCE,
+    }
+    with _lock, _db() as con:
+        con.execute("INSERT OR REPLACE INTO models VALUES(?,?,?)", (lcsc, json.dumps(model), time.time()))
+    return model

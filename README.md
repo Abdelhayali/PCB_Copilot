@@ -58,3 +58,11 @@ cloudflared tunnel --url http://localhost:5173
 ```
 
 Always set a password when exposing the app: the LLM proxy gives access to your local model. The proxy only forwards to ports listed in `--allow-ports` (default `8080`).
+
+## Component database (JLCPCB / LCSC + EasyEDA)
+
+Type a part number in the Parts search box (e.g. `ESP32-C3`, `AMS1117`, `CH340C`, `USB-C`) to search the JLCPCB/LCSC catalogue (stock, price, Basic/Extended). Click a result to place it: the exact pinout and real PCB footprint are loaded from the JLCEDA/EasyEDA official library (https://easyeda.com, https://lceda.cn).
+
+The AI copilot has the same database through the `search_parts` and `get_part` tools, so you can ask for e.g. *"ESP32-C3 board with USB-C, AMS1117 regulator and a status LED"* and it will pick real in-stock parts.
+
+Everything fetched is cached in a local SQLite database (`parts.db`), so parts you've used keep working offline. Part definitions are also saved inside each design file.

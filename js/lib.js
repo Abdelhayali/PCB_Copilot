@@ -143,6 +143,31 @@ const Lib = (() => {
     draw: () => '<path d="M-30 0H-14M14 0H30M-22 -8V-2M-25 -5H-19"/><circle class="body" cx="0" cy="0" r="14"/><path d="M-6 -6V6M0 -9V9M6 -6V6"/>'
   });
 
+  // ---------- database parts (JLCPCB/LCSC + EasyEDA), definitions live in the design's lib ----------
+  const partDef = c => (typeof Model !== 'undefined' && Model.S.lib && Model.S.lib[c.lcsc]) || null;
+  function partGeo(c) {
+    const d = partDef(c), all = d ? d.pins : [];
+    let L = all.filter(p => p.side === 'L' || p.side === 'T'), R = all.filter(p => p.side === 'R' || p.side === 'B');
+    if (all.length > 3 && (!L.length || !R.length)) { const s = L.length ? L : R, h = Math.ceil(s.length / 2); L = s.slice(0, h); R = s.slice(h); }
+    const rows = Math.max(L.length, R.length, 1), ml = Math.max(1, ...all.map(p => String(p.name).length));
+    const hw = all.length <= 2 ? 20 : Math.max(30, Math.ceil((ml * 5.5 + 10) / 10) * 10), hh = all.length <= 2 ? 10 : rows * 10;
+    const pins = [];
+    L.forEach((p, i) => pins.push(pin(p.num, p.name, -hw - 20, -(rows - 1) * 10 + i * 20, -1, 0, 20, all.length > 2)));
+    R.forEach((p, i) => pins.push(pin(p.num, p.name, hw + 20, -(rows - 1) * 10 + i * 20, 1, 0, 20, all.length > 2)));
+    return { hw, hh, pins };
+  }
+  def('part', {
+    name: 'Database part', cat: 'Database', prefix: 'U', value: '', generic: false, hidden: true,
+    fps: c => ['LCSC:' + c.lcsc],
+    pins: c => partGeo(c).pins,
+    box: c => { const g = partGeo(c); return [-g.hw - 20, -g.hh, g.hw + 20, g.hh]; },
+    draw: c => {
+      const g = partGeo(c);
+      return `<rect class="body" x="${-g.hw}" y="${-g.hh}" width="${2 * g.hw}" height="${2 * g.hh}" rx="2"/>` +
+        '<path d="' + g.pins.map(p => `M${p.x} ${p.y}H${p.x - p.dx * p.len}`).join('') + '"/>';
+    }
+  });
+
   // ---------- footprints (mm, centered) ----------
   const smd2 = (d, w, h) => [{ num: '1', x: -d, y: 0, w, h, shape: 'rect' }, { num: '2', x: d, y: 0, w, h, shape: 'rect' }];
   const tht = (num, x, y, s, drill) => ({ num: String(num), x, y, w: s, h: s, shape: String(num) === '1' ? 'rect' : 'round', drill });
@@ -152,6 +177,12 @@ const Lib = (() => {
   function footprint(name) {
     if (cache[name]) return cache[name];
     let pads = null, m;
+    if ((m = /^LCSC:(C\d+)$/.exec(name))) {
+      const d = typeof Model !== 'undefined' && Model.S.lib && Model.S.lib[m[1]];
+      if (!d || !d.footprint) return null;
+      const f = d.footprint, b = f.body;
+      return (cache[name] = { name, pads: f.pads, box: [b[0] - 0.3, b[1] - 0.3, b[2] + 0.3, b[3] + 0.3], body: null, lcsc: m[1] });
+    }
     switch (name) {
       case '0805': pads = smd2(0.95, 1.0, 1.3); break;
       case '1206': pads = smd2(1.5, 1.15, 1.8); break;
@@ -197,5 +228,5 @@ const Lib = (() => {
     const a = rot(b[0], b[1], r), c = rot(b[2], b[3], r);
     return [Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[0], c[0]), Math.max(a[1], c[1])];
   }
-  return { T, type, types: () => Object.keys(T), footprint, fpsFor, rot, rotBox, FOOTPRINT_PATTERNS };
+  return { T, type, types: () => Object.keys(T).filter(t => !T[t].hidden), footprint, fpsFor, rot, rotBox, FOOTPRINT_PATTERNS };
 })();

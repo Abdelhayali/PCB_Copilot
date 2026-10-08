@@ -43,6 +43,39 @@ const App = (() => {
   }
 
   // ---------- parts palette ----------
+  const db = { q: '', loading: false, results: [], error: null, source: '' };
+  let dbTimer = null, dbSeq = 0;
+  function searchDb(q) {
+    clearTimeout(dbTimer);
+    if (q.trim().length < 2) { db.q = ''; db.results = []; db.error = null; renderParts(); return; }
+    dbTimer = setTimeout(async () => {
+      const seq = ++dbSeq; db.q = q; db.loading = true; db.error = null; renderParts();
+      try { const j = await AI.partsApi('search?q=' + encodeURIComponent(q) + '&limit=25'); if (seq !== dbSeq) return; db.results = j.results; db.source = j.source; db.error = j.source === 'local' && j.error ? 'Offline — showing cached parts' : null; }
+      catch (e) { if (seq !== dbSeq) return; db.results = []; db.error = e.message; }
+      db.loading = false; renderParts();
+    }, 600);
+  }
+  async function placeDbPart(code) {
+    toast('Loading ' + code + '…', 8000);
+    try {
+      const m = await AI.loadPart(code);
+      if (view !== 'sch') showView('sch');
+      const vb = Sch.vp.vb || [0, 0, 0, 0];
+      const c = Model.mutate(() => { Model.S.lib[m.lcsc] = m; return Model.addComponent({ lcsc: m.lcsc, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2 }); });
+      Sch.select(c.ref); toast(`Added ${c.ref} · ${m.name} (${m.pins.length} pins, ${m.footprint ? m.footprint.pads.length + ' pads' : 'no footprint'})`);
+    } catch (e) { toast('Could not load ' + code + ': ' + e.message, 6000); }
+  }
+  function renderDb() {
+    if (!db.q && !db.loading) return '';
+    let h = `<div class="pcat">Database · JLCPCB / LCSC${db.loading ? ' <span class="spin"></span>' : ''}</div>`;
+    if (db.error) h += `<div class="dberr">${esc(db.error)}</div>`;
+    if (!db.loading && !db.results.length && !db.error) h += '<div class="muted small">No parts found</div>';
+    h += db.results.map(r => `<button class="dbpart" data-lcsc="${esc(r.lcsc)}" title="${esc(r.description || '')}">
+      <div class="dbt"><b>${esc(r.mfr_part || r.lcsc)}</b>${r.basic ? '<span class="badge basic">Basic</span>' : ''}</div>
+      <div class="dbs">${esc(r.package || '')} · ${esc(r.brand || '')}</div>
+      <div class="dbs">${esc(r.lcsc)} · <span class="${r.stock > 0 ? 'good' : 'bad'}">${(r.stock || 0).toLocaleString()} in stock</span>${r.price != null ? ' · $' + (+r.price).toFixed(r.price < 0.1 ? 4 : 2) : ''}</div></button>`).join('');
+    return h;
+  }
   function renderParts() {
     const q = $('#partSearch').value.toLowerCase(), cats = {};
     for (const t of Lib.types()) {
@@ -52,7 +85,7 @@ const App = (() => {
     $('#partList').innerHTML = Object.entries(cats).map(([c, ts]) => `<div class="pcat">${c}</div>` + ts.map(t => {
       const d = Lib.type(t), b = d.box({ type: t }), pad = 6;
       return `<button class="part" data-type="${t}" title="Add ${esc(d.name)}"><svg viewBox="${b[0] - pad} ${b[1] - pad} ${b[2] - b[0] + 2 * pad} ${b[3] - b[1] + 2 * pad}"><g class="comp mini">${d.draw({ type: t })}</g></svg><span>${esc(d.name)}</span></button>`;
-    }).join('')).join('');
+    }).join('')).join('') + renderDb();
   }
 
   // ---------- properties ----------
@@ -67,6 +100,7 @@ const App = (() => {
       el.innerHTML = `<div class="ph">${esc(c.ref)} <span class="muted">${esc(d.name)}</span></div>
         <label>Reference<input id="pRef" value="${esc(c.ref)}"></label>
         <label>Value<input id="pVal" value="${esc(c.value)}"></label>
+        ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(c.lcsc)}</span>${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
         <label>Footprint<select id="pFp">${fps.map(f => `<option ${f === c.footprint ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
         <div class="row"><button id="pRot">⟳ Rotate (R)</button><button id="pDel" class="danger">Delete</button></div>
@@ -258,8 +292,12 @@ const App = (() => {
     renderParts(); renderModels(); setMode('agent'); renderChat(); renderAll();
     requestAnimationFrame(() => Sch.fit());
 
-    $('#partSearch').oninput = renderParts;
-    $('#partList').onclick = e => { const b = e.target.closest('.part'); if (b) { if (view !== 'sch') showView('sch'); Sch.placeNew(b.dataset.type); } };
+    $('#partSearch').oninput = () => { renderParts(); searchDb($('#partSearch').value); };
+    $('#partSearch').onkeydown = e => { if (e.key === 'Enter') { clearTimeout(dbTimer); searchDb($('#partSearch').value); } };
+    $('#partList').onclick = e => {
+      const d = e.target.closest('.dbpart'); if (d) { placeDbPart(d.dataset.lcsc); return; }
+      const b = e.target.closest('.part'); if (b) { if (view !== 'sch') showView('sch'); Sch.placeNew(b.dataset.type); }
+    };
     $$('.tab').forEach(b => b.onclick = () => showView(b.dataset.view));
     $('#btnLayout').onclick = () => { Model.mutate(() => Model.autoLayout()); Sch.fit(); };
     $('#btnFitS').onclick = () => Sch.fit(); $('#btnFitP').onclick = () => Pcb.fit();

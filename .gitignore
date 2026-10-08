@@ -1,3 +1,5 @@
 .claude/
 *.log
 access-password.txt
+parts.db
+__pycache__/

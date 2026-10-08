@@ -50,6 +50,14 @@ const AI = (() => {
   const types = Lib.types();
   const pinList = { type: 'array', items: { type: 'string' }, description: 'Pin references "REF.PIN" — PIN is a pin number or pin name, e.g. "R1.1", "Q1.B", "U1.VCC"' };
   const TOOLS = [
+    {
+      name: 'search_parts', ro: true, description: 'Search the JLCPCB/LCSC component database (600k+ real parts with stock and price) by part number or keywords, e.g. "ESP32-C3", "AMS1117 3.3", "USB-C 16pin", "10k 0603". Returns LCSC codes (Cxxxx). Prefer in-stock and Basic parts.',
+      input_schema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, limit: { type: 'number', description: 'default 10, max 30' } } }
+    },
+    {
+      name: 'get_part', ro: true, description: 'Load a database part by LCSC code: returns its exact pin list (number:name) and real PCB footprint. Call before adding it with add_components {lcsc}.',
+      input_schema: { type: 'object', required: ['lcsc'], properties: { lcsc: { type: 'string', description: 'LCSC code, e.g. C2838502' } } }
+    },
     { name: 'get_design', ro: true, description: 'Return the full current design: every component (type, value, position, footprint, pins as num:name=net) and all nets.', input_schema: { type: 'object', properties: {} } },
     { name: 'list_parts', ro: true, description: 'List the component types in the library with their pins (number:name), default value and footprints.', input_schema: { type: 'object', properties: {} } },
     {
@@ -58,8 +66,9 @@ const AI = (() => {
         type: 'object', required: ['components'], properties: {
           components: {
             type: 'array', items: {
-              type: 'object', required: ['type'], properties: {
-                type: { type: 'string', enum: types },
+              type: 'object', properties: {
+                type: { type: 'string', enum: types, description: 'Library type. Omit when using lcsc.' },
+                lcsc: { type: 'string', description: 'LCSC code of a database part (load it with get_part first). Gives the real pinout and footprint.' },
                 ref: { type: 'string', description: 'Optional reference designator, e.g. R1. Auto-assigned if omitted.' },
                 value: { type: 'string', description: 'Part value or part number, e.g. 10k, 100n, NE555, ATmega328P' },
                 x: { type: 'number', description: 'Schematic X (grid 10). Typical spacing between parts 80-160.' },
@@ -95,6 +104,26 @@ const AI = (() => {
     { name: 'pcb_status', ro: true, description: 'Board size, number of placed parts, routed / unrouted nets, via count, trace length.', input_schema: { type: 'object', properties: {} } },
   ];
 
+  const partCache = {};
+  async function partsApi(path) {
+    const r = await fetch('/api/parts/' + path);
+    const j = await r.json().catch(() => ({ error: 'Parts database not available — run the app with server.py' }));
+    if (!r.ok || j.error && !j.results) throw new Error(j.error || r.statusText);
+    return j;
+  }
+  async function loadPart(code) {
+    code = String(code || '').trim().toUpperCase();
+    if (Model.S.lib[code]) return Model.S.lib[code];
+    if (!partCache[code]) partCache[code] = await partsApi('get/' + encodeURIComponent(code));
+    return partCache[code];
+  }
+  function partSummary(m) {
+    return {
+      lcsc: m.lcsc, name: m.name, manufacturer: m.manufacturer, mfr_part: m.mfr_part, package: m.package, ref_prefix: m.prefix,
+      pins: m.pins.map(p => p.num + ':' + p.name).join(' '),
+      footprint: m.footprint ? `${m.footprint.name} (${m.footprint.pads.length} pads)` : 'none', datasheet: m.datasheet || undefined
+    };
+  }
   function partsInfo() {
     return Lib.types().map(t => {
       const d = Lib.type(t), c = { type: t, pins: null };
@@ -103,19 +132,28 @@ const AI = (() => {
     }).join('\n');
   }
 
-  function execTool(name, input, mode) {
+  async function execTool(name, input, mode) {
     const t = TOOLS.find(t => t.name === name);
     if (!t) throw new Error('Unknown tool ' + name);
     if (mode !== 'agent' && !t.ro) throw new Error(`"${name}" modifies the design and is not allowed in ${mode} mode`);
     input = input || {};
     switch (name) {
+      case 'search_parts': {
+        const j = await partsApi('search?q=' + encodeURIComponent(input.query || '') + '&limit=' + Math.min(30, +input.limit || 10));
+        if (!j.results.length) return `No parts found for "${input.query}"` + (j.error ? ` (online search failed: ${j.error})` : '');
+        return { source: j.source, results: j.results.slice().sort((a, b) => (b.stock > 0) - (a.stock > 0)).map(r => ({ lcsc: r.lcsc, part: r.mfr_part, brand: r.brand, package: r.package, stock: r.stock, basic: !!r.basic, price_usd: r.price, desc: (r.description || '').slice(0, 140) })) };
+      }
+      case 'get_part': return partSummary(await loadPart(input.lcsc));
       case 'get_design': return Model.summary();
       case 'list_parts': return partsInfo();
       case 'run_erc': { const r = Model.erc(); return r.length ? r : 'ERC passed: no issues'; }
       case 'pcb_status': return Pcb.status();
       case 'add_components': {
         const list = Array.isArray(input.components) ? input.components : [input];
-        return Model.mutate(() => list.map(s => { const c = Model.addComponent(s); return { ref: c.ref, type: c.type, value: c.value, x: c.x, y: c.y, footprint: c.footprint, pins: Lib.type(c.type).pins(c).map(p => p.num + ':' + p.name).join(' ') }; }));
+        const libs = {};
+        for (const s of list) if (s.lcsc) { const m = await loadPart(s.lcsc); libs[m.lcsc] = m; }
+        return Model.mutate(() => list.map(s => {
+          for (const [k, m] of Object.entries(libs)) if (!Model.S.lib[k]) Model.S.lib[k] = m; const c = Model.addComponent(s); return { ref: c.ref, type: c.type, value: c.value, x: c.x, y: c.y, footprint: c.footprint, pins: Lib.type(c.type).pins(c).map(p => p.num + ':' + p.name).join(' ') }; }));
       }
       case 'update_component': return Model.mutate(() => { const c = Model.updateComponent(input); return { ok: true, ref: c.ref }; });
       case 'remove_components': return Model.mutate(() => { (input.refs || []).forEach(Model.removeComponent); return { ok: true }; });
@@ -148,7 +186,8 @@ DESIGN MODEL
 - Connectivity is by named nets. Pins are referenced "REF.PIN" with the pin number or name ("R1.1", "Q1.B", "U1.VCC"). A name shared by several pins (e.g. "U1.GND") connects all of them.
 - Nets named GND or supply names (VCC, VDD, +5V, +3V3, +12V, VBAT, VIN ...) render as power symbols. Give meaningful names to important signals (OUT, LED_K, SDA, TRIG ...); otherwise any name is fine.
 - Pin numbering: resistor/capacitor/inductor 1,2; electrolytic 1=+ 2=-; diode/LED/zener/schottky 1=K(cathode) 2=A(anode); npn/pnp 1=B 2=E 3=C; nmos/pmos 1=G 2=S 3=D; regulator 1=IN 2=GND 3=OUT; opamp 2=IN- 3=IN+ 4=V- 6=OUT 7=V+; potentiometer 1, 2=W(wiper), 3; battery 1=+ 2=-.
-- For any real chip use type "ic" with "pins" = the exact datasheet pin names in pin-number order (e.g. NE555: ["GND","TRIG","OUT","RESET","CTRL","THR","DIS","VCC"]) and an appropriate footprint (DIP-8, SOIC-8, ...). Use "connector" for headers/terminals with descriptive pin names.
+- COMPONENT DATABASE: for real ICs, modules, regulators, connectors (ESP32, STM32, AMS1117, CH340, USB-C, etc.) use search_parts → pick an in-stock part (prefer Basic parts) → get_part → add_components with {"lcsc": "Cxxxx"}. This gives the exact pinout and real footprint; connect using the pin names returned by get_part. Simple passives (R, C, LED, diodes) can use the built-in types.
+- If the database is unavailable, use type "ic" with "pins" = the exact datasheet pin names in pin-number order (e.g. NE555: ["GND","TRIG","OUT","RESET","CTRL","THR","DIS","VCC"]) and an appropriate footprint (DIP-8, SOIC-8, ...). Use "connector" for headers/terminals with descriptive pin names.
 
 Use real, purchasable part values and show key calculations briefly (e.g. LED resistor = (Vs - Vf)/I). Keep replies concise and well formatted (markdown).`;
 
@@ -257,7 +296,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
           let content, error = false;
           try {
             if (tc.input && tc.input.__parse_error) throw new Error('Could not parse tool arguments as JSON');
-            const out = execTool(tc.name, tc.input, mode);
+            const out = await execTool(tc.name, tc.input, mode);
             content = typeof out === 'string' ? out : JSON.stringify(out);
           } catch (e) { content = 'Error: ' + e.message; error = true; }
           results.push({ id: tc.id, name: tc.name, content, error });
@@ -277,5 +316,5 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   const busy = () => !!controller;
   const reset = () => { history = []; persist(); };
 
-  return { MODELS, PRESETS, allModels, fetchModels, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS };
+  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS };
 })();

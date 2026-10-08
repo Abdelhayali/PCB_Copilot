@@ -173,3 +173,18 @@ details.tool pre.res { color: #b8f5d6; } details.tool.err pre.res { color: var(-
   #left { max-height: 260px; } #right { height: 80vh; }
   .menu button:not(#btnUndo):not(#btnRedo), #projName { display: none; }
 }
+
+/* database parts */
+.dbpart { display: block; width: 100%; text-align: left; margin-bottom: 4px; padding: 6px 8px; background: var(--bg); }
+.dbpart .dbt { display: flex; justify-content: space-between; gap: 6px; font-size: 12px; overflow: hidden; }
+.dbpart .dbt b { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbpart .dbs { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.dbpart .good { color: var(--good); } .dbpart .bad { color: var(--bad); }
+.badge { font-size: 10px; padding: 0 5px; border-radius: 4px; flex: none; } .badge.basic { background: #3ecf8e22; color: var(--good); }
+.dberr { font-size: 11px; color: var(--warn); margin: 2px 4px 6px; }
+.small { font-size: 11px; margin: 2px 4px; }
+.spin { display: inline-block; width: 9px; height: 9px; border: 2px solid var(--muted); border-top-color: transparent; border-radius: 50%; animation: rot .8s linear infinite; vertical-align: -1px; }
+@keyframes rot { to { transform: rotate(360deg); } }
+.attrib { font-size: 10px; color: var(--muted); padding: 4px 12px 8px; line-height: 1.4; } .attrib a { color: var(--muted); }
+.lcscinfo { font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
+.lcscinfo a { color: var(--accent); }

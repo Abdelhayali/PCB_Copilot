@@ -1,7 +1,7 @@
 'use strict';
 // Design state, connectivity, undo/redo, ERC and schematic auto-layout.
 const Model = (() => {
-  const blank = () => ({ name: 'Untitled', components: [], nets: {}, board: { w: 0, h: 0 }, pcb: { traces: [], vias: [], routed: {} }, connStyle: 'auto' });
+  const blank = () => ({ name: 'Untitled', components: [], nets: {}, board: { w: 0, h: 0 }, pcb: { traces: [], vias: [], routed: {} }, connStyle: 'auto', lib: {} });
   let S = blank();
   const undoStack = [], redoStack = [], subs = [];
   let netCounter = 1;
@@ -81,11 +81,20 @@ const Model = (() => {
     c.x = x0; c.y = y0;
   }
   function addComponent(spec) {
+    let lp = null;
+    if (spec.lcsc) {
+      const code = String(spec.lcsc).trim().toUpperCase();
+      lp = S.lib[code];
+      if (!lp) throw new Error(`Part ${code} is not loaded — call get_part first`);
+      spec = Object.assign({}, spec, { type: 'part', lcsc: code, footprint: 'LCSC:' + code });
+    }
     const d = Lib.type(spec.type);
     if (!d) throw new Error(`Unknown type "${spec.type}". Types: ${Lib.types().join(', ')}`);
-    let ref = spec.ref || nextRef(d.prefix);
-    if (comp(ref)) { if (spec.ref) throw new Error(`Ref ${ref} already exists`); ref = nextRef(d.prefix); }
-    const c = { ref, type: spec.type, value: spec.value != null ? String(spec.value) : d.value, x: 0, y: 0, rot: [0, 90, 180, 270].includes(+spec.rot) ? +spec.rot : 0 };
+    const prefix = lp ? (lp.prefix || 'U').replace(/[^A-Z]/gi, '') || 'U' : d.prefix;
+    let ref = spec.ref || nextRef(prefix);
+    if (comp(ref)) { if (spec.ref) throw new Error(`Ref ${ref} already exists`); ref = nextRef(prefix); }
+    const c = { ref, type: spec.type, value: spec.value != null ? String(spec.value) : (lp ? lp.value || lp.name : d.value), x: 0, y: 0, rot: [0, 90, 180, 270].includes(+spec.rot) ? +spec.rot : 0 };
+    if (lp) c.lcsc = lp.lcsc;
     if (d.generic && Array.isArray(spec.pins) && spec.pins.length) c.pins = spec.pins.map(String);
     if (d.generic && !c.pins && typeof spec.pins === 'number') c.pins = Array.from({ length: spec.pins }, (_, i) => String(i + 1));
     const fps = Lib.fpsFor(c);
@@ -245,7 +254,7 @@ const Model = (() => {
     const idx = pinIndex();
     return {
       components: S.components.map(c => ({
-        ref: c.ref, type: c.type, value: c.value, x: c.x, y: c.y, rot: c.rot || 0, footprint: c.footprint,
+        ref: c.ref, type: c.type, ...(c.lcsc ? { lcsc: c.lcsc } : {}), value: c.value, x: c.x, y: c.y, rot: c.rot || 0, footprint: c.footprint,
         pins: Lib.type(c.type).pins(c).map(p => `${p.num}:${p.name}${idx[c.ref + '.' + p.num] ? '=' + idx[c.ref + '.' + p.num] : ''}`).join(' ')
       })),
       nets: S.nets
