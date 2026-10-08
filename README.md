@@ -49,3 +49,12 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 In **⚙ Settings → OpenAI-compatible**, enter the server URL (e.g. `http://localhost:8080/v1` or click the **Local :8080** preset). The model list is fetched automatically from `/v1/models` and appears in the model picker. The model must support OpenAI-style tool calling for Agent mode.
 
 Requests to `localhost` servers are routed through `server.py` (`/llm-proxy/<port>/...`), so local models work even when they only listen on 127.0.0.1 or don't send CORS headers — including from a phone on your LAN.
+
+## Public URL (Cloudflare tunnel)
+
+```bash
+python server.py 5173 --allow-ports 8080 --password YOUR_PASSWORD
+cloudflared tunnel --url http://localhost:5173
+```
+
+Always set a password when exposing the app: the LLM proxy gives access to your local model. The proxy only forwards to ports listed in `--allow-ports` (default `8080`).
