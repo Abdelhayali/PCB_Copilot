@@ -1,0 +1,125 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>CircuitPilot</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<header id="top">
+  <div class="brand"><svg viewBox="0 0 24 24" width="20" height="20"><path d="M3 12h4l2-5 4 10 2-5h6" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>CircuitPilot</div>
+  <nav class="menu">
+    <button id="btnNew">New</button>
+    <button id="btnOpen">Open</button>
+    <button id="btnSave" title="Ctrl+S">Save</button>
+    <div class="dd"><button>Export ▾</button>
+      <div class="ddm">
+        <button data-exp="gerber">Gerber + drill (.zip)</button>
+        <button data-exp="bom">Bill of materials (.csv)</button>
+        <button data-exp="net">Netlist (.net)</button>
+        <button data-exp="svg">Schematic (.svg)</button>
+        <button data-exp="pcbsvg">PCB image (.svg)</button>
+      </div>
+    </div>
+    <button id="btnUndo" title="Undo (Ctrl+Z)">↶</button>
+    <button id="btnRedo" title="Redo (Ctrl+Y)">↷</button>
+  </nav>
+  <div class="spacer"></div>
+  <input id="projName" spellcheck="false" title="Project name">
+  <button id="btnSettings">⚙ Settings</button>
+  <input type="file" id="fileIn" accept=".json" hidden>
+</header>
+
+<main>
+  <aside id="left">
+    <div class="sec-h">Parts</div>
+    <input id="partSearch" placeholder="Search parts…">
+    <div id="partList"></div>
+    <div class="sec-h">Properties</div>
+    <div id="props"></div>
+  </aside>
+
+  <section id="center">
+    <div id="bar">
+      <div id="tabs">
+        <button class="tab active" data-view="sch">Schematic</button>
+        <button class="tab" data-view="pcb">PCB</button>
+      </div>
+      <div id="schTools" class="tools">
+        <button id="btnLayout">Auto-layout</button>
+        <button id="btnErc">ERC</button>
+        <label>Connections <select id="connStyle"><option value="auto">Auto</option><option value="wires">Wires</option><option value="labels">Net labels</option></select></label>
+        <button id="btnFitS" title="F">Fit</button>
+      </div>
+      <div id="pcbTools" class="tools hidden">
+        <button id="btnGen" class="primary">Generate PCB</button>
+        <button id="btnPlace">Auto-place</button>
+        <button id="btnRoute">Route</button>
+        <button id="btnUnroute">Clear routes</button>
+        <label>Board <input id="boardW" type="number" min="5" step="1" placeholder="auto">×<input id="boardH" type="number" min="5" step="1" placeholder="auto"> mm</label>
+        <label class="chk"><input type="checkbox" data-layer="F" checked>Top</label>
+        <label class="chk"><input type="checkbox" data-layer="B" checked>Bottom</label>
+        <label class="chk"><input type="checkbox" data-layer="rats" checked>Ratsnest</label>
+        <label class="chk"><input type="checkbox" data-layer="silk" checked>Silk</label>
+        <button id="btnFitP" title="F">Fit</button>
+        <button id="btnGerber">Gerbers ⤓</button>
+      </div>
+    </div>
+    <div id="views">
+      <svg id="schSvg"></svg>
+      <svg id="pcbSvg" class="hidden"></svg>
+    </div>
+    <div id="status"></div>
+  </section>
+
+  <aside id="right">
+    <div class="cp-head">
+      <div class="title"><span class="spark">✦</span> AI Copilot</div>
+      <button id="btnNewChat" title="New chat">＋ New chat</button>
+    </div>
+    <div class="cp-ctrl">
+      <div class="seg" id="modeSeg">
+        <button data-mode="agent">Agent</button><button data-mode="ask">Ask</button><button data-mode="plan">Plan</button>
+      </div>
+      <select id="modelSel" title="Model"></select>
+    </div>
+    <div id="chat"></div>
+    <div class="cp-input">
+      <textarea id="prompt" rows="3" placeholder="Describe a circuit… e.g. “USB-powered 3.3V regulator with power LED”"></textarea>
+      <div class="row"><span id="modeHint" class="muted"></span><button id="btnSend" class="primary">Send</button></div>
+    </div>
+  </aside>
+</main>
+
+<div id="modal" class="hidden">
+  <div class="dlg">
+    <h2>Settings</h2>
+    <p class="muted">Keys are stored only in this browser (localStorage) and sent directly to the provider you choose.</p>
+    <fieldset><legend>Anthropic (Claude)</legend>
+      <label>API key<input id="sAnth" type="password" placeholder="sk-ant-…" autocomplete="off"></label>
+    </fieldset>
+    <fieldset><legend>OpenAI-compatible provider (OpenAI, Gemini, Grok, OpenRouter, Ollama…)</legend>
+      <div id="presets" class="presets"></div>
+      <label>Base URL<input id="sBase" placeholder="https://api.openai.com/v1"></label>
+      <label>API key<input id="sOKey" type="password" placeholder="optional for local servers" autocomplete="off"></label>
+      <label>Models (comma separated — they appear in the model picker)<input id="sOModels" placeholder="e.g. gpt-5.1, gemini-3-pro, llama3.1"></label>
+    </fieldset>
+    <fieldset><legend>Behaviour</legend>
+      <label>Max output tokens (Claude)<input id="sMax" type="number" min="1024" step="1024"></label>
+      <label class="chk"><input id="sCtx" type="checkbox"> Send current design to the model with every request</label>
+    </fieldset>
+    <div class="row end"><button id="sCancel">Cancel</button><button id="sSave" class="primary">Save</button></div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script src="js/lib.js"></script>
+<script src="js/view.js"></script>
+<script src="js/model.js"></script>
+<script src="js/schematic.js"></script>
+<script src="js/pcb.js"></script>
+<script src="js/ai.js"></script>
+<script src="js/app.js"></script>
+</body>
+</html>
