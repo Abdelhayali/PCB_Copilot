@@ -30,7 +30,7 @@ PASSWORD = None
 LOGIN_PAGE = b"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>CircuitPilot</title><body style="background:#0f1216;color:#dfe5ec;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0">
 <form method=post action=/__login style="display:flex;flex-direction:column;gap:10px;width:260px">
-<b style="font-size:18px">CircuitPilot</b><input type=password name=p placeholder=Password autofocus
+<b style="font-size:18px">CircuitPilot</b><input type=password name=p placeholder=Password autofocus autocapitalize=off autocorrect=off autocomplete=current-password spellcheck=false
 style="padding:9px;border-radius:8px;border:1px solid #2a313b;background:#161a20;color:inherit">
 <button style="padding:9px;border-radius:8px;border:0;background:#5b8cff;color:#fff;font-weight:600">Enter</button>%s</form>"""
 
@@ -64,8 +64,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return False
         if self.command == "POST" and self.path == "/__login":
             n = int(self.headers.get("Content-Length") or 0)
-            p = urllib.parse.parse_qs(self.rfile.read(n).decode()).get("p", [""])[0]
-            if PASSWORD and hmac.compare_digest(p, PASSWORD):
+            p = urllib.parse.parse_qs(self.rfile.read(n).decode()).get("p", [""])[0].strip()
+            if PASSWORD and hmac.compare_digest(p.lower(), PASSWORD.lower()):
                 self.send_response(303)
                 self.send_header("Set-Cookie", f"cp_auth={token()}; Path=/; Max-Age=2592000; HttpOnly; SameSite=Lax")
                 self.send_header("Location", "/")
