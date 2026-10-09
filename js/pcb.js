@@ -489,15 +489,9 @@ const Pcb = (() => {
   // Route with vias kept off SMD pins. Nets that cannot be finished that way are retried on their own,
   // allowing a via on their own pin as a last resort (reported, and flagged by DRC as a warning).
   function route(opt = {}) {
-    const S = Model.S, r = routeOnce(opt);
-    if (!r.failed || !r.failed.length || rules().viaInPad || opt.strictVias) return r;
-    const saved = S.rules, before = JSON.stringify(S.pcb);
-    S.rules = Object.assign({}, saved || {}, { viaInPad: true });
-    let r2;
-    try { r2 = routeOnce(Object.assign({}, opt, { keep: true })); } finally { S.rules = saved; }
-    const rescued = r.failed.filter(n => !r2.failed.includes(n));
-    if (!rescued.length) { S.pcb = JSON.parse(before); return r; }   // nothing gained: drop the attempt
-    return Object.assign({}, r2, { total: r.total, kept_tracks: r.kept_tracks, vias: S.pcb.vias.length, necked_down: [...new Set([...(r.necked_down || []), ...(r2.necked_down || [])])], via_in_pad: rescued, note: 'Via on an SMD pin was needed for: ' + rescued.join(', ') + ' (DRC warning). Optimize placement or give the router more room to avoid it.' });
+    const r = routeOnce(opt);
+    if (r.via_in_pad && r.via_in_pad.length) r.note = 'Via on an SMD pin was needed for: ' + r.via_in_pad.join(', ') + ' (DRC warning). Optimize placement or give the router more room to avoid it.';
+    return r;
   }
   function routeOnce(opt = {}) {
     const S = Model.S, cs = placed(), R = rules();
@@ -600,241 +594,426 @@ const Pcb = (() => {
     };
     const g2 = new Float64Array(L * N), came = new Int32Array(L * N), closed = new Uint8Array(L * N), tmask = new Uint8Array(L * N);
     const blockT = new Uint8Array(L * N), blockV = new Uint8Array(N), own = new Float32Array(L * N), stamp = new Int32Array(L * N);
-    let searchId = 0; const stats = { searches: 0, failed: 0, expanded: 0, maxed: 0 };
+    // soft mode (blocker discovery): copper of other routed nets is passable at a cost; softT/softV hold its owner id
+    const softT = new Int32Array(L * N), softV = new Int32Array(N);
+    let soft = false, useHist = true;
+    const hist = new Float32Array(L * N);   // negotiated congestion: corridors that stuck nets need get costlier for everyone else
+    const SOFT = 3;
+    let searchId = 0; const stats = { searches: 0, failed: 0, expanded: 0, maxed: 0, ripups: 0, restarts: 0 };
     const DX = [1, -1, 0, 0, 1, 1, -1, -1], DY = [0, 0, 1, -1, 1, -1, 1, -1], DC = [1, 1, 1, 1, Math.SQRT2, Math.SQRT2, Math.SQRT2, Math.SQRT2];
     const vr = R.viaDiameter / 2, slack = 0.3 * g;
-
-    function runAttempt(order) {
-      const tcells = preT.map(t => Object.assign({}, t)), gvias = preV.map(v => Object.assign({}, v)), viasOut = [], traces = [], routed = {}, failed = [], necked = new Set();
-      const markDisk = (map, layerOff, cx, cy, r, val = 1) => {
-        const d = disk(r);
-        for (let i = 0; i < d.length; i += 2) { const x = cx + d[i], y = cy + d[i + 1]; if (x >= 0 && y >= 0 && x < W && y < H) { const k = layerOff + y * W + x; if (map[k] < val) map[k] = val; } }
+    // routing state: kept copper is fixed; copper made here belongs to its net (t.id) and can be ripped up
+    const vip = new Set();   // nets allowed a via on their own SMD pin (last resort)
+    const st = { tcells: preT.map(t => Object.assign({ fixed: true }, t)), gvias: preV.map(v => Object.assign({ fixed: true }, v)) };
+    const markDisk = (map, layerOff, cx, cy, r, val = 1) => {
+      const d = disk(r);
+      for (let i = 0; i < d.length; i += 2) { const x = cx + d[i], y = cy + d[i + 1]; if (x >= 0 && y >= 0 && x < W && y < H) { const k = layerOff + y * W + x; if (map[k] < val) map[k] = val; } }
+    };
+    // grid rounding can eat a few µm of clearance: keep a small safety margin so DRC never sees 0.199 vs 0.2
+    const safe = Math.max(0.01, g * 0.1);
+    // Obstacle counts per trace width, kept up to date incrementally: pads, fixed (kept) copper and routed copper.
+    // A net's maps are then "counts minus its own contributions > 0", built in one linear pass.
+    const wcache = new Map();
+    const diskAdd = (map, layerOff, cx, cy, r, sgn) => {
+      const d = disk(r);
+      for (let i = 0; i < d.length; i += 2) { const x = cx + d[i], y = cy + d[i + 1]; if (x >= 0 && y >= 0 && x < W && y < H) map[layerOff + y * W + x] += sgn; }
+    };
+    function padAdd(MT, MV, p, w, sgn) {
+      const rT = w / 2 + R.clearance + safe, rV = vr + R.clearance + safe, nr = p.near, hole = R.viaDrill / 2 + R.minHoleToHole;
+      for (let k = 0; k < nr.length; k += 3) {
+        const i = nr[k], d = nr[k + 1];
+        if (d < rT) for (const l of p.layers) MT[l * N + i] += sgn;
+        if (d < rV || nr[k + 2] < hole) MV[i] += sgn;
+      }
+    }
+    function cuAdd(MT, MV, t, w, sgn) {
+      const r1 = w / 2 + t.w / 2 + R.clearance + slack, r2 = vr + t.w / 2 + R.clearance + slack;
+      for (const c of t.cells) { const x = c % W, y = (c / W) | 0; diskAdd(MT, t.l * N, x, y, r1, sgn); diskAdd(MV, 0, x, y, r2, sgn); }
+    }
+    function viaAdd(MT, MV, v, w, sgn) {
+      const rt = w / 2 + v.d / 2 + R.clearance + safe, rv = Math.max(v.d / 2 + vr + R.clearance, (v.hole ? v.d : R.viaDrill) / 2 + R.viaDrill / 2 + R.minHoleToHole);
+      for (let l = 0; l < L; l++) diskAdd(MT, l * N, v.x, v.y, rt, sgn);
+      diskAdd(MV, 0, v.x, v.y, rv, sgn);
+    }
+    function mapsFor(w) {
+      const key = w.toFixed(4); let M = wcache.get(key);
+      if (M) return M;
+      M = { w, pT: new Int32Array(L * N), pV: new Int32Array(N), fT: new Int32Array(L * N), fV: new Int32Array(N), rT: new Int32Array(L * N), rV: new Int32Array(N) };
+      for (const p of allPads) padAdd(M.pT, M.pV, p, w, 1);
+      for (const t of st.tcells) if (t.fixed) cuAdd(M.fT, M.fV, t, w, 1); else cuAdd(M.rT, M.rV, t, w, 1);
+      for (const v of st.gvias) if (v.fixed) viaAdd(M.fT, M.fV, v, w, 1); else viaAdd(M.rT, M.rV, v, w, 1);
+      wcache.set(key, M);
+      return M;
+    }
+    // routed copper added to / removed from the board
+    function track(ts, vs2, sgn) { const tt0 = Date.now(); trackI(ts, vs2, sgn); stats.tTrack = (stats.tTrack || 0) + Date.now() - tt0; }
+    function trackI(ts, vs2, sgn) { for (const M of wcache.values()) { for (const t of ts) if (!t.fixed) cuAdd(M.rT, M.rV, t, M.w, sgn); for (const v of vs2) if (!v.fixed) viaAdd(M.rT, M.rV, v, M.w, sgn); } }
+    const tmpT = new Int32Array(L * N), tmpV = new Int32Array(N);
+    // Build "where may this net's centreline / vias go" maps for width w.
+    function buildMaps(id, w) {
+      const tb0 = Date.now();
+      const M = mapsFor(w);
+      own.fill(0);
+      for (let k = 0; k < L * N; k++) tmpT[k] = M.pT[k] + M.fT[k] + (soft ? 0 : M.rT[k]);
+      for (let k = 0; k < N; k++) tmpV[k] = M.pV[k] + M.fV[k] + (soft ? 0 : M.rV[k]);
+      for (const p of allPads) if (p.id === id) padAdd(tmpT, tmpV, p, w, -1);
+      for (const t of st.tcells) if (t.id === id && (t.fixed || !soft)) cuAdd(tmpT, tmpV, t, w, -1);
+      for (const v of st.gvias) if (v.id === id && (v.fixed || !soft)) viaAdd(tmpT, tmpV, v, w, -1);
+      for (let k = 0; k < L * N; k++) blockT[k] = tmpT[k] > 0 ? 1 : 0;
+      for (let k = 0; k < N; k++) blockV[k] = tmpV[k] > 0 ? 1 : 0;
+      if (soft) { for (let k = 0; k < L * N; k++) softT[k] = M.rT[k] > 0 ? 1 : 0; for (let k = 0; k < N; k++) softV[k] = M.rV[k] > 0 ? 1 : 0; }
+      const eT = R.edgeClearance + w / 2, eV = R.edgeClearance + vr;
+      for (let i = 0; i < N; i++) { if (edge[i] < eT) { blockT[i] = 1; if (L > 1) blockT[N + i] = 1; } if (edge[i] < eV) blockV[i] = 1; }
+      for (const p of allPads) {
+        if (p.id === id) {
+          for (const c of p.cells) {
+            const i = c % N, px = (i % W) * g, py = ((i / W) | 0) * g;
+            const depth = p.shape === 'round' ? p.w / 2 - Math.hypot(px - p.x, py - p.y) : Math.min(p.w / 2 - Math.abs(px - p.x), p.h / 2 - Math.abs(py - p.y));
+            const fit = Math.max(0, 2 * depth); if (own[c] < fit) own[c] = fit;
+          }
+          // no vias on SMD pins (solder wicks into the hole; JLCPCB needs paid filled vias for that):
+          // keep vias off our own small pads, except well inside large exposed / thermal pads
+          if (!p.drill && !R.viaInPad && !vip.has(id)) {
+            const big = Math.min(p.w, p.h) >= 2 * R.viaDiameter + 0.4, nr = p.near;
+            for (let k = 0; k < nr.length; k += 3) {
+              const i = nr[k]; if (nr[k + 1] >= vr + 0.05) continue;
+              if (big && Math.max(own[i], L > 1 ? own[N + i] : 0) >= R.viaDiameter + 0.3) continue;
+              blockV[i] = 1;
+            }
+          }
+        }
+      }
+      for (const t of st.tcells) if (t.id === id) for (const c of t.cells) if (own[t.l * N + c] < t.w) own[t.l * N + c] = t.w;
+      for (const v of st.gvias) if (v.id === id) for (let l = 0; l < L; l++) markDisk(own, l * N, v.x, v.y, vr, v.d);
+      stats.tBuild = (stats.tBuild || 0) + Date.now() - tb0; stats.nBuild = (stats.nBuild || 0) + 1;
+    }
+    // which routed nets does a (soft) path run into? dilate the path by the clearance and look for their copper
+    function blockersOf(paths, w, id) {
+      const r = w / 2 + Math.max(R.traceWidth, R.powerTraceWidth, ...Object.values(R.netWidths).map(Number)) / 2 + R.clearance + slack + vr, hit = new Set(), out = new Set();
+      const d = disk(r);
+      for (const path of paths) for (const s of path) {
+        const l = s >= N ? 1 : 0, i = s - l * N, x = i % W, y = (i / W) | 0;
+        for (let k = 0; k < d.length; k += 2) { const xx = x + d[k], yy = y + d[k + 1]; if (xx >= 0 && yy >= 0 && xx < W && yy < H) hit.add(l * N + yy * W + xx); }
+      }
+      for (const t of st.tcells) if (!t.fixed && t.id !== id && !out.has(t.id)) for (const c of t.cells) if (hit.has(t.l * N + c)) { out.add(t.id); break; }
+      for (const v of st.gvias) if (!v.fixed && v.id !== id && !out.has(v.id)) for (let l = 0; l < L; l++) if (hit.has(l * N + v.y * W + v.x)) { out.add(v.id); break; }
+      return out;
+    }
+    // A* over (layer, cell). own[] = widest trace that fits inside our own copper at that cell.
+    function astar(sources, target, w, win) { const ta0 = Date.now(); const r = astarI(sources, target, w, win); stats.tAstar = (stats.tAstar || 0) + Date.now() - ta0; return r; }
+    // Cheap reachability test before A*: breadth-first flood from the target (usually the boxed-in side)
+    // until a source cell is met. Failed A* searches would otherwise explore the whole board with a heap.
+    // two floods (from the target and from the source tree) grown alternately: stops as soon as they meet, or
+    // when either side runs out of room — which is quick, because a blocked terminal is usually boxed in.
+    const visA = new Int32Array(L * N), visB = new Int32Array(L * N), qA = new Int32Array(L * N), qB = new Int32Array(L * N);
+    let reachId = 0;
+    function reachable(sources, target, wt) {
+      const rid = ++reachId, dvia = R.viaDiameter - 1e-9;
+      let ha = 0, ta = 0, hb = 0, tb = 0;
+      const pass = s => !(blockT[s] && own[s] < wt);
+      for (const s0 of sources) if (pass(s0) && visB[s0] !== rid) { visB[s0] = rid; qB[tb++] = s0; }
+      for (const t of target.cells) if (own[t] >= wt || !blockT[t]) { if (visB[t] === rid) return true; if (visA[t] !== rid) { visA[t] = rid; qA[ta++] = t; } }
+      if (!ta || !tb) return false;
+      const step = (q, h, t, mine, other) => {   // expand one cell; returns [newTail, met]
+        const s = q[h], l = s >= N ? 1 : 0, lo = l * N, i = s - lo, x = i % W, y = (i / W) | 0;
+        for (let d = 0; d < 8; d++) {
+          const nx = x + DX[d], ny = y + DY[d]; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue;
+          const ns = lo + ny * W + nx; if (mine[ns] === rid || !pass(ns)) continue;
+          if (other[ns] === rid) return -1;
+          mine[ns] = rid; q[t++] = ns;
+        }
+        if (L > 1 && !blockV[i]) {
+          const pi = padOf[i] || padOf[N + i], pad = pi ? allPads[pi - 1] : null;
+          if (!pad || pad.drill || Math.max(own[i], own[N + i]) >= dvia) {
+            const os = (1 - l) * N + i;
+            if (mine[os] !== rid && pass(os)) { if (other[os] === rid) return -1; mine[os] = rid; q[t++] = os; }
+          }
+        }
+        return t;
       };
-      // Build "where may this net's centreline / vias go" maps for width w.
-      // grid rounding can eat a few µm of clearance: keep a small safety margin so DRC never sees 0.199 vs 0.2
-      const safe = Math.max(0.01, g * 0.1);
-      function buildMaps(id, w) {
-        blockT.fill(0); blockV.fill(0); own.fill(0);
-        const eT = R.edgeClearance + w / 2, eV = R.edgeClearance + vr;
-        for (let i = 0; i < N; i++) { if (edge[i] < eT) { blockT[i] = 1; if (L > 1) blockT[N + i] = 1; } if (edge[i] < eV) blockV[i] = 1; }
-        const rT = w / 2 + R.clearance + safe, rV = vr + R.clearance + safe;
-        for (const p of allPads) {
-          if (p.id === id) {
-            for (const c of p.cells) {
-              const i = c % N, px = (i % W) * g, py = ((i / W) | 0) * g;
-              const depth = p.shape === 'round' ? p.w / 2 - Math.hypot(px - p.x, py - p.y) : Math.min(p.w / 2 - Math.abs(px - p.x), p.h / 2 - Math.abs(py - p.y));
-              const fit = Math.max(0, 2 * depth); if (own[c] < fit) own[c] = fit;
-            }
-            // no vias on SMD pins (solder wicks into the hole; JLCPCB needs paid filled vias for that):
-            // keep vias off our own small pads, except well inside large exposed / thermal pads
-            if (!p.drill && !R.viaInPad) {
-              const big = Math.min(p.w, p.h) >= 2 * R.viaDiameter + 0.4, nr = p.near;
-              for (let k = 0; k < nr.length; k += 3) {
-                const i = nr[k]; if (nr[k + 1] >= vr + 0.05) continue;
-                if (big && Math.max(own[i], L > 1 ? own[N + i] : 0) >= R.viaDiameter + 0.3) continue;
-                blockV[i] = 1;
-              }
-            }
-            continue;
-          }
-          const nr = p.near, hole = R.viaDrill / 2 + R.minHoleToHole;
-          for (let k = 0; k < nr.length; k += 3) {
-            const i = nr[k], d = nr[k + 1];
-            if (d < rT) for (const l of p.layers) blockT[l * N + i] = 1;
-            if (d < rV || nr[k + 2] < hole) blockV[i] = 1;
+      while (ha < ta && hb < tb) {
+        for (let k = 0; k < 32 && ha < ta; k++) { const r = step(qA, ha++, ta, visA, visB); if (r < 0) return true; ta = r; }
+        for (let k = 0; k < 32 && hb < tb; k++) { const r = step(qB, hb++, tb, visB, visA); if (r < 0) return true; tb = r; }
+      }
+      return false;
+    }
+    function astarI(sources, target, w, win) {
+      const sid = ++searchId, wt = w - 1e-9; stats.searches++;
+      if ((win[2] - win[0] + 1) * (win[3] - win[1] + 1) > 12000 && !reachable(sources, target, wt)) { stats.unreachable = (stats.unreachable || 0) + 1; return null; }
+      let anyT = false;
+      for (const t of target.cells) { stamp[t] = sid; g2[t] = Infinity; closed[t] = 0; tmask[t] = 0; if (own[t] >= wt || !blockT[t]) { tmask[t] = 1; anyT = true; } }
+      // aim at the nearest pad of the target terminal
+      let tp = target.pads ? target.pads[0] : target;
+      if (!anyT) { if (soft) stats.softNoTarget = (stats.softNoTarget || 0) + 1; return null; }
+      const [wx0, wy0, wx1, wy1] = win;
+      const tx = tp.x / g, ty = tp.y / g, heap = new Heap(), K = Math.SQRT2 - 1, HW = 1.15;
+      let started = 0;
+      for (const s0 of sources) {
+        if (blockT[s0] && own[s0] < wt) continue;
+        if (stamp[s0] !== sid) { stamp[s0] = sid; closed[s0] = 0; tmask[s0] = 0; }
+        g2[s0] = 0; came[s0] = -1; started++;
+        const i = s0 % N, dx = Math.abs(i % W - tx), dy = Math.abs(((i / W) | 0) - ty);
+        heap.push(HW * (Math.max(dx, dy) + K * Math.min(dx, dy)), s0);
+      }
+      if (!started) { if (soft) stats.softNoSource = (stats.softNoSource || 0) + 1; return null; }
+      let expanded = 0; const limit = soft ? Math.min(250000, L * N) : Math.min(900000, L * N);
+      const viaCost = Math.max(8, 2.5 / g), dv = R.viaDiameter - 1e-9;
+      while (heap.size) {
+        const s = heap.pop(); if (closed[s]) continue; closed[s] = 1;
+        if (tmask[s]) { stats.expanded += expanded; if (soft) stats.expSoft = (stats.expSoft || 0) + expanded; if (win[2] - win[0] === W - 1) stats.expFull = (stats.expFull || 0) + expanded; stats.big = Math.max(stats.big || 0, expanded); const path = []; for (let c = s; c !== -1; c = came[c]) path.push(c); return path.reverse(); }
+        if (++expanded > limit) { stats.expanded += expanded; stats.failed++; stats.maxed++; return null; }
+        const l = s >= N ? 1 : 0, lo = l * N, i = s - lo, x = i % W, y = (i / W) | 0, gs = g2[s] + (l ? 0.15 : 0);
+        for (let d = 0; d < 8; d++) {
+          const nx = x + DX[d], ny = y + DY[d]; if (nx < wx0 || ny < wy0 || nx > wx1 || ny > wy1) continue;
+          const ns = lo + ny * W + nx;
+          if (stamp[ns] !== sid) { stamp[ns] = sid; g2[ns] = Infinity; closed[ns] = 0; tmask[ns] = 0; }
+          else if (closed[ns]) continue;
+          if (blockT[ns] && own[ns] < wt && !tmask[ns]) continue;
+          const ng = gs + DC[d] + (useHist ? hist[ns] : 0) + (soft && softT[ns] && own[ns] < wt ? SOFT : 0);
+          if (ng < g2[ns]) {
+            g2[ns] = ng; came[ns] = s;
+            const ddx = Math.abs(nx - tx), ddy = Math.abs(ny - ty);
+            heap.push(ng + HW * (ddx > ddy ? ddx + K * ddy : ddy + K * ddx), ns);
           }
         }
-        for (const t of tcells) {
-          if (t.id === id) { for (const c of t.cells) if (own[t.l * N + c] < t.w) own[t.l * N + c] = t.w; continue; }
-          const r1 = w / 2 + t.w / 2 + R.clearance + slack, r2 = vr + t.w / 2 + R.clearance + slack;
-          for (const c of t.cells) { const x = c % W, y = (c / W) | 0; markDisk(blockT, t.l * N, x, y, r1); markDisk(blockV, 0, x, y, r2); }
-        }
-        for (const v of gvias) {
-          if (v.id === id) { for (let l = 0; l < L; l++) markDisk(own, l * N, v.x, v.y, vr, v.d); continue; }
-          for (let l = 0; l < L; l++) markDisk(blockT, l * N, v.x, v.y, w / 2 + v.d / 2 + R.clearance + safe);
-          markDisk(blockV, 0, v.x, v.y, Math.max(v.d / 2 + vr + R.clearance, (v.hole ? v.d : R.viaDrill) / 2 + R.viaDrill / 2 + R.minHoleToHole));
+        if (L > 1 && !blockV[i]) {
+          const pi = padOf[i] || (L > 1 ? padOf[N + i] : 0), pad = pi ? allPads[pi - 1] : null; // via-in-pad only inside our own pad, where the via fits
+          if (!pad || pad.drill || Math.max(own[i], L > 1 ? own[N + i] : 0) >= dv) {
+            const os = (1 - l) * N + i;
+            if (stamp[os] !== sid) { stamp[os] = sid; g2[os] = Infinity; closed[os] = 0; tmask[os] = 0; }
+            if (!closed[os]) {
+              const ng = g2[s] + viaCost + (soft && softV[i] ? SOFT * 3 : 0);
+              if (ng < g2[os]) { g2[os] = ng; came[os] = s; const ddx = Math.abs(x - tx), ddy = Math.abs(y - ty); heap.push(ng + HW * (ddx > ddy ? ddx + K * ddy : ddy + K * ddx), os); }
+            }
+          }
         }
       }
-      // A* over (layer, cell). own[] = widest trace that fits inside our own copper at that cell.
-      function astar(sources, target, w, win) {
-        const sid = ++searchId, wt = w - 1e-9; stats.searches++;
-        let anyT = false;
-        for (const t of target.cells) { stamp[t] = sid; g2[t] = Infinity; closed[t] = 0; tmask[t] = 0; if (own[t] >= wt || !blockT[t]) { tmask[t] = 1; anyT = true; } }
-        // aim at the nearest pad of the target terminal
-        let tp = target.pads ? target.pads[0] : target;
-        if (!anyT) return null;
-        const [wx0, wy0, wx1, wy1] = win;
-        const tx = tp.x / g, ty = tp.y / g, heap = new Heap(), K = Math.SQRT2 - 1, HW = 1.15;
-        let started = 0;
-        for (const s0 of sources) {
-          if (blockT[s0] && own[s0] < wt) continue;
-          if (stamp[s0] !== sid) { stamp[s0] = sid; closed[s0] = 0; tmask[s0] = 0; }
-          g2[s0] = 0; came[s0] = -1; started++;
-          const i = s0 % N, dx = Math.abs(i % W - tx), dy = Math.abs(((i / W) | 0) - ty);
-          heap.push(HW * (Math.max(dx, dy) + K * Math.min(dx, dy)), s0);
-        }
-        if (!started) return null;
-        let expanded = 0; const limit = Math.min(900000, L * N);
-        const viaCost = Math.max(8, 2.5 / g), dv = R.viaDiameter - 1e-9;
-        while (heap.size) {
-          const s = heap.pop(); if (closed[s]) continue; closed[s] = 1;
-          if (tmask[s]) { stats.expanded += expanded; const path = []; for (let c = s; c !== -1; c = came[c]) path.push(c); return path.reverse(); }
-          if (++expanded > limit) { stats.expanded += expanded; stats.failed++; stats.maxed++; return null; }
-          const l = s >= N ? 1 : 0, lo = l * N, i = s - lo, x = i % W, y = (i / W) | 0, gs = g2[s] + (l ? 0.15 : 0);
-          for (let d = 0; d < 8; d++) {
-            const nx = x + DX[d], ny = y + DY[d]; if (nx < wx0 || ny < wy0 || nx > wx1 || ny > wy1) continue;
-            const ns = lo + ny * W + nx;
-            if (stamp[ns] !== sid) { stamp[ns] = sid; g2[ns] = Infinity; closed[ns] = 0; tmask[ns] = 0; }
-            else if (closed[ns]) continue;
-            if (blockT[ns] && own[ns] < wt && !tmask[ns]) continue;
-            const ng = gs + DC[d];
-            if (ng < g2[ns]) {
-              g2[ns] = ng; came[ns] = s;
-              const ddx = Math.abs(nx - tx), ddy = Math.abs(ny - ty);
-              heap.push(ng + HW * (ddx > ddy ? ddx + K * ddy : ddy + K * ddx), ns);
-            }
-          }
-          if (L > 1 && !blockV[i]) {
-            const pi = padOf[i] || (L > 1 ? padOf[N + i] : 0), pad = pi ? allPads[pi - 1] : null; // via-in-pad only inside our own pad, where the via fits
-            if (!pad || pad.drill || Math.max(own[i], L > 1 ? own[N + i] : 0) >= dv) {
-              const os = (1 - l) * N + i;
-              if (stamp[os] !== sid) { stamp[os] = sid; g2[os] = Infinity; closed[os] = 0; tmask[os] = 0; }
-              if (!closed[os]) {
-                const ng = g2[s] + viaCost;
-                if (ng < g2[os]) { g2[os] = ng; came[os] = s; const ddx = Math.abs(x - tx), ddy = Math.abs(y - ty); heap.push(ng + HW * (ddx > ddy ? ddx + K * ddy : ddy + K * ddx), os); }
-              }
-            }
-          }
-        }
-        stats.expanded += expanded; stats.failed++;
-        return null;
-      }
-      let jobNo = 0;
-      for (const job of order) {
-        if (opt.onProgress) opt.onProgress({ net: job.net, done: jobNo, total: order.length, attempt: attemptNo });
-        jobNo++;
-        const { id } = job;
-        // each island (pads already joined by kept copper) acts as one terminal; its copper is part of the tree
-        const islandCells = isl => new Set(isl.flatMap(q => q.cells));
-        const terms = job.islands.map(isl => ({ pads: isl, x: isl.reduce((a, q) => a + q.x, 0) / isl.length, y: isl.reduce((a, q) => a + q.y, 0) / isl.length, w: Math.max(...isl.map(q => q.w)), h: Math.max(...isl.map(q => q.h)), cells: [...islandCells(isl)] }));
-        // kept tracks/vias of this net extend the terminal they touch
-        for (const t of tcells) if (t.id === id) { const tc = t.cells.map(c => t.l * N + c), hit = terms.find(T => tc.some(c => T.cells.includes(c))); if (hit) hit.cells.push(...tc); }
-        const tree = new Set(terms[0].cells), done = [terms[0]], rest = terms.slice(1), segs = [], vs = [];
-        let ok = true, mapW = null;
-        const widths = [job.w];
-        if (R.neckDown) for (const w2 of [R.traceWidth, R.minTraceWidth]) if (w2 < widths[widths.length - 1] - 1e-9) widths.push(w2);
-        while (rest.length) {
-          let bi = 0, bd = Infinity;
-          rest.forEach((T, i) => { for (const D of done) for (const p of T.pads) for (const q of D.pads) { const d = Math.hypot(p.x - q.x, p.y - q.y); if (d < bd) { bd = d; bi = i; } } });
-          const target = rest.splice(bi, 1)[0];
-          if (target.cells.some(c => tree.has(c))) { done.push(target); continue; }
-          let path = null, w = job.w;
-          const src = [...tree];
-          let bx0 = target.x / g, by0 = target.y / g, bx1 = bx0, by1 = by0;
-          for (const s of src) { const i = s % N, x = i % W, y = (i / W) | 0; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
-          const m = Math.ceil(8 / g);
-          const small = [Math.max(0, Math.floor(bx0) - m), Math.max(0, Math.floor(by0) - m), Math.min(W - 1, Math.ceil(bx1) + m), Math.min(H - 1, Math.ceil(by1) + m)];
-          const full = [0, 0, W - 1, H - 1];
-          for (const w2 of widths) {
-            if (mapW !== w2) { buildMaps(id, w2); mapW = w2; }
-            path = astar(src, target, w2, small);
-            if (!path && (small[0] > 0 || small[1] > 0 || small[2] < W - 1 || small[3] < H - 1) && w2 === widths[widths.length - 1]) path = astar(src, target, w2, full);
-            if (path) { w = w2; break; }
-          }
-          if (!path) { ok = false; continue; }
-          if (w < job.w - 1e-9) necked.add(job.net);
-          // commit
-          let run = [], runL = path[0] >= N ? 1 : 0;
-          const pt = s => { const i = s % N; return [(i % W) * g, ((i / W) | 0) * g]; };
-          const flush = endPad => {
-            if (run.length) {
-              const pts = run.map(pt);
-              const fits = p => Math.min(p.w, p.h) >= w - 1e-9; // only run to the pad centre if the trace fits inside the pad
-              const sp = padOf[run[0]]; if (sp && fits(allPads[sp - 1])) { const p = allPads[sp - 1]; pts.unshift([p.x, p.y]); }
-              if (endPad && fits(endPad)) pts.push([endPad.x, endPad.y]);
-              // straighten: replace grid staircases by the longest clear straight runs (0/45/90° where possible)
-              const lo = runL * N, wt = w - 1e-9;
-              const cellOK = (x, y) => x >= 0 && y >= 0 && x < W && y < H && !(blockT[lo + y * W + x] && own[lo + y * W + x] < wt);
-              const clear = (a, b) => {
-                const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (g * 0.5)));
-                for (let k = 0; k <= n; k++) {
-                  const fx = (a[0] + (b[0] - a[0]) * k / n) / g, fy = (a[1] + (b[1] - a[1]) * k / n) / g;
-                  const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.ceil(fx), y1 = Math.ceil(fy);
-                  if (!cellOK(x0, y0) || !cellOK(x1, y0) || !cellOK(x0, y1) || !cellOK(x1, y1)) return false;
-                }
-                return true;
-              };
-              const octo = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1]; return Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6 || Math.abs(Math.abs(dx) - Math.abs(dy)) < 1e-6; };
-              const smooth = [pts[0]];
-              for (let i = 0; i < pts.length - 1;) {
-                let j = i + 1;
-                for (let k = pts.length - 1; k > i + 1; k--) if (clear(pts[i], pts[k])) { j = k; break; }
-                const a = pts[i], b = pts[j];
-                if (!octo(a, b)) {
-                  // prefer a straight + 45° dog-leg over an odd angle
-                  const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.min(Math.abs(dx), Math.abs(dy)), sx = Math.sign(dx), sy = Math.sign(dy);
-                  const m1 = Math.abs(dx) > Math.abs(dy) ? [b[0] - sx * d, a[1]] : [a[0], b[1] - sy * d], m2 = [a[0] + sx * d, a[1] + sy * d];
-                  const m = [m1, m2].find(q => clear(a, q) && clear(q, b));
-                  if (m) smooth.push(m);
-                }
-                smooth.push(b); i = j;
-              }
-              const out = [smooth[0]];
-              for (let k = 1; k < smooth.length; k++) {
-                const a = out.length > 1 ? out[out.length - 2] : null, b = out[out.length - 1], c = smooth[k];
-                if (Math.hypot(c[0] - b[0], c[1] - b[1]) < 1e-6) continue;
-                if (a && Math.abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) < 1e-9) out[out.length - 1] = c; else out.push(c);
-              }
-              if (out.length >= 2) segs.push({ net: job.net, layer: runL ? 'B' : 'F', w: +w.toFixed(4), pts: out.map(q => [+q[0].toFixed(4), +q[1].toFixed(4)]) });
-              // the copper now follows the straightened track: re-rasterise it for clearance and for the net's tree
-              const cells = new Set();
-              for (let k = 1; k < out.length; k++) {
-                const a = out[k - 1], b = out[k], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (g * 0.5)));
-                for (let q = 0; q <= n; q++) { const x = Math.round((a[0] + (b[0] - a[0]) * q / n) / g), y = Math.round((a[1] + (b[1] - a[1]) * q / n) / g); if (x >= 0 && y >= 0 && x < W && y < H) cells.add(y * W + x); }
-              }
-              for (const s of run) if (!cells.has(s % N) && !padOf[s]) tree.delete(s);
-              for (const c of cells) { tree.add(lo + c); if (own[lo + c] < w) own[lo + c] = w; }
-              tcells.push({ id, l: runL, w, cells: [...cells] });
-            }
-            run = [];
-          };
-          for (let k = 0; k < path.length; k++) {
-            const s = path[k], l = s >= N ? 1 : 0;
-            if (l !== runL) {
-              flush(null); const i = s % N, x = i % W, y = (i / W) | 0;
-              vs.push({ net: job.net, x: +(x * g).toFixed(4), y: +(y * g).toFixed(4), d: R.viaDiameter, drill: R.viaDrill });
-              gvias.push({ id, x, y, d: R.viaDiameter });
-              for (let l2 = 0; l2 < L; l2++) markDisk(own, l2 * N, x, y, vr, R.viaDiameter);
-              const dd = disk(vr); for (let q = 0; q < dd.length; q += 2) { const xx = x + dd[q], yy = y + dd[q + 1]; if (xx >= 0 && yy >= 0 && xx < W && yy < H) for (let l2 = 0; l2 < L; l2++) tree.add(l2 * N + yy * W + xx); }
-              runL = l;
-            }
-            run.push(s); tree.add(s);
-          }
-          const lastPad = padOf[path[path.length - 1]] ? allPads[padOf[path[path.length - 1]] - 1] : null;
-          flush(lastPad);
-          for (const c of target.cells) tree.add(c);
-          done.push(target);
-        }
-        traces.push(...segs); viasOut.push(...vs);
-        if (ok) routed[job.net] = true; else failed.push(job.net);
-      }
-      return { traces, vias: viasOut, routed, failed, necked: [...necked] };
+      stats.expanded += expanded; stats.failed++; stats.expFailed = (stats.expFailed || 0) + expanded;
+      return null;
     }
 
-    let order = todo.slice().sort((a, b) => a.hpwl - b.hpwl), best = null;
-    const tries = opt.tries || 2;
-    let attemptNo = 0;
-    for (let t = 0; t < tries; t++) {
-      attemptNo = t + 1;
-      const r = runAttempt(order);
-      if (!best || r.failed.length < best.failed.length) best = r;
-      if (!r.failed.length) break;
-      const f = new Set(r.failed);
-      order = [...order.filter(j => f.has(j.net)), ...order.filter(j => !f.has(j.net))];
+    // Route one net (all its islands into one tree). dry = blocker discovery: nothing is committed, and the
+    // ids of the routed nets the paths had to cross are returned.
+    function routeNet(job, dry = false) {
+      const { id } = job, myT = [], myV = [], dryPaths = [];
+      // each island (pads already joined by kept copper) acts as one terminal; its copper is part of the tree
+      const islandCells = isl => new Set(isl.flatMap(q => q.cells));
+      const terms = job.islands.map(isl => ({ pads: isl, x: isl.reduce((a, q) => a + q.x, 0) / isl.length, y: isl.reduce((a, q) => a + q.y, 0) / isl.length, w: Math.max(...isl.map(q => q.w)), h: Math.max(...isl.map(q => q.h)), cells: [...islandCells(isl)] }));
+      // kept tracks/vias of this net extend the terminal they touch
+      for (const t of st.tcells) if (t.id === id && t.fixed) { const tc = t.cells.map(c => t.l * N + c), hit = terms.find(T => tc.some(c => T.cells.includes(c))); if (hit) hit.cells.push(...tc); }
+      const tree = new Set(terms[0].cells), done = [terms[0]], rest = terms.slice(1), segs = [], vs = [];
+      let ok = true, mapW = null, necked = false;
+      const widths = [job.w];
+      if (R.neckDown) for (const w2 of [R.traceWidth, R.minTraceWidth]) if (w2 < widths[widths.length - 1] - 1e-9) widths.push(w2);
+      while (rest.length) {
+        let bi = 0, bd = Infinity;
+        rest.forEach((T, i) => { for (const D of done) for (const p of T.pads) for (const q of D.pads) { const d = Math.hypot(p.x - q.x, p.y - q.y); if (d < bd) { bd = d; bi = i; } } });
+        const target = rest.splice(bi, 1)[0];
+        if (target.cells.some(c => tree.has(c))) { done.push(target); continue; }
+        let path = null, w = job.w;
+        const src = [...tree];
+        let bx0 = target.x / g, by0 = target.y / g, bx1 = bx0, by1 = by0;
+        for (const s of src) { const i = s % N, x = i % W, y = (i / W) | 0; if (x < bx0) bx0 = x; if (x > bx1) bx1 = x; if (y < by0) by0 = y; if (y > by1) by1 = y; }
+        const m = Math.ceil(8 / g);
+        const small = [Math.max(0, Math.floor(bx0) - m), Math.max(0, Math.floor(by0) - m), Math.min(W - 1, Math.ceil(bx1) + m), Math.min(H - 1, Math.ceil(by1) + m)];
+        const full = [0, 0, W - 1, H - 1];
+        for (const w2 of widths) {
+          if (mapW !== w2) { buildMaps(id, w2); mapW = w2; for (const t of myT) for (const c of t.cells) if (own[t.l * N + c] < t.w) own[t.l * N + c] = t.w; for (const v of myV) for (let l2 = 0; l2 < L; l2++) markDisk(own, l2 * N, v.x, v.y, vr, v.d); }
+          path = astar(src, target, w2, small);
+          if (!path && (small[0] > 0 || small[1] > 0 || small[2] < W - 1 || small[3] < H - 1) && w2 === widths[widths.length - 1]) path = astar(src, target, w2, full);
+          if (path) { w = w2; break; }
+        }
+        if (!path) { ok = false; continue; }
+        if (w < job.w - 1e-9) necked = true;
+        if (dry) dryPaths.push(path);
+        // commit
+        let run = [], runL = path[0] >= N ? 1 : 0;
+        const pt = s => { const i = s % N; return [(i % W) * g, ((i / W) | 0) * g]; };
+        const flush = endPad => {
+          if (run.length) {
+            const pts = run.map(pt);
+            const fits = p => Math.min(p.w, p.h) >= w - 1e-9; // only run to the pad centre if the trace fits inside the pad
+            const sp = padOf[run[0]]; if (sp && fits(allPads[sp - 1])) { const p = allPads[sp - 1]; pts.unshift([p.x, p.y]); }
+            if (endPad && fits(endPad)) pts.push([endPad.x, endPad.y]);
+            // straighten: replace grid staircases by the longest clear straight runs (0/45/90° where possible)
+            const lo = runL * N, wt = w - 1e-9;
+            const cellOK = (x, y) => x >= 0 && y >= 0 && x < W && y < H && !(blockT[lo + y * W + x] && own[lo + y * W + x] < wt) && !(soft && softT[lo + y * W + x] && own[lo + y * W + x] < wt);
+            const clear = (a, b) => {
+              const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (g * 0.5)));
+              for (let k = 0; k <= n; k++) {
+                const fx = (a[0] + (b[0] - a[0]) * k / n) / g, fy = (a[1] + (b[1] - a[1]) * k / n) / g;
+                const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.ceil(fx), y1 = Math.ceil(fy);
+                if (!cellOK(x0, y0) || !cellOK(x1, y0) || !cellOK(x0, y1) || !cellOK(x1, y1)) return false;
+              }
+              return true;
+            };
+            const octo = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1]; return Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6 || Math.abs(Math.abs(dx) - Math.abs(dy)) < 1e-6; };
+            const smooth = [pts[0]];
+            for (let i = 0; i < pts.length - 1;) {
+              let j = i + 1;
+              for (let k = pts.length - 1; k > i + 1; k--) if (clear(pts[i], pts[k])) { j = k; break; }
+              const a = pts[i], b = pts[j];
+              if (!octo(a, b)) {
+                // prefer a straight + 45° dog-leg over an odd angle
+                const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.min(Math.abs(dx), Math.abs(dy)), sx = Math.sign(dx), sy = Math.sign(dy);
+                const m1 = Math.abs(dx) > Math.abs(dy) ? [b[0] - sx * d, a[1]] : [a[0], b[1] - sy * d], m2 = [a[0] + sx * d, a[1] + sy * d];
+                const m = [m1, m2].find(q => clear(a, q) && clear(q, b));
+                if (m) smooth.push(m);
+              }
+              smooth.push(b); i = j;
+            }
+            const out = [smooth[0]];
+            for (let k = 1; k < smooth.length; k++) {
+              const a = out.length > 1 ? out[out.length - 2] : null, b = out[out.length - 1], c = smooth[k];
+              if (Math.hypot(c[0] - b[0], c[1] - b[1]) < 1e-6) continue;
+              if (a && Math.abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) < 1e-9) out[out.length - 1] = c; else out.push(c);
+            }
+            if (out.length >= 2) segs.push({ net: job.net, layer: runL ? 'B' : 'F', w: +w.toFixed(4), pts: out.map(q => [+q[0].toFixed(4), +q[1].toFixed(4)]) });
+            // the copper now follows the straightened track: re-rasterise it for clearance and for the net's tree
+            const cells = new Set();
+            for (let k = 1; k < out.length; k++) {
+              const a = out[k - 1], b = out[k], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (g * 0.5)));
+              for (let q = 0; q <= n; q++) { const x = Math.round((a[0] + (b[0] - a[0]) * q / n) / g), y = Math.round((a[1] + (b[1] - a[1]) * q / n) / g); if (x >= 0 && y >= 0 && x < W && y < H) cells.add(y * W + x); }
+            }
+            for (const s of run) if (!cells.has(s % N) && !padOf[s]) tree.delete(s);
+            for (const c of cells) { tree.add(lo + c); if (own[lo + c] < w) own[lo + c] = w; }
+            myT.push({ id, l: runL, w, cells: [...cells] });
+          }
+          run = [];
+        };
+        for (let k = 0; k < path.length; k++) {
+          const s = path[k], l = s >= N ? 1 : 0;
+          if (l !== runL) {
+            flush(null); const i = s % N, x = i % W, y = (i / W) | 0;
+            vs.push({ net: job.net, x: +(x * g).toFixed(4), y: +(y * g).toFixed(4), d: R.viaDiameter, drill: R.viaDrill });
+            myV.push({ id, x, y, d: R.viaDiameter });
+            for (let l2 = 0; l2 < L; l2++) markDisk(own, l2 * N, x, y, vr, R.viaDiameter);
+            const dd = disk(vr); for (let q = 0; q < dd.length; q += 2) { const xx = x + dd[q], yy = y + dd[q + 1]; if (xx >= 0 && yy >= 0 && xx < W && yy < H) for (let l2 = 0; l2 < L; l2++) tree.add(l2 * N + yy * W + xx); }
+            runL = l;
+          }
+          run.push(s); tree.add(s);
+        }
+        const lastPad = padOf[path[path.length - 1]] ? allPads[padOf[path[path.length - 1]] - 1] : null;
+        flush(lastPad);
+        for (const c of target.cells) tree.add(c);
+        done.push(target);
+      }
+      if (!dry) { st.tcells.push(...myT); st.gvias.push(...myV); track(myT, myV, 1); }
+      const blockers = dry ? blockersOf(dryPaths, job.w, id) : new Set();
+      const len = segs.reduce((a, s) => { for (let i = 1; i < s.pts.length; i++) a += Math.hypot(s.pts[i][0] - s.pts[i - 1][0], s.pts[i][1] - s.pts[i - 1][1]); return a; }, 0);
+      return { segs, vs, ok, necked, blockers, len, paths: dry ? dryPaths : null };
     }
-    for (const n of already) best.routed[n] = true;
-    S.pcb = { traces: oldTraces.concat(best.traces), vias: oldVias.concat(best.vias), pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: best.routed };
-    return { routed: Object.keys(best.routed).length, total: jobs.length, kept_tracks: oldTraces.length, failed: best.failed, necked_down: best.necked, vias: best.vias.length, board: S.board, grid_mm: +g.toFixed(3), search: stats, rules: { preset: R.preset, trace: R.traceWidth, power: R.powerTraceWidth, clearance: R.clearance, via: `${R.viaDiameter}/${R.viaDrill}`, layers: L } };
+
+    // ---------- negotiated rip-up and reroute, within a time budget ----------
+    const t0 = Date.now(), budget = Math.max(1, +(opt.time_limit_s ?? opt.timeLimit ?? 90)) * 1000, deadline = t0 + budget;
+    const byId = {}; for (const j of todo) byId[j.id] = j;
+    const result = {};   // net → routeNet result (committed)
+    const rip = id => {
+      const gt = st.tcells.filter(t => !t.fixed && t.id === id), gv = st.gvias.filter(v => !v.fixed && v.id === id);
+      track(gt, gv, -1);
+      st.tcells = st.tcells.filter(t => t.fixed || t.id !== id); st.gvias = st.gvias.filter(v => v.fixed || v.id !== id); delete result[byId[id].net];
+    };
+    const commit = job => (result[job.net] = routeNet(job, false)).ok;
+    const failedJobs = () => todo.filter(j => !result[j.net] || !result[j.net].ok);
+    const score = () => { let f = 0, len = 0, nv = 0; for (const j of todo) { const r = result[j.net]; if (!r || !r.ok) f++; if (r) { len += r.len; nv += r.vs.length; } } return { f, cost: f * 1e7 + len + nv * 1.5 }; };
+    const snap = () => ({ t: st.tcells.slice(), v: st.gvias.slice(), r: Object.assign({}, result) });
+    const restore = s => {
+      const curT = new Set(st.tcells), curV = new Set(st.gvias), snT = new Set(s.t), snV = new Set(s.v);
+      track(st.tcells.filter(t => !snT.has(t)), st.gvias.filter(v => !snV.has(v)), -1);
+      track(s.t.filter(t => !curT.has(t)), s.v.filter(v => !curV.has(v)), 1);
+      st.tcells = s.t.slice(); st.gvias = s.v.slice(); for (const k in result) delete result[k]; Object.assign(result, s.r);
+    };
+    let seed = 9871; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    let attemptNo = 1, iter = 0;
+    const report = (net, extra) => opt.onProgress && opt.onProgress(Object.assign({ net, attempt: attemptNo, iteration: iter, unrouted: failedJobs().length, of: todo.length, elapsed: +((Date.now() - t0) / 1000).toFixed(1), budget: budget / 1000 }, extra));
+    const materialize = () => {
+      const traces = [], vias = [], routed = {}, failed = [], necked = [];
+      for (const j of todo) { const r = result[j.net]; if (!r) { failed.push(j.net); continue; } traces.push(...r.segs); vias.push(...r.vs); if (r.ok) routed[j.net] = true; else failed.push(j.net); if (r.necked) necked.push(j.net); }
+      for (const n of already) routed[n] = true;
+      return { traces, vias, routed, failed, necked };
+    };
+    const publish = () => { if (opt.onBest) { const m = materialize(); opt.onBest({ traces: oldTraces.concat(m.traces), vias: oldVias.concat(m.vias), routed: m.routed, unrouted: m.failed.length }); } };
+
+    // pass 1: short nets first
+    let order = todo.slice().sort((a, b) => a.hpwl - b.hpwl);
+    order.forEach((job, k) => { report(job.net, { done: k, total: order.length, phase: 'route' }); commit(job); });
+    let best = snap(), bestScore = score();
+    // pass 2 (as before): the nets that failed go first
+    if (bestScore.f && Date.now() < deadline) {
+      attemptNo = 2;
+      const fails = new Set(failedJobs().map(j => j.net));
+      for (const j of todo) rip(j.id);
+      const ord = order.filter(j => fails.has(j.net)).concat(order.filter(j => !fails.has(j.net)));
+      ord.forEach((job, k) => { report(job.net, { done: k, total: ord.length, phase: 'route' }); commit(job); });
+      const sc = score();
+      if (sc.cost < bestScore.cost - 1e-6) { best = snap(); bestScore = sc; } else restore(best);
+    }
+    publish();
+    const hard = new Set(), ripped = {}, tries = {};
+    let stale = 0, noCand = 0;
+    while (bestScore.f > 0 && Date.now() < deadline && opt.ripup !== false) {
+      iter++;
+      const cand = failedJobs().filter(j => !hard.has(j.net));
+      // every remaining failure is blocked by pads / fixed copper even with the other nets ignored: a couple of fresh orders, then stop
+      if (!cand.length) { if (++noCand > 2) break; } else noCand = 0;
+      if (cand.length && stale < 25) {
+        const F = cand[Math.floor(rnd() * cand.length)];
+        report(F.net, { phase: 'ripup' });
+        const before = snap(), bs = score();
+        rip(F.id);
+        soft = true; const probe = routeNet(F, true); soft = false;
+        let blockers = [...probe.blockers].filter(id => byId[id] && id !== F.id);
+        // remember the corridor F needs: path cells and their clearance halo become more expensive
+        if (probe.ok && probe.paths) {
+          const halo = disk(F.w / 2 + R.traceWidth / 2 + R.clearance + slack);
+          for (const path of probe.paths) for (const s of path) {
+            const l = s >= N ? 1 : 0, i = s - l * N, x = i % W, y = (i / W) | 0;
+            for (let k = 0; k < halo.length; k += 2) { const xx = x + halo[k], yy = y + halo[k + 1]; if (xx >= 0 && yy >= 0 && xx < W && yy < H) { const c = l * N + yy * W + xx; if (hist[c] < 8) hist[c] += 0.4; } }
+          }
+        }
+        if (!probe.ok) {   // blocked even when the other routed nets are ignored
+          stats.probeFail = (stats.probeFail || 0) + 1; restore(before);
+          if (!R.viaInPad && !opt.strictVias && !vip.has(F.id)) vip.add(F.id); else hard.add(F.net);
+          continue;
+        }
+        if (!blockers.length) { commit(F); }
+        else {
+          // nets that have been ripped up often get rerouted first next time (negotiation), and fewer blockers are tried first
+          // rip the cheapest blockers (small nets) first; big nets (GND…) are expensive to re-route
+          const cost = id => byId[id].pads.length * 4 + byId[id].hpwl / 10 + (ripped[byId[id].net] || 0);
+          blockers.sort((a, b) => cost(a) - cost(b));
+          const small = blockers.filter(id => byId[id].pads.length <= 8);
+          blockers = (small.length ? small : blockers).slice(0, rnd() < 0.5 ? 2 : 4);
+          for (const id of blockers) { rip(id); ripped[byId[id].net] = (ripped[byId[id].net] || 0) + 1; stats.ripups++; }
+          useHist = false; commit(F); useHist = true;
+          const again = blockers.map(id => byId[id]).sort((a, b) => (ripped[b.net] || 0) - (ripped[a.net] || 0) || a.hpwl - b.hpwl);
+          for (const j of again) commit(j);
+          // nets that still fail get one more try now that everything else is in place
+          for (const j of again.concat([F])) if (!result[j.net] || !result[j.net].ok) { rip(j.id); commit(j); }
+        }
+        if (!result[F.net] || !result[F.net].ok) { tries[F.net] = (tries[F.net] || 0) + 1; if (tries[F.net] >= 3 && !R.viaInPad && !opt.strictVias) vip.add(F.id); }
+        const sc = score();
+        // accept improvements; accept equal-failure moves now and then to wander out of local minima
+        if (sc.cost < bs.cost - 1e-6 || (sc.f <= bs.f && rnd() < 0.3)) { if (sc.cost < bestScore.cost - 1e-6) { best = snap(); bestScore = sc; stale = 0; publish(); } else stale++; }
+        else { restore(before); stale++; }
+      }
+      // stuck: restart from the best result with the hardest nets routed first
+      if (stale >= 25 || !cand.length) {
+        restore(best); stale = 0; attemptNo++; stats.restarts++; hard.clear();
+        const fails = new Set(failedJobs().map(j => j.net));
+        const keepNets = todo.filter(j => !fails.has(j.net));
+        const shuffle = keepNets.map(j => [j, rnd()]).sort((a, b) => a[1] - b[1]).map(x => x[0]);
+        for (const j of todo) rip(j.id);
+        const ord = todo.filter(j => fails.has(j.net)).concat(attemptNo % 2 ? keepNets.sort((a, b) => a.hpwl - b.hpwl) : shuffle);
+        ord.forEach((job, k) => { report(job.net, { done: k, total: ord.length, phase: 'restart' }); commit(job); });
+        const sc = score();
+        if (sc.cost < bestScore.cost - 1e-6) { best = snap(); bestScore = sc; publish(); }
+      }
+    }
+    restore(best);
+    const fin = materialize();
+    S.pcb = { traces: oldTraces.concat(fin.traces), vias: oldVias.concat(fin.vias), pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: fin.routed };
+    return { routed: Object.keys(fin.routed).length, total: jobs.length, kept_tracks: oldTraces.length, failed: fin.failed, necked_down: fin.necked, vias: fin.vias.length, board: S.board, grid_mm: +g.toFixed(3), seconds: +((Date.now() - t0) / 1000).toFixed(1), passes: attemptNo, ripup_iterations: iter, via_in_pad: todo.filter(j => vip.has(j.id) && fin.routed[j.net]).map(j => j.net), blocked_by_layout: [...hard].filter(n => fin.failed.includes(n)), search: stats, rules: { preset: R.preset, trace: R.traceWidth, power: R.powerTraceWidth, clearance: R.clearance, via: `${R.viaDiameter}/${R.viaDrill}`, layers: L } };
   }
 
   // ---------- DRC (exact geometry) ----------
@@ -1124,7 +1303,7 @@ const Pcb = (() => {
     let it = 0;
     const evaluate = () => {
       S.pcb = { traces: manual.traces.slice(), vias: manual.vias.slice(), pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: {} };
-      route({ tries: 1, onProgress: opt.onProgress ? p => opt.onProgress(Object.assign({ iteration: it, of: maxIt }, p)) : null });
+      route({ time_limit_s: opt.route_time_s || 6, strictVias: true, onProgress: opt.onProgress ? p => opt.onProgress(Object.assign({}, p, { iteration: it, of: maxIt, optimizing: true })) : null });
       const st = status(); return { failed: st.unrouted.length, len: st.trace_length_mm, unrouted: st.unrouted };
     };
     const better = (a, b) => a.failed < b.failed || (a.failed === b.failed && a.len < b.len - 0.5);
