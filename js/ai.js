@@ -333,7 +333,8 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   }
   // one plain request (no tools, no chat history) — used for quick structured jobs like AI placement
   async function complete(system, text, opts = {}) {
-    const own = new AbortController(), t = setTimeout(() => own.abort(), 180000);
+    const own = new AbortController(), t = setTimeout(() => own.abort(), opts.timeoutMs || 240000);
+    if (opts.signal) opts.signal.addEventListener('abort', () => own.abort());
     // JSON mode + a generous output limit (some servers stop at a small default); retried without JSON mode if refused
     const json = opts.json && currentModel().provider !== 'anthropic';
     try {
@@ -345,7 +346,10 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   const stop = () => controller && controller.abort();
   const busy = () => !!controller;
   const reset = () => { history = []; lastIn = null; persist(); };
+  // a message from an app feature (e.g. AI place) shown in the chat
+  const note = (text, model) => { history.push({ role: 'assistant', text, model: model || currentModel().label, mode: 'agent' }); persist(); };
+  const modelReady = () => { const m = currentModel(); return m.provider === 'anthropic' ? !!settings.anthropicKey : !!(settings.oaiBase && settings.oaiModels.split(',').map(s => s.trim()).includes(m.id)); };
 
   const partsApi = Engine.partsApi, loadPart = Engine.loadPart;
-  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, complete, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
+  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, complete, note, modelReady, currentModel, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
 })();

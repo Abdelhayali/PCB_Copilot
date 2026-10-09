@@ -263,7 +263,7 @@ const App = (() => {
   // AI placement: the copilot plans the floor plan with place_footprints, then routes and fixes what is left
   // AI place: ONE model request (compact parts + nets list → JSON floor plan), then legalise + short polish + route.
   // Much faster than a tool-calling conversation, and works with small / local models.
-  let aiPlacing = false;
+  let aiPlacing = false, aiPlaceCtl = null;
   // pull {"placements":[…]} out of a model reply (reasoning text, code fences or braces before it are ignored)
   function parsePlan(text) {
     const t = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '');
@@ -281,12 +281,22 @@ const App = (() => {
   async function aiPlace() {
     const S = Model.S;
     if (!S.components.length) { toast('Add parts first'); return; }
-    const quick = () => runRouter({ place: S.board.w > 0 ? { w: S.board.w, h: S.board.h } : { fit: true }, opt: { noRoute: true } }).then(() => { Pcb.fit(); toast('Placed (quick place) — press Route'); });
-    if (!AI.settings.anthropicKey && !AI.settings.oaiModels) { toast('AI place needs a model (⚙ Settings) — using quick place instead'); return quick(); }
-    if (aiPlacing) return;
+    if (aiPlacing) { toast('AI place is already running — see the progress bar (Stop to cancel)'); return; }
+    const report = msg => { AI.note(msg, '✦ AI place'); renderChat(); };
+    const quick = why => {
+      report(`**AI place → quick place instead.** ${why}`);
+      return runRouter({ place: S.board.w > 0 ? { w: S.board.w, h: S.board.h } : { fit: true }, opt: { noRoute: true } }).then(() => { Pcb.fit(); toast('Placed with quick place — press Route', 6000); });
+    };
+    if (!AI.modelReady()) return quick('No AI model is set up in this browser (⚙ Settings → API key / model). Settings are stored per browser, so a phone or another browser needs its own.');
     aiPlacing = true; showView('pcb');
+    const ctl = new AbortController(), t0 = Date.now(), model = AI.currentModel().label;
+    aiPlaceCtl = ctl;
+    const busy = $('#routeBusy'), msgEl = $('#routeMsg');
+    busy.classList.remove('hidden');
+    const tick = setInterval(() => { msgEl.textContent = `✦ AI is planning the layout · ${model} · ${Math.round((Date.now() - t0) / 1000)} s`; }, 500);
+    let text = '';
     try {
-      if (!(S.board.w > 0) || !Pcb.placed().length) await runRouter({ place: { fit: true }, opt: { noRoute: true } });   // board + footprints first
+      if (!(S.board.w > 0) || !Pcb.placed().length) { clearInterval(tick); await runRouter({ place: { fit: true }, opt: { noRoute: true } }); busy.classList.remove('hidden'); }
       const lay = await Engine.exec('get_pcb_layout', { pins: false });
       const idx = Model.pinIndex(), nets = {};
       for (const [n, keys] of Object.entries(Model.S.nets)) { const refs = [...new Set(keys.map(k => k.split('.')[0]))]; if (refs.length >= 2) nets[n] = refs; }
@@ -294,25 +304,26 @@ const App = (() => {
       const prompt = `Board: ${lay.board.w} x ${lay.board.h} mm, origin top-left, x right, y down. Keep every part fully inside, 1 mm from the edges, 0.5 mm apart.\n\nParts (ref | value | type | size | pins):\n${parts}\n\nNets (which parts connect):\n${Object.entries(nets).map(([n, r]) => `${n}: ${r.join(' ')}`).join('\n')}\n\n` +
         `Plan the placement like an experienced PCB layout engineer so routing is short and easy:\n- connectors on a board edge (give "edge": left|right|top|bottom), USB / power input together with the regulator\n- the biggest IC / module near the centre\n- each decoupling capacitor right next to the IC it serves (within ~2 mm)\n- crystals next to the MCU clock pins, LEDs with their resistors, buttons with their pull-ups\n- parts that share nets close together, grouped by function along the signal flow\n` +
         `Reply with JSON only, no explanation: {"placements":[{"ref":"U1","x":20,"y":15,"rot":0},{"ref":"J1","x":2,"y":15,"rot":90,"edge":"left"}]} — x, y = part centre in mm, rot 0|90|180|270. Include every part.`;
-      toast('✦ AI is planning the layout…', 120000);
-      // Qwen-style models: skip the long hidden reasoning for this structured job
       const noThink = /qwen|deepseek-r|qwq/i.test(AI.settings.model) ? '\n/no_think' : '';
-      const text = await AI.complete('You are an expert PCB layout engineer. You answer with JSON only.', prompt + noThink, { json: true, maxTokens: 8192 });
+      text = await AI.complete('You are an expert PCB layout engineer. You answer with JSON only.', prompt + noThink, { json: true, maxTokens: 8192, signal: ctl.signal });
       window.__lastAiPlace = text;
       const plan = parsePlan(text);
       const list = plan && Array.isArray(plan.placements) ? plan.placements.filter(p => p && Model.comp(p.ref) && isFinite(+p.x) && isFinite(+p.y)) : [];
-      if (list.length < Math.max(1, lay.footprints.length * 0.6)) throw new Error('the model did not return a usable placement — using quick place instead');
+      if (list.length < Math.max(1, lay.footprints.length * 0.6)) throw Object.assign(new Error(`The model's reply had no usable placement (${list.length} of ${lay.footprints.length} parts).`), { unusable: true });
       for (const p of list) { p.x = +p.x; p.y = +p.y; p.rot = [0, 90, 180, 270].includes(+p.rot) ? +p.rot : 0; if (!['left', 'right', 'top', 'bottom'].includes(p.edge)) delete p.edge; }
       const r = await Engine.exec('place_footprints', { placements: list, refine: true });
-      toast(`✦ AI placed ${r.placed} parts${r.overlaps.length ? ` (${r.overlaps.length} overlaps resolved)` : ''} — routing…`, 5000);
+      const secs = Math.round((Date.now() - t0) / 1000);
+      clearInterval(tick);
       const rr = await runRouter({ opt: {} }); Pcb.fit();
       const ro = rr && rr.routing;
-      toast(ro ? `✦ AI place + route: ${ro.routed}/${ro.total} nets${ro.failed && ro.failed.length ? ' — unrouted: ' + ro.failed.join(', ') + ' (try ✨ Optimize)' : ''}` : 'AI place done', 8000);
+      report(`**AI place** with ${model} (${secs} s): placed ${r.placed} parts${list.length < lay.footprints.length ? ` (${lay.footprints.length - list.length} missing from the reply were kept)` : ''}${r.overlaps.length ? `, ${r.overlaps.length} overlaps resolved` : ''}, polished, then routed${ro ? `: **${ro.routed}/${ro.total} nets**${ro.failed && ro.failed.length ? ` — unrouted: ${ro.failed.join(', ')} → try ✨ Optimize` : ''}` : ''}.`);
+      toast(ro ? `✦ AI place + route: ${ro.routed}/${ro.total} nets` : 'AI place done', 8000);
       showDrc();
     } catch (e) {
-      toast('AI place: ' + e.message, 6000);
-      if (/usable placement/.test(e.message)) await quick().catch(() => { });
-    } finally { aiPlacing = false; }
+      const why = ctl.signal.aborted ? 'Stopped.' : e.unusable ? e.message + (text ? ` Reply started with: \`${text.replace(/\s+/g, ' ').slice(0, 160)}…\`` : '') : 'The model request failed: ' + e.message;
+      clearInterval(tick); busy.classList.add('hidden');
+      if (ctl.signal.aborted) report('**AI place** stopped.'); else await quick(why).catch(() => { });
+    } finally { clearInterval(tick); aiPlacing = false; aiPlaceCtl = null; if (!worker) busy.classList.add('hidden'); }
   }
 
   // ---------- Gerber export: DRC first, then download or fix ----------
@@ -730,6 +741,7 @@ const App = (() => {
     $('#shDraw').onclick = () => { $('#shapeModal').classList.add('hidden'); showView('pcb'); PcbView.drawOutline(+$('#shR').value); };
     initGerberCheck();
     $('#routeCancel').onclick = () => {
+      if (aiPlaceCtl && !worker) { aiPlaceCtl.abort(); return; }   // stop an AI place request
       if (!worker) return;
       worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden');
       if (routeBest) {   // stop = keep the best routing found so far
