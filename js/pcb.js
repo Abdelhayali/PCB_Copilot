@@ -455,6 +455,7 @@ const Pcb = (() => {
     for (const k of NUM_KEYS) if (u[k] != null && u[k] !== '') { const v = +u[k]; if (!(v > 0 && v < 20)) throw new Error(`${k} must be a positive number in mm`); next[k] = v; }
     if (u.layers != null) { if (![1, 2].includes(+u.layers)) throw new Error('layers must be 1 or 2'); next.layers = +u.layers; }
     if (u.neckDown != null) next.neckDown = !!u.neckDown;
+    if (u.viaInPad != null) next.viaInPad = !!u.viaInPad;
     if (u.netWidths) {
       next.netWidths = Object.assign({}, base.netWidths || {});
       for (const [n, v] of Object.entries(u.netWidths)) { if (v == null || v === '' || +v === 0) delete next.netWidths[n]; else next.netWidths[n] = +v; }
@@ -485,7 +486,20 @@ const Pcb = (() => {
     return Math.hypot(dx, dy);
   }
 
+  // Route with vias kept off SMD pins. Nets that cannot be finished that way are retried on their own,
+  // allowing a via on their own pin as a last resort (reported, and flagged by DRC as a warning).
   function route(opt = {}) {
+    const S = Model.S, r = routeOnce(opt);
+    if (!r.failed || !r.failed.length || rules().viaInPad || opt.strictVias) return r;
+    const saved = S.rules, before = JSON.stringify(S.pcb);
+    S.rules = Object.assign({}, saved || {}, { viaInPad: true });
+    let r2;
+    try { r2 = routeOnce(Object.assign({}, opt, { keep: true })); } finally { S.rules = saved; }
+    const rescued = r.failed.filter(n => !r2.failed.includes(n));
+    if (!rescued.length) { S.pcb = JSON.parse(before); return r; }   // nothing gained: drop the attempt
+    return Object.assign({}, r2, { total: r.total, kept_tracks: r.kept_tracks, vias: S.pcb.vias.length, necked_down: [...new Set([...(r.necked_down || []), ...(r2.necked_down || [])])], via_in_pad: rescued, note: 'Via on an SMD pin was needed for: ' + rescued.join(', ') + ' (DRC warning). Optimize placement or give the router more room to avoid it.' });
+  }
+  function routeOnce(opt = {}) {
     const S = Model.S, cs = placed(), R = rules();
     if (!cs.length || !S.board.w) throw new Error('Place the components first (generate_pcb / Auto-place)');
     const L = R.layers === 1 ? 1 : 2;
@@ -610,6 +624,16 @@ const Pcb = (() => {
               const i = c % N, px = (i % W) * g, py = ((i / W) | 0) * g;
               const depth = p.shape === 'round' ? p.w / 2 - Math.hypot(px - p.x, py - p.y) : Math.min(p.w / 2 - Math.abs(px - p.x), p.h / 2 - Math.abs(py - p.y));
               const fit = Math.max(0, 2 * depth); if (own[c] < fit) own[c] = fit;
+            }
+            // no vias on SMD pins (solder wicks into the hole; JLCPCB needs paid filled vias for that):
+            // keep vias off our own small pads, except well inside large exposed / thermal pads
+            if (!p.drill && !R.viaInPad) {
+              const big = Math.min(p.w, p.h) >= 2 * R.viaDiameter + 0.4, nr = p.near;
+              for (let k = 0; k < nr.length; k += 3) {
+                const i = nr[k]; if (nr[k + 1] >= vr + 0.05) continue;
+                if (big && Math.max(own[i], L > 1 ? own[N + i] : 0) >= R.viaDiameter + 0.3) continue;
+                blockV[i] = 1;
+              }
             }
             continue;
           }
@@ -883,6 +907,13 @@ const Pcb = (() => {
       objs.push({ s: { k: 'circ', c: [v.x, v.y], r: v.d / 2 }, net: v.net || '~v' + S.pcb.vias.indexOf(v), layers: ['F', 'B'], what: `via ${v.net || '(no net)'}`, drill: v.drill, x: v.x, y: v.y });
       if (v.drill < R.minViaDrill - 1e-6) add('via', `Via drill ${v.drill} < ${R.minViaDrill} mm`, v.x, v.y);
       if ((v.d - v.drill) / 2 < R.minAnnularRing - 1e-6) add('via', `Via annular ring ${((v.d - v.drill) / 2).toFixed(3)} < ${R.minAnnularRing} mm`, v.x, v.y);
+      // via on an SMD pad of its own net: solder wicks into the hole (needs filled/capped vias at the fab)
+      if (!R.viaInPad) for (const c of cs) for (const p of padsOf(c, idx)) {
+        if (p.drill || p.net !== v.net || padDist(p, v.x, v.y) >= v.d / 2) continue;
+        const big = Math.min(p.w, p.h) >= 2 * v.d + 0.4, depth = Math.min(p.w / 2 - Math.abs(v.x - p.x), p.h / 2 - Math.abs(v.y - p.y));
+        if (big && depth >= v.d / 2 + 0.15) continue; // thermal via well inside an exposed pad
+        add('via-in-pad', `Via on SMD pad ${p.key} (${v.net}) — solder wicks into the hole; move the via off the pin (re-route) or allow via-in-pad in the rules (filled vias cost extra at JLCPCB)`, v.x, v.y, 'warning');
+      }
     }
     (S.pcb.holes || []).forEach((h, i) => objs.push({ s: { k: 'circ', c: [h.x, h.y], r: h.d / 2 }, net: '~hole' + i, layers: ['F', 'B'], what: `mounting hole ${i + 1}`, drill: h.d, x: h.x, y: h.y }));
     const boxes = objs.map(o => bboxOf(o.s));
