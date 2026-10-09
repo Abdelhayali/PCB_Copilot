@@ -236,6 +236,8 @@ input.warnin { border-color: var(--warn); }
 .dlg .edpad label input, .dlg .edpad label select { width: 72px; display: block; }
 .dlg .edmeta label input { width: 100%; }
 
+.edgebtns button.on { border-color: var(--accent); color: #fff; background: #2f6bff33; }
+#gbList { max-height: 45vh; overflow: auto; }
 /* EasyEDA-style PCB editor */
 #pcbSvg { background: #000; }
 .tsep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
@@ -276,3 +278,5 @@ input.warnin { border-color: var(--warn); }
 #layerPanel.collapsed #layerRows, #layerPanel.collapsed .ldim { display: none; }
 #pcbPalette.collapsed .tbtn span { display: none; }
 .edgebtns button { flex: 1; padding: 3px 4px; font-size: 11px; }
+#updBar { position: fixed; top: 54px; left: 50%; transform: translateX(-50%); z-index: 80; background: #2f6bff; color: #fff; padding: 8px 14px; border-radius: 8px; box-shadow: 0 6px 20px #0008; font-weight: 600; }
+#updBar button { margin-left: 10px; background: #fff; color: #1b2a55; border: 0; font-weight: 700; }

@@ -98,6 +98,10 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, b'{"ok":true}', "application/json")
         if PROXY_RE.match(path):
             return self._proxy()
+        if path == "/api/version":  # changes whenever the app files change → open tabs offer a reload
+            files = ["index.html", "styles.css"] + ["js/" + f for f in os.listdir("js") if f.endswith(".js")]
+            v = max(os.path.getmtime(f) for f in files if os.path.exists(f))
+            return self._send(200, json.dumps({"version": str(int(v))}).encode(), "application/json")
         if path.startswith("/api/parts/"):
             return self._parts(path)
         if path.startswith(("/api/projects", "/api/library")):

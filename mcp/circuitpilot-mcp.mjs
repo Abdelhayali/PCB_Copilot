@@ -80,7 +80,7 @@ const EXTRA = [
   { name: 'open_project', description: 'Make a project current (by id or name). All design tools act on the current project; the browser app shows changes live.', input_schema: { type: 'object', required: ['project'], properties: { project: { type: 'string', description: 'Project id or name' } } } },
   { name: 'create_project', description: 'Create a new empty project and make it current.', input_schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, knowledge_folder: { type: 'string', description: 'Optional knowledge folder path' } } } },
   { name: 'rename_project', description: 'Rename the current project.', input_schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } },
-  { name: 'export_gerbers', description: 'Write Gerber + Excellon drill files (and a .zip for the fab) for the current project PCB into a folder on this machine.', input_schema: { type: 'object', required: ['out_dir'], properties: { out_dir: { type: 'string', description: 'Absolute folder path (created if missing)' } } } },
+  { name: 'export_gerbers', description: 'Run DRC, then write Gerber (copper, mask, paste, silkscreen, outline) + Excellon drill files and a .zip for the fab into a folder on this machine. Refuses when DRC has errors unless force is true.', input_schema: { type: 'object', required: ['out_dir'], properties: { out_dir: { type: 'string', description: 'Absolute folder path (created if missing)' }, force: { type: 'boolean', description: 'export even with DRC errors' } } } },
   { name: 'get_bom', description: 'Bill of materials of the current project as CSV text (qty, refs, type, value, footprint, LCSC part).', input_schema: { type: 'object', properties: {} } },
 ];
 const TOOLS = [...EXTRA, ...Engine.TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema }))];
@@ -104,12 +104,14 @@ async function callTool(name, input = {}) {
     }
     case 'rename_project': return withProject(() => { Model.mutate(() => { Model.S.name = input.name; }); return { ok: true, name: input.name }; });
     case 'export_gerbers': return withProject(async () => {
+      const d = Pcb.drc();
+      if (d.errors && !input.force) return { exported: false, drc: d.summary, errors: d.violations.filter(v => v.severity === 'error').slice(0, 20).map(v => v.msg), hint: 'Fix these (route_pcb, optimize_pcb, place_footprint) or call again with force: true' };
       const files = Pcb.gerbers(), dir = path.resolve(String(input.out_dir || ''));
       fs.mkdirSync(dir, { recursive: true });
       for (const [n, txt] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), txt);
       const zipPath = path.join(dir, (Model.S.name || 'board').replace(/[^\w.-]+/g, '_') + '-gerbers.zip');
       fs.writeFileSync(zipPath, Buffer.from(await ctx.makeZip(files).arrayBuffer()));
-      return { folder: dir, files: Object.keys(files), zip: zipPath };
+      return { exported: true, drc: d.summary, warnings: d.violations.filter(v => v.severity !== 'error').slice(0, 10).map(v => v.msg), folder: dir, files: Object.keys(files), zip: zipPath };
     });
     case 'get_bom': return withProject(() => {
       const g = {};

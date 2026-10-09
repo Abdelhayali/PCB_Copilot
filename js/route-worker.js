@@ -5,10 +5,15 @@ self.onmessage = e => {
   const { state, opt = {}, place } = e.data;
   try {
     Model.load(state);
-    const placement = place ? Pcb.autoPlace(place) : null;
-    const routing = opt.noRoute ? null : Pcb.route(Object.assign({}, opt, { onProgress: p => self.postMessage(Object.assign({ type: 'progress' }, p)) }));
+    const onProgress = p => self.postMessage(Object.assign({ type: 'progress' }, p));
+    let placement = null, routing = null, optimized = null;
+    if (e.data.optimize) optimized = Pcb.optimize(Object.assign({}, e.data.optimize, { onProgress }));
+    else {
+      placement = place ? Pcb.autoPlace(place) : null;
+      routing = opt.noRoute ? null : Pcb.route(Object.assign({}, opt, { onProgress }));
+    }
     self.postMessage({
-      type: 'done', placement, routing, pcb: Model.S.pcb, board: Model.S.board,
+      type: 'done', placement, routing, optimized, pcb: Model.S.pcb, board: Model.S.board,
       positions: Model.S.components.filter(c => c.pcb).map(c => [c.ref, c.pcb]),
     });
   } catch (err) { self.postMessage({ type: 'error', message: err.message }); }

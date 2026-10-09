@@ -126,6 +126,7 @@ const App = (() => {
         <label>Footprint<select id="pFp">${fps.map(f => `<option ${f === c.footprint ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
         <div class="row"><button id="pRot">⟳ Rotate (R)</button><button id="pDel" class="danger">Delete</button></div>
+        ${view === 'pcb' && c.pcb ? `<div class="ph small">Board side</div><div class="row edgebtns"><button data-side="top" class="${Pcb.isBottom(c) ? '' : 'on'}">▲ Top</button><button data-side="bottom" class="${Pcb.isBottom(c) ? 'on' : ''}">▼ Bottom</button></div>` : ''}
         ${view === 'pcb' && c.pcb ? `<div class="ph small">Place on board edge${c.pcbEdge ? ' · <span class="muted">' + c.pcbEdge + '</span>' : ''}</div><div class="row edgebtns"><button data-edge="left" title="Left edge">⇤ Left</button><button data-edge="top" title="Top edge">⤒ Top</button><button data-edge="bottom" title="Bottom edge">⤓ Bottom</button><button data-edge="right" title="Right edge">Right ⇥</button></div>` : ''}
         <div class="row"><button id="pEdit" style="flex:1">✎ ${c.type === 'part' ? 'Edit symbol &amp; footprint' : 'Make editable part'}</button></div>
         <div class="ph small">Pins</div><table class="pins">${Lib.type(c.type).pins(c).map(p => `<tr><td>${esc(p.num)}</td><td>${esc(p.name)}</td><td class="${idx[c.ref + '.' + p.num] ? '' : 'muted'}">${esc(idx[c.ref + '.' + p.num] || '—')}</td></tr>`).join('')}</table>`;
@@ -137,6 +138,7 @@ const App = (() => {
       $('#pRot').onclick = () => (view === 'sch' ? Sch : Pcb).key({ key: 'r' });
       $('#pDel').onclick = () => { Sch.select(null); Pcb.ui.sel = null; Model.mutate(() => Model.removeComponent(c.ref)); };
       $('#pEdit').onclick = () => editComponent(c.ref);
+      el.querySelectorAll('[data-side]').forEach(b => b.onclick = () => { try { Model.mutate(() => Pcb.placeFootprint(c.ref, { side: b.dataset.side })); toast(`${c.ref} on the ${b.dataset.side} side — press Route to reconnect`); } catch (e) { toast(e.message); } });
       el.querySelectorAll('[data-edge]').forEach(b => b.onclick = () => { try { const r = Model.mutate(() => Pcb.placeFootprint(c.ref, { edge: b.dataset.edge })); toast(`${c.ref} on the ${b.dataset.edge} edge${r.outside_board ? ' — outside the board, enlarge it or move it' : ''} · press Route to reconnect`); } catch (e) { toast(e.message); } });
     } else if (net && Model.S.nets[net]) {
       el.innerHTML = `<div class="ph">Net</div><label>Name<input id="pNet" value="${esc(net)}"></label>
@@ -166,7 +168,7 @@ const App = (() => {
 
   // ---------- autorouter in a Web Worker ----------
   let worker = null, routeReject = null;
-  function runRouter({ place = null, opt = {} } = {}) {
+  function runRouter({ place = null, opt = {}, optimize = null } = {}) {
     if (worker) worker.terminate();
     return new Promise((resolve, reject) => {
       routeReject = reject;
@@ -174,7 +176,7 @@ const App = (() => {
       $('#routeBusy').classList.remove('hidden'); $('#routeMsg').textContent = place ? 'Placing…' : 'Routing…';
       worker.onmessage = e => {
         const m = e.data;
-        if (m.type === 'progress') { $('#routeMsg').textContent = `Routing ${m.net} (${m.done + 1}/${m.total})${m.attempt > 1 ? ' · pass ' + m.attempt : ''}`; return; }
+        if (m.type === 'progress') { $('#routeMsg').textContent = `${m.iteration != null ? `Optimizing ${m.iteration}/${m.of} · ` : ''}Routing ${m.net} (${m.done + 1}/${m.total})${m.attempt > 1 ? ' · pass ' + m.attempt : ''}`; return; }
         worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden');
         if (m.type === 'error') { reject(new Error(m.message)); return; }
         Model.mutate(() => {
@@ -183,11 +185,49 @@ const App = (() => {
           S.board = m.board; S.pcb = m.pcb;
         });
         Pcb.ui.drc = null;
-        resolve({ placement: m.placement, routing: m.routing });
+        resolve({ placement: m.placement, routing: m.routing, optimized: m.optimized });
       };
       worker.onerror = e => { worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden'); reject(new Error(e.message || 'Router crashed')); };
-      worker.postMessage({ state: JSON.parse(Model.snapshot()), place, opt });
+      worker.postMessage({ state: JSON.parse(Model.snapshot()), place, opt, optimize });
+      if (optimize) $('#routeMsg').textContent = 'Optimizing placement…';
     });
+  }
+
+  // ---------- placement optimiser ----------
+  async function runOptimize() {
+    try {
+      showView('pcb');
+      const r = await runRouter({ optimize: { time_limit_s: 60, iterations: 14, allow_grow: true, allow_bottom: false } });
+      const o = r.optimized; Pcb.fit();
+      toast(o.unrouted.length ? `Optimized ${o.iterations} moves — ${o.routed}/${o.total} routed, still unrouted: ${o.unrouted.join(', ')}` : `✓ All ${o.total} nets routed after ${o.iterations} placement moves (${o.seconds}s)`, 7000);
+      showDrc(); return o;
+    } catch (e) { toast(e.message); }
+  }
+
+  // ---------- Gerber export: DRC first, then download or fix ----------
+  function gerberDownload() {
+    download(fname('-gerbers.zip'), makeZip(Pcb.gerbers()));
+    $('#gerberModal').classList.add('hidden');
+    toast('Gerbers, drill, paste & silkscreen exported — upload the zip to your PCB fab');
+  }
+  function gerberCheck() {
+    const S = Model.S;
+    if (!S.board.w || !Pcb.placed().length) { toast('No PCB yet — Generate PCB first'); return; }
+    const d = showDrc(), v = d.violations;
+    if (!v.length) { gerberDownload(); toast('✓ DRC passed — Gerbers exported'); return; }
+    $('#gbSummary').innerHTML = `<p><b class="${d.errors ? 'bad' : 'warn'}">${esc(d.summary)}</b> — ${d.errors ? 'the board has errors that a fab may reject or that would make it not work.' : 'only warnings; the board can be manufactured.'}</p><p class="muted small">Click an item to see it on the board.</p>`;
+    $('#gbList').innerHTML = v.map((x, i) => `<li class="${x.severity === 'error' ? 'error' : 'warn'}" data-v="${i}">${esc(x.msg)}</li>`).join('');
+    $('#gbList').querySelectorAll('[data-v]').forEach(li => li.onclick = () => { const x = v[+li.dataset.v]; $('#gerberModal').classList.add('hidden'); showView('pcb'); showDrc(); if (x.x != null) Pcb.vp.fit([x.x - 3, x.y - 3, x.x + 3, x.y + 3], 1); });
+    $('#gbOpt').classList.toggle('hidden', !Pcb.status().unrouted.length);
+    $('#gbDownload').textContent = d.errors ? 'Download anyway' : 'Download';
+    $('#gerberModal').classList.remove('hidden');
+  }
+  function initGerberCheck() {
+    $('#gbClose').onclick = () => $('#gerberModal').classList.add('hidden');
+    $('#gbDownload').onclick = gerberDownload;
+    $('#gbFix').onclick = () => { $('#gerberModal').classList.add('hidden'); showView('pcb'); showDrc(true); };
+    $('#gbRoute').onclick = async () => { $('#gerberModal').classList.add('hidden'); try { await runRouter({ opt: {} }); } catch (e) { toast(e.message); } gerberCheck(); };
+    $('#gbOpt').onclick = async () => { $('#gerberModal').classList.add('hidden'); await runOptimize(); gerberCheck(); };
   }
 
   // ---------- design rules + DRC ----------
@@ -404,7 +444,7 @@ const App = (() => {
     const S = Model.S;
     try {
       if (kind === 'json') download(fname('.circuit.json'), JSON.stringify(S, null, 1), 'application/json');
-      if (kind === 'gerber') { download(fname('-gerbers.zip'), makeZip(Pcb.gerbers())); toast('Gerbers + drill exported — upload the zip to your PCB fab'); }
+      if (kind === 'gerber') { gerberCheck(); return; }
       if (kind === 'svg') download(fname('-schematic.svg'), Sch.exportSVG(), 'image/svg+xml');
       if (kind === 'pcbsvg') { if (!S.board.w) throw new Error('No PCB yet'); if (view !== 'pcb') Pcb.render(); download(fname('-pcb.svg'), Pcb.exportSVG(), 'image/svg+xml'); }
       if (kind === 'bom') {
@@ -431,6 +471,17 @@ const App = (() => {
     if (saved) try { Model.load(saved); } catch (e) { }
     Model.subscribe(kind => { if (kind !== 'move') Pcb.ui.drc = null; if (kind === 'move') { view === 'sch' ? Sch.render() : Pcb.render(); } else renderAll(); });
     PartEditor.init();
+    // tell open tabs (phone, other PCs) when the app has been updated
+    (async () => {
+      const ver = async () => { try { return (await (await fetch('/api/version')).json()).version; } catch (e) { return null; } };
+      const mine = await ver(); if (!mine) return;
+      setInterval(async () => {
+        const v = await ver(); if (!v || v === mine || $('#updBar')) return;
+        const b = document.createElement('div'); b.id = 'updBar';
+        b.innerHTML = 'CircuitPilot was updated. <button>Reload now</button>'; b.querySelector('button').onclick = () => location.reload();
+        document.body.appendChild(b);
+      }, 30000);
+    })();
     Engine.env.myLib = () => Projects.myLib;
     Engine.env.savePart = def => Projects.savePart(def).then(() => renderParts());
     Engine.env.route = runRouter;
@@ -463,6 +514,25 @@ const App = (() => {
     $('#btnPlace').onclick = () => runPcb(boardWH(), true);
     $('#btnRoute').onclick = () => runPcb(null, false);
     $('#btnRules').onclick = openRules; $('#btnDrc').onclick = () => showDrc(true);
+    $('#btnOptimize').onclick = runOptimize;
+    $('#btnPourGnd').onclick = () => {
+      const S = Model.S, net = S.nets.GND ? 'GND' : prompt('Net for the copper pour', Object.keys(S.nets)[0] || 'GND');
+      if (!net) return;
+      try { Model.mutate(() => Pcb.addPour({ net, layer: 'both' })); showView('pcb'); toast(`${net} poured on both layers`); } catch (e) { toast(e.message); }
+    };
+    $('#btnShape').onclick = () => { const b = Model.S.board, sh = b.shape || { type: 'rect' }; $('#shType').value = sh.type; $('#shW').value = b.w || ''; $('#shH').value = b.h || ''; $('#shR').value = sh.r || (sh.type === 'rounded' ? 3 : 0); $('#shapeModal').classList.remove('hidden'); };
+    $('#shapeClose').onclick = () => $('#shapeModal').classList.add('hidden');
+    $('#shApply').onclick = () => {
+      const type = $('#shType').value;
+      if (type === 'polygon' && !(Model.S.board.shape && Model.S.board.shape.pts)) { $('#shDraw').click(); return; }
+      try {
+        const r = Model.mutate(() => Pcb.setBoardShape({ shape: type, width: +$('#shW').value, height: +$('#shH').value, corner_radius: +$('#shR').value, points: Model.S.board.shape && Model.S.board.shape.pts }));
+        $('#shapeModal').classList.add('hidden'); showView('pcb'); Pcb.fit();
+        toast(r.outside.length ? `⚠ Outside the outline: ${r.outside.join(', ')} — Generate PCB or move them` : 'Board outline updated');
+      } catch (e) { toast(e.message); }
+    };
+    $('#shDraw').onclick = () => { $('#shapeModal').classList.add('hidden'); showView('pcb'); PcbView.drawOutline(+$('#shR').value); };
+    initGerberCheck();
     $('#routeCancel').onclick = () => { if (worker) { worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden'); if (routeReject) routeReject(new Error('Routing cancelled')); } };
     initRules();
     $('#btnUnroute').onclick = () => Model.mutate(() => { Model.S.pcb = { traces: [], vias: [], routed: {} }; });
@@ -520,6 +590,7 @@ const App = (() => {
       if (!$('#edModal').classList.contains('hidden')) { if (PartEditor.key(e)) e.preventDefault(); return; }
       if (!$('#projModal').classList.contains('hidden')) { if (e.key === 'Escape') Projects.close(); return; }
       if (!$('#knowModal').classList.contains('hidden')) { if (e.key === 'Escape') $('#knowModal').classList.add('hidden'); return; }
+      for (const id of ['#gerberModal', '#shapeModal', '#rulesModal']) if (!$(id).classList.contains('hidden')) { if (e.key === 'Escape') $(id).classList.add('hidden'); return; }
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? Model.redo() : Model.undo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); Model.redo(); return; }

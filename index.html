@@ -59,7 +59,10 @@
         <button id="btnGen" class="primary">Generate PCB</button>
         <button id="btnPlace">Auto-place</button>
         <button id="btnRoute">Route</button>
+        <button id="btnOptimize" title="Move / rotate parts and re-route until everything is connected">✨ Optimize</button>
         <button id="btnUnroute">Clear routes</button>
+        <button id="btnShape" title="Board outline: rectangle, rounded, circle / ellipse, custom">▭ Board</button>
+        <button id="btnPourGnd" title="Copper pour (GND) on both layers">⬛ Pour GND</button>
         <button id="btnRules" title="Design rules (JLCPCB defaults)">⚙ Rules</button>
         <button id="btnDrc" title="Design rule check">DRC</button>
         <label>Board <input id="boardW" type="number" min="5" step="1" placeholder="auto">×<input id="boardH" type="number" min="5" step="1" placeholder="auto"> mm</label>
@@ -196,6 +199,32 @@
     <div class="row"><select id="rNetSel"></select><input id="rNetW" type="number" step="0.05" min="0.05" placeholder="width mm" style="width:110px"><button id="rNetAdd">Add net rule</button></div>
     <div id="rWarn" class="warn small" style="margin-top:8px"></div>
     <div class="row end"><button id="rulesCancel">Cancel</button><button id="rulesSave">Save</button><button id="rulesRoute" class="primary">Save &amp; re-route</button></div>
+  </div>
+</div>
+<div id="shapeModal" class="hidden modal">
+  <div class="dlg">
+    <div class="row-h"><h2>Board outline</h2><button id="shapeClose">✕</button></div>
+    <label>Shape <select id="shType"><option value="rect">Rectangle</option><option value="rounded">Rounded rectangle</option><option value="ellipse">Circle / ellipse</option><option value="polygon">Custom (draw it)</option></select></label>
+    <div class="rgrid">
+      <label>Width<input id="shW" type="number" step="0.5" min="5"><span>mm</span></label>
+      <label>Height<input id="shH" type="number" step="0.5" min="5"><span>mm</span></label>
+      <label>Corner radius<input id="shR" type="number" step="0.5" min="0"><span>mm</span></label>
+    </div>
+    <p class="muted small">Custom: close this dialog with “Draw outline”, click the corners on the PCB and click the first corner to close. The corner radius rounds every corner. Generate PCB keeps the shape; Route keeps tracks inside the outline.</p>
+    <div class="row end"><button id="shDraw">✎ Draw outline</button><button id="shApply" class="primary">Apply</button></div>
+  </div>
+</div>
+<div id="gerberModal" class="hidden modal">
+  <div class="dlg wide">
+    <div class="row-h"><h2>Check before Gerber export</h2><button id="gbClose">✕</button></div>
+    <div id="gbSummary"></div>
+    <ul id="gbList" class="erc drc"></ul>
+    <div class="row end">
+      <button id="gbFix">Fix on board</button>
+      <button id="gbRoute">Re-route</button>
+      <button id="gbOpt">✨ Optimize placement</button>
+      <button id="gbDownload" class="primary">Download anyway</button>
+    </div>
   </div>
 </div>
 <div id="toast"></div>

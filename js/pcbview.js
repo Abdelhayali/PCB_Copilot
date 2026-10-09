@@ -7,6 +7,7 @@ const PcbView = (() => {
     { id: 'F', name: 'TopLayer', color: '#FF0000', copper: true },
     { id: 'B', name: 'BottomLayer', color: '#0000FF', copper: true },
     { id: 'FS', name: 'TopSilkLayer', color: '#FFCC00' },
+    { id: 'BS', name: 'BottomSilkLayer', color: '#66CC33' },
     { id: 'FM', name: 'TopSolderMaskLayer', color: '#800080', off: true },
     { id: 'BM', name: 'BottomSolderMaskLayer', color: '#AA00FF', off: true },
     { id: 'MU', name: 'Multi-Layer', color: '#C0C0C0' },
@@ -19,12 +20,14 @@ const PcbView = (() => {
     { id: 'select', key: 'S', name: 'Select / move', icon: '<path d="M5 3l12 9-5 1 3 6-2 1-3-6-4 4z"/>' },
     { id: 'track', key: 'W', name: 'Track', icon: '<path d="M3 18h6l6-12h6" fill="none" stroke-width="2.4"/>' },
     { id: 'via', key: 'V', name: 'Via', icon: '<circle cx="12" cy="12" r="7" fill="none" stroke-width="2.6"/><circle cx="12" cy="12" r="2.4"/>' },
+    { id: 'arc', key: 'A', name: 'Arc track', icon: '<path d="M4 19A15 15 0 0 1 20 5" fill="none" stroke-width="2.4"/>' },
+    { id: 'pour', key: 'E', name: 'Copper area (pour)', icon: '<path d="M4 6l7-3 9 4-2 12-12 1z" stroke-width="1.6" opacity="0.85"/>' },
     { id: 'measure', key: 'M', name: 'Measure', icon: '<path d="M3 16l13-13 5 5-13 13z" fill="none" stroke-width="1.8"/><path d="M7 12l2 2M10 9l2 2M13 6l2 2" stroke-width="1.6"/>' },
   ];
   const GRIDS = [0.05, 0.1, 0.127, 0.254, 0.5, 1.27];
   const ui = {
     sel: null, item: null, hlNet: null, drc: null, tool: 'select', active: 'F', angle: '45', flip: false, grid: 0.254, width: null, dim: true,
-    route: null, measure: null, cursor: null, layers: {}, onSelect: () => { },
+    route: null, measure: null, cursor: null, layers: {}, onSelect: () => { }, arc: null, poly: null, outlineR: 0,
   };
   LAYERS.forEach(l => ui.layers[l.id] = { on: !l.off, color: l.color });
   try { const s = JSON.parse(localStorage.getItem('cp.pcbView') || '{}'); if (s.layers) for (const k in s.layers) if (ui.layers[k]) Object.assign(ui.layers[k], s.layers[k]); ['grid', 'angle', 'dim'].forEach(k => { if (s[k] != null) ui[k] = s[k]; }); } catch (e) { }
@@ -88,7 +91,7 @@ const PcbView = (() => {
   function setVisible(on) { overlay && overlay.classList.toggle('hidden', !on); }
   function setTool(t) {
     if (ui.route && t !== 'track') finishRoute();
-    ui.tool = t; ui.measure = null;
+    ui.tool = t; ui.measure = null; ui.arc = null; ui.poly = null;
     overlay && overlay.querySelectorAll('[data-tool]').forEach(b => b.classList.toggle('on', b.dataset.tool === t));
     if (svg) svg.style.cursor = t === 'select' ? 'default' : 'crosshair';
     render(); coord();
@@ -115,10 +118,10 @@ const PcbView = (() => {
   function allPads() {
     const idx = Model.pinIndex(); return Pcb.placed().flatMap(c => Pcb.padsOf(c, idx));
   }
-  const padLayers = p => p.drill ? L2() : ['F'];
+  const padLayers = p => Pcb.padCu(p, L2());
   // object under a point on the given layer (or any visible layer): pad, via or track
   function hitObj(pt, layer) {
-    for (const p of cache.pads) if ((!layer || padLayers(p).includes(layer)) && G.padDist(p, pt.x, pt.y) <= 0) return { k: 'pad', net: p.net, x: p.x, y: p.y, p, layer: p.drill ? null : 'F' };
+    for (const p of cache.pads) if ((!layer || padLayers(p).includes(layer)) && G.padDist(p, pt.x, pt.y) <= 0) return { k: 'pad', net: p.net, x: p.x, y: p.y, p, layer: p.drill ? null : (p.layer || 'F') };
     const S = Model.S;
     for (let i = 0; i < S.pcb.vias.length; i++) { const v = S.pcb.vias[i]; if (Math.hypot(pt.x - v.x, pt.y - v.y) <= v.d / 2) return { k: 'via', net: v.net, x: v.x, y: v.y, i }; }
     for (let i = S.pcb.traces.length - 1; i >= 0; i--) {
@@ -177,7 +180,7 @@ const PcbView = (() => {
   // ---------- interactive routing ----------
   function startRoute(sp) {
     let layer = ui.active;
-    if (sp.obj && sp.obj.k === 'pad' && !sp.obj.p.drill && layer !== 'F') { layer = 'F'; ui.active = 'F'; App.toast('SMD pad is on TopLayer — routing on TopLayer'); renderLayers(); syncBar(); }
+    if (sp.obj && sp.obj.k === 'pad' && !sp.obj.p.drill && layer !== sp.obj.layer) { layer = sp.obj.layer; ui.active = layer; App.toast(`SMD pad is on ${LNAME[layer]} — routing on ${LNAME[layer]}`); renderLayers(); syncBar(); }
     if (sp.obj && sp.obj.k === 'track') { layer = sp.obj.layer; ui.active = layer; renderLayers(); syncBar(); }
     const net = sp.obj ? sp.obj.net || null : null;
     ui.route = { net, layer, w: curWidth(net), pts: [[sp.x, sp.y]], done: [], vias: [], startObj: sp.obj, obs: obstacles(layer, net) };
@@ -188,7 +191,7 @@ const PcbView = (() => {
     const o = sp.obj;
     if (o && o.net && R.net && o.net !== R.net) { App.toast(`Can't connect: this ${o.k} is on net ${o.net}, the track is on ${R.net}`); return false; }
     if (o && o.net && !R.net) { R.net = o.net; R.w = curWidth(o.net); R.obs = obstacles(R.layer, R.net); ui.hlNet = o.net; }
-    if (o && o.k === 'pad' && !o.p.drill && R.layer !== 'F') { App.toast('That SMD pad is on TopLayer — press T to switch layer (adds a via)'); return false; }
+    if (o && o.k === 'pad' && !o.p.drill && R.layer !== o.layer) { App.toast(`That SMD pad is on ${LNAME[o.layer]} — press ${o.layer === 'F' ? 'T' : 'B'} to switch layer (adds a via)`); return false; }
     for (const q of bend(last, [sp.x, sp.y])) R.pts.push(q);
     const same = Math.hypot(sp.x - last[0], sp.y - last[1]) < 1e-6;
     // ending on copper (pad / via / track) finishes the track, like EasyEDA
@@ -241,6 +244,43 @@ const PcbView = (() => {
     render(); return true;
   }
 
+  // ---------- arcs, copper areas, board outline ----------
+  function arcPoints(a, b, m) {
+    // circle through a, m, b; sweep from a to b passing m
+    const ax = a[0], ay = a[1], bx = b[0], by = b[1], mx = m[0], my = m[1];
+    const d = 2 * (ax * (my - by) + mx * (by - ay) + bx * (ay - my));
+    if (Math.abs(d) < 1e-6) return [a, b];
+    const ux = ((ax * ax + ay * ay) * (my - by) + (mx * mx + my * my) * (by - ay) + (bx * bx + by * by) * (ay - my)) / d;
+    const uy = ((ax * ax + ay * ay) * (bx - mx) + (mx * mx + my * my) * (ax - bx) + (bx * bx + by * by) * (mx - ax)) / d;
+    const r = Math.hypot(ax - ux, ay - uy), ta = Math.atan2(ay - uy, ax - ux), tm = Math.atan2(my - uy, mx - ux), tb = Math.atan2(by - uy, bx - ux);
+    const norm = v => ((v % (2 * Math.PI)) + 2 * Math.PI) % (2 * Math.PI);
+    let sweep = norm(tb - ta); if (norm(tm - ta) > sweep) sweep -= 2 * Math.PI;
+    const n = Math.max(8, Math.ceil(Math.abs(sweep) * r / 0.4)), out = [];
+    for (let k = 0; k <= n; k++) { const t = ta + sweep * k / n; out.push([+(ux + r * Math.cos(t)).toFixed(4), +(uy + r * Math.sin(t)).toFixed(4)]); }
+    out[0] = a.slice(); out[n] = b.slice();
+    return out;
+  }
+  function commitArc(m) {
+    const A = ui.arc; ui.arc = null; if (!A || !A.b) return;
+    const pts = arcPoints(A.a, A.b, m), w = curWidth(A.net);
+    Model.mutate(() => Model.S.pcb.traces.push({ net: A.net, layer: A.layer, w, pts, manual: true, arc: true }));
+  }
+  function closePoly() {
+    const P = ui.poly; ui.poly = null; if (!P || P.pts.length < 3) { renderLive(); return; }
+    try {
+      if (P.kind === 'outline') {
+        Model.mutate(() => Pcb.setBoardShape({ shape: 'polygon', points: P.pts, corner_radius: ui.outlineR || 0 }));
+        App.toast('Board outline updated — press Route to re-check connections'); setTool('select'); Pcb.fit && fit();
+      } else {
+        const S = Model.S, net = P.net || (S.nets.GND ? 'GND' : Object.keys(S.nets)[0]);
+        Model.mutate(() => Pcb.addPour({ net, layer: ui.active, points: P.pts }));
+        ui.item = { k: 'pour', i: S.pcb.pours.length - 1 }; ui.hlNet = net; ui.onSelect(null);
+        App.toast(`Copper area on ${LNAME[ui.active]} for net ${net} — change the net in Properties`);
+      }
+    } catch (e) { App.toast(e.message); }
+    render();
+  }
+
   // ---------- mouse ----------
   let drag = null, pan = null, rdown = null;
   function down(e) {
@@ -251,6 +291,21 @@ const PcbView = (() => {
       const sp = snapPoint(pt, ui.route ? ui.route.layer : null);
       if (!ui.route) startRoute(sp); else addPoints(sp);
       render(); coord(); return;
+    }
+    if (ui.tool === 'arc') {
+      const sp = snapPoint(pt, null);
+      if (!ui.arc) { const o = sp.obj; ui.arc = { a: [sp.x, sp.y], net: o ? o.net || null : null, layer: o && o.layer ? o.layer : ui.active }; }
+      else if (!ui.arc.b) { if (sp.obj && sp.obj.net && !ui.arc.net) ui.arc.net = sp.obj.net; ui.arc.b = [sp.x, sp.y]; }
+      else commitArc([pt.x, pt.y]);
+      renderLive(); return;
+    }
+    if (ui.tool === 'pour' || ui.tool === 'outline') {
+      const sp = ui.tool === 'pour' ? snapPoint(pt, null) : { x: +snapG(pt.x).toFixed(3), y: +snapG(pt.y).toFixed(3), obj: null };
+      if (!ui.poly) ui.poly = { kind: ui.tool, pts: [], net: sp.obj && sp.obj.net };
+      const P = ui.poly.pts, f = P[0];
+      if (P.length >= 3 && Math.hypot(sp.x - f[0], sp.y - f[1]) < Math.max(0.5, 8 / vp.s)) closePoly();
+      else P.push([sp.x, sp.y]);
+      renderLive(); return;
     }
     if (ui.tool === 'via') {
       const sp = snapPoint(pt, null), R0 = Pcb.rules();
@@ -266,7 +321,15 @@ const PcbView = (() => {
     }
     // select
     const el = e.target.closest('[data-k],[data-ref]');
-    if (el && el.dataset.k === 't') { selectItem({ k: 't', i: +el.dataset.i, s: +el.dataset.s }); return; }
+    if (el && el.dataset.k === 't') {
+      const i = +el.dataset.i, sg = +el.dataset.s, t = Model.S.pcb.traces[i];
+      // grab a corner if the click is on one, otherwise the whole segment (EasyEDA-style drag)
+      const near = [sg - 1, sg].find(k => Math.hypot(t.pts[k][0] - pt.x, t.pts[k][1] - pt.y) <= Math.max(t.w * 0.7, 6 / vp.s));
+      selectItem({ k: 't', i, s: sg });
+      drag = { kind: near != null ? 'vertex' : 'seg', i, s: sg, v: near, orig: t.pts.map(q => q.slice()), x0: pt.x, y0: pt.y, moved: false };
+      return;
+    }
+    if (el && el.dataset.k === 'pour') { ui.sel = null; ui.item = { k: 'pour', i: +el.dataset.i }; ui.hlNet = (Model.S.pcb.pours[+el.dataset.i] || {}).net; ui.onSelect(null); render(); pan = { x: e.clientX, y: e.clientY }; return; }
     if (el && el.dataset.k === 'v') { const v = Model.S.pcb.vias[+el.dataset.i]; selectItem({ k: 'v', i: +el.dataset.i }); drag = { kind: 'via', i: +el.dataset.i, ox: pt.x - v.x, oy: pt.y - v.y, moved: false }; return; }
     const ref = el && (el.dataset.ref || el.dataset.pref);
     if (ref) {
@@ -293,6 +356,20 @@ const PcbView = (() => {
         const c = Model.comp(drag.ref); if (!c) return;
         const g = Math.max(ui.grid, 0.05), nx = +(Math.round((pt.x - drag.ox) / g) * g).toFixed(4), ny = +(Math.round((pt.y - drag.oy) / g) * g).toFixed(4);
         if (nx !== c.pcb.x || ny !== c.pcb.y) { if (!drag.moved) { Model.begin(); drag.moved = true; } c.pcb.x = nx; c.pcb.y = ny; Model.emit('move'); }
+      } else if (drag.kind === 'seg' || drag.kind === 'vertex') {
+        const t = Model.S.pcb.traces[drag.i]; if (!t) return;
+        const dx = snapG(pt.x - drag.x0), dy = snapG(pt.y - drag.y0); if (!dx && !dy && !drag.moved) return;
+        if (!drag.moved) { Model.begin(); drag.moved = true; }
+        const o = drag.orig.map(q => q.slice()), mv = k => { o[k] = [+(o[k][0] + dx).toFixed(4), +(o[k][1] + dy).toFixed(4)]; };
+        if (drag.kind === 'vertex') { mv(drag.v); t.pts = o; }
+        else {
+          // move both ends of the segment; keep the track attached where it started / ended by inserting a new corner
+          const a = drag.s - 1, b = drag.s; mv(a); mv(b);
+          if (b === o.length - 1) o.push(drag.orig[b].slice());
+          if (a === 0) o.unshift(drag.orig[0].slice());
+          t.pts = o;
+        }
+        Model.emit('move');
       } else if (drag.kind === 'via') {
         const v = Model.S.pcb.vias[drag.i], nx = +snapG(pt.x - drag.ox).toFixed(4), ny = +snapG(pt.y - drag.oy).toFixed(4);
         if (nx !== v.x || ny !== v.y) { if (!drag.moved) { Model.begin(); drag.moved = true; } v.x = nx; v.y = ny; Model.emit('move'); }
@@ -320,12 +397,17 @@ const PcbView = (() => {
     if (k === 'w') { setTool('track'); return true; }
     if (k === 'v') { if (ui.route) switchLayer(); else setTool('via'); return true; }
     if (k === 'm') { setTool('measure'); return true; }
+    if (k === 'a') { setTool('arc'); return true; }
+    if (k === 'e') { setTool('pour'); return true; }
+    if (k === 'Enter' && ui.poly) { closePoly(); return true; }
     if (k === 's') { setTool('select'); return true; }
     if (k === 't' || k === 'b') { const to = k === 't' ? 'F' : 'B'; if (ui.route) switchLayer(to); else { ui.active = to; ui.layers[to].on = true; renderLayers(); syncBar(); render(); } return true; }
     if (k === 'l') { const to = ui.active === 'F' ? 'B' : 'F'; if (ui.route) switchLayer(to); else { ui.active = to; renderLayers(); syncBar(); render(); } return true; }
     if (k === ' ') { ui.angle = ui.angle === '45' ? '90' : ui.angle === '90' ? 'any' : '45'; persist(); syncBar(); renderLive(); App.toast('Routing angle: ' + (ui.angle === 'any' ? 'any' : ui.angle + '°')); return true; }
     if (k === '/') { ui.flip = !ui.flip; renderLive(); return true; }
     if (k === 'Backspace' && ui.route) return backspace();
+    if (k === 'Escape' && (ui.arc || ui.poly)) { ui.arc = null; ui.poly = null; renderLive(); return true; }
+    if (k === 'Backspace' && ui.poly) { ui.poly.pts.pop(); if (!ui.poly.pts.length) ui.poly = null; renderLive(); return true; }
     if (k === 'Escape') { if (ui.route) finishRoute(); else if (ui.measure) { ui.measure = null; render(); } else if (ui.tool !== 'select') setTool('select'); else { ui.sel = null; ui.item = null; ui.hlNet = null; ui.onSelect(null); render(); } return true; }
     if ((k === 'Delete' || k === 'Backspace') && ui.item) { deleteItem(); return true; }
     if (k === 'r' && ui.sel) { const c = Model.comp(ui.sel); if (c && c.pcb) Model.mutate(() => { c.pcb.rot = ((c.pcb.rot || 0) + 90) % 360; }); return true; }
@@ -337,6 +419,7 @@ const PcbView = (() => {
     Model.mutate(() => {
       const S = Model.S;
       if (it.k === 'v') S.pcb.vias.splice(it.i, 1);
+      else if (it.k === 'pour') S.pcb.pours.splice(it.i, 1);
       else if (it.k === 'T') S.pcb.traces.splice(it.i, 1);
       else if (it.k === 't') {
         const t = S.pcb.traces[it.i], a = t.pts.slice(0, it.s), b = t.pts.slice(it.s);
@@ -358,16 +441,32 @@ const PcbView = (() => {
     const out = [], hl = ui.hlNet;
     // footprint hit areas (bottom), so copper on top stays clickable
     for (const c of cs) { const b = Pcb.fpBox(c); out.push(`<rect class="fphit" data-ref="${esc(c.ref)}" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`); }
+    const R0 = Pcb.rules(), bpoly = Pcb.boardPoly(), bpath = 'M' + bpoly.map(q => q.join(' ')).join('L') + 'Z';
+    out.push(`<defs><clipPath id="bclip"><path d="${bpath}"/></clipPath></defs>`);
     const order = ui.active === 'F' ? ['B', 'F'] : ['F', 'B'];
     for (const L of order) {
       if (!vis(L)) continue;
       const op = ui.dim && L !== ui.active ? 0.45 : 0.9, c = col(L);
+      // copper pours: filled polygon with other nets' copper (+ clearance) and the edge band masked out
+      (S.pcb.pours || []).forEach((pr, i) => {
+        if (pr.layer !== L) return;
+        const cl = pr.clearance || R0.clearance, poly = Pcb.pourPoly(pr), m = [];
+        m.push(`<rect x="-50" y="-50" width="${S.board.w + 100}" height="${S.board.h + 100}" fill="white"/>`);
+        for (const t of S.pcb.traces) if (t.layer === L && t.net !== pr.net) m.push(`<polyline points="${t.pts.map(q => q.join(',')).join(' ')}" fill="none" stroke="black" stroke-width="${t.w + 2 * cl}" stroke-linecap="round" stroke-linejoin="round"/>`);
+        for (const p of cache.pads) if (p.net !== pr.net && padLayers(p).includes(L)) m.push(padEl(p, 'black', '', cl));
+        for (const v of S.pcb.vias) if (v.net !== pr.net) m.push(`<circle cx="${v.x}" cy="${v.y}" r="${v.d / 2 + cl}" fill="black"/>`);
+        m.push(`<path d="${bpath}" fill="none" stroke="black" stroke-width="${2 * R0.edgeClearance}"/>`);
+        out.push(`<defs><mask id="pm${i}" maskUnits="userSpaceOnUse" x="-50" y="-50" width="${S.board.w + 100}" height="${S.board.h + 100}">${m.join('')}</mask></defs>`);
+        const sel = ui.item && ui.item.k === 'pour' && ui.item.i === i;
+        out.push(`<path data-k="pour" data-i="${i}" class="pour${hl && pr.net === hl ? ' hl' : ''}" d="M${poly.map(q => q.join(' ')).join('L')}Z" fill="${c}" fill-opacity="${sel ? 0.55 : 0.38}" mask="url(#pm${i})" clip-path="url(#bclip)" opacity="${op}"><title>Copper area · ${esc(pr.net)} · ${LNAME[L]}</title></path>`);
+        if (sel) out.push(`<path d="M${poly.map(q => q.join(' ')).join('L')}Z" class="selbox" />`);
+      });
       out.push(`<g class="cu" opacity="${op}">`);
       S.pcb.traces.forEach((t, i) => {
         if (t.layer !== L) return;
         for (let s = 1; s < t.pts.length; s++) out.push(`<line data-k="t" data-i="${i}" data-s="${s}" class="trk${hl && t.net === hl ? ' hl' : ''}" x1="${t.pts[s - 1][0]}" y1="${t.pts[s - 1][1]}" x2="${t.pts[s][0]}" y2="${t.pts[s][1]}" stroke="${c}" stroke-width="${t.w}"><title>${esc(t.net || '(no net)')} · ${t.w} mm · ${LNAME[t.layer]}</title></line>`);
       });
-      if (L === 'F') for (const p of cache.pads) if (!p.drill) out.push(padEl(p, c, `class="pad${hl && p.net === hl ? ' hl' : ''}" data-pref="${esc(p.ref)}" data-net="${esc(p.net || '')}"><title>${esc(p.key)}${p.net ? ' · ' + esc(p.net) : ''}</title></${p.shape === 'round' ? 'circle' : 'rect'}`).replace(/\/><\/(circle|rect)$/, ''));
+      for (const p of cache.pads) if (!p.drill && (p.layer || 'F') === L) out.push(padEl(p, c, `class="pad${hl && p.net === hl ? ' hl' : ''}" data-pref="${esc(p.ref)}" data-net="${esc(p.net || '')}"><title>${esc(p.key)}${p.net ? ' · ' + esc(p.net) : ''}</title></${p.shape === 'round' ? 'circle' : 'rect'}`).replace(/\/><\/(circle|rect)$/, ''));
       out.push('</g>');
     }
     if (vis('MU')) {
@@ -378,19 +477,20 @@ const PcbView = (() => {
       for (const p of cache.pads) if (p.drill) out.push(`<circle cx="${p.x}" cy="${p.y}" r="${p.drill / 2}" fill="${col('HO')}" pointer-events="none"/>`);
       for (const v of S.pcb.vias) out.push(`<circle cx="${v.x}" cy="${v.y}" r="${v.drill / 2}" fill="${col('HO')}" pointer-events="none"/>`);
     }
-    if (vis('FM')) for (const p of cache.pads) if (!p.drill || true) out.push(padEl(p, 'none', `stroke="${col('FM')}" stroke-width="0.05" pointer-events="none"`, 0.05));
-    if (vis('BM')) for (const p of cache.pads) if (p.drill) out.push(padEl(p, 'none', `stroke="${col('BM')}" stroke-width="0.05" stroke-dasharray="0.2 0.1" pointer-events="none"`, 0.05));
-    if (vis('FS')) for (const c of cs) {
+    if (vis('FM')) for (const p of cache.pads) if (p.drill || (p.layer || 'F') === 'F') out.push(padEl(p, 'none', `stroke="${col('FM')}" stroke-width="0.05" pointer-events="none"`, 0.05));
+    if (vis('BM')) for (const p of cache.pads) if (p.drill || p.layer === 'B') out.push(padEl(p, 'none', `stroke="${col('BM')}" stroke-width="0.05" stroke-dasharray="0.2 0.1" pointer-events="none"`, 0.05));
+    for (const c of cs) {
+      const sl = Pcb.isBottom(c) ? 'BS' : 'FS'; if (!vis(sl)) continue;
       const b = Pcb.fpBox(c);
-      out.push(`<rect x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}" fill="none" stroke="${col('FS')}" stroke-width="0.15" pointer-events="none"/>`);
-      out.push(`<text x="${(b[0] + b[2]) / 2}" y="${b[1] - 0.35}" text-anchor="middle" fill="${col('FS')}" style="font-size:1.1px;font-weight:700" pointer-events="none">${esc(c.ref)}</text>`);
+      out.push(`<rect x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}" fill="none" stroke="${col(sl)}" stroke-width="0.15" pointer-events="none"/>`);
+      out.push(`<text x="${(b[0] + b[2]) / 2}" y="${b[1] - 0.35}" text-anchor="middle" fill="${col(sl)}" style="font-size:1.1px;font-weight:700" pointer-events="none"${sl === 'BS' ? ` transform="translate(${(b[0] + b[2])} 0) scale(-1 1)"` : ''}>${esc(c.ref)}</text>`);
     }
-    if (vis('OL')) out.push(`<rect x="0" y="0" width="${S.board.w}" height="${S.board.h}" fill="none" stroke="${col('OL')}" stroke-width="0.15" pointer-events="none"/>`);
+    if (vis('OL')) out.push(`<path d="${bpath}" fill="none" stroke="${col('OL')}" stroke-width="0.15" pointer-events="none"/>`);
     if (vis('RA')) for (const r of Pcb.ratsnest()) out.push(`<line x1="${r.a.x}" y1="${r.a.y}" x2="${r.b.x}" y2="${r.b.y}" stroke="${col('RA')}" stroke-width="0.08" pointer-events="none"><title>${esc(r.net)}</title></line>`);
     if (vis('DRC') && ui.drc) for (const v of ui.drc.violations) if (v.x != null) out.push(`<g class="drcmark" transform="translate(${v.x} ${v.y})" stroke="${v.severity === 'error' ? col('DRC') : '#f0b429'}"><circle r="0.9" fill="none" stroke-width="0.12"/><path d="M-0.45 -0.45L0.45 0.45M0.45 -0.45L-0.45 0.45" stroke-width="0.14"/><title>${esc(v.msg)}</title></g>`);
     // selection outlines
     if (ui.sel) { const c = Model.comp(ui.sel); if (c && c.pcb) { const b = Pcb.fpBox(c, 0.2); out.push(`<rect class="selbox" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`); } }
-    if (ui.item) {
+    if (ui.item && ui.item.k !== 'pour') {
       if (ui.item.k === 'v') { const v = S.pcb.vias[ui.item.i]; if (v) out.push(`<circle class="selbox" cx="${v.x}" cy="${v.y}" r="${v.d / 2 + 0.15}"/>`); }
       else { const t = S.pcb.traces[ui.item.i]; if (t) { const pts = ui.item.k === 'T' ? t.pts : [t.pts[ui.item.s - 1], t.pts[ui.item.s]]; out.push(`<polyline class="selline" points="${pts.map(p => p.join(',')).join(' ')}" stroke-width="${t.w + 0.2}"/>`); } }
     }
@@ -418,6 +518,16 @@ const PcbView = (() => {
       if (c.obj) out.push(`<circle cx="${c.x}" cy="${c.y}" r="0.3" fill="none" stroke="#00ff9c" stroke-width="0.06"/>`);
       if (ui.tool === 'via') out.push(`<circle cx="${c.x}" cy="${c.y}" r="${Pcb.rules().viaDiameter / 2}" fill="${col('MU')}" opacity="0.6"/>`);
     }
+    if (ui.arc) {
+      const A = ui.arc, cur = c ? [c.x, c.y] : A.a;
+      const pts = A.b ? arcPoints(A.a, A.b, cur) : [A.a, cur];
+      out.push(`<polyline points="${pts.map(p => p.join(',')).join(' ')}" stroke="${col(A.layer)}" stroke-width="${curWidth(A.net)}" class="rprev"/>`);
+    }
+    if (ui.poly) {
+      const P = ui.poly.pts.concat(c ? [[c.x, c.y]] : []), colr = ui.poly.kind === 'outline' ? col('OL') : col(ui.active);
+      out.push(`<polygon points="${P.map(p => p.join(',')).join(' ')}" fill="${colr}" fill-opacity="0.18" stroke="${colr}" stroke-width="0.1" stroke-dasharray="0.4 0.25"/>`);
+      if (P.length) out.push(`<circle cx="${P[0][0]}" cy="${P[0][1]}" r="0.35" fill="none" stroke="#fff" stroke-width="0.08"/>`);
+    }
     if (ui.measure) {
       const { a, b } = ui.measure, d = Math.hypot(b[0] - a[0], b[1] - a[1]);
       out.push(`<line x1="${a[0]}" y1="${a[1]}" x2="${b[0]}" y2="${b[1]}" stroke="#00e5ff" stroke-width="0.06"/><circle cx="${a[0]}" cy="${a[1]}" r="0.15" fill="#00e5ff"/><circle cx="${b[0]}" cy="${b[1]}" r="0.15" fill="#00e5ff"/>`);
@@ -431,10 +541,12 @@ const PcbView = (() => {
     const c = ui.cursor, R = ui.route;
     let s = c ? `X ${c.x.toFixed(3)}  Y ${c.y.toFixed(3)} mm` : '';
     s += ` · <b style="color:${col(ui.active)}">${LNAME[ui.active]}</b> · ${(TOOLS.find(t => t.id === ui.tool) || {}).name}`;
-    if (ui.tool === 'track') s += ` · width ${R ? R.w : curWidth(null)} mm · ${ui.angle === 'any' ? 'any angle' : ui.angle + '°'}`;
+    if (ui.tool === 'track' || ui.tool === 'arc') s += ` · width ${R ? R.w : curWidth(null)} mm · ${ui.angle === 'any' ? 'any angle' : ui.angle + '°'}`;
     if (R) s += ` · net <b>${esc(R.net || '(none)')}</b>`;
     if (R && R.bad) s += ` · <span class="bad">⚠ ${R.bad.d <= 0 ? 'short' : 'clearance ' + R.bad.d.toFixed(3) + ' mm'} to ${esc(R.bad.what)} (rule ${Pcb.rules().clearance})</span>`;
     if (ui.tool === 'track') s += ` <span class="muted">· T/B/V switch layer + via · Space angle · / bend · Backspace undo · Esc / right-click finish</span>`;
+    if (ui.tool === 'arc') s += ` <span class="muted">· click start, click end, then click to set the curve · Esc cancels</span>`;
+    if (ui.tool === 'pour' || ui.tool === 'outline') s += ` <span class="muted">· click corners, click the first corner (or Enter) to close · Backspace removes a corner · Esc cancels</span>`;
     el.innerHTML = s;
   }
 
@@ -443,6 +555,20 @@ const PcbView = (() => {
     const it = ui.item; if (!it) return false;
     const S = Model.S, nets = Object.keys(S.nets).sort();
     const netSel = cur => `<select id="ppNet"><option value="">(no net)</option>${nets.map(n => `<option ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+    if (it.k === 'pour') {
+      const pr = S.pcb.pours && S.pcb.pours[it.i]; if (!pr) return false;
+      el.innerHTML = `<div class="ph">Copper area</div><label>Net${netSel(pr.net)}</label>
+        <label>Layer<select id="ppL"><option value="F" ${pr.layer === 'F' ? 'selected' : ''}>TopLayer</option><option value="B" ${pr.layer === 'B' ? 'selected' : ''}>BottomLayer</option></select></label>
+        <label>Clearance (mm, empty = rule ${Pcb.rules().clearance})<input id="ppC" type="number" step="0.05" value="${pr.clearance || ''}"></label>
+        <div class="muted small">${pr.whole ? 'Covers the whole board (follows the outline)' : pr.pts.length + '-corner area'} · other nets keep their clearance; same-net pads, tracks and vias connect to it.</div>
+        <div class="row"><button id="ppDel" class="danger">Delete copper area (Del)</button></div>`;
+      const upd = f => Model.mutate(() => f(Model.S.pcb.pours[it.i]));
+      $('#ppNet').onchange = e => { if (e.target.value) upd(p => p.net = e.target.value); };
+      $('#ppL').onchange = e => upd(p => p.layer = e.target.value);
+      $('#ppC').onchange = e => upd(p => { if (+e.target.value > 0) p.clearance = +e.target.value; else delete p.clearance; });
+      $('#ppDel').onclick = deleteItem;
+      return true;
+    }
     if (it.k === 'v') {
       const v = S.pcb.vias[it.i]; if (!v) return false;
       el.innerHTML = `<div class="ph">Via</div><label>Net${netSel(v.net)}</label>
@@ -479,10 +605,10 @@ const PcbView = (() => {
   // keep the item selection valid after undo/redo or external edits
   function validate() {
     const S = Model.S;
-    if (ui.item && ((ui.item.k === 'v' && !S.pcb.vias[ui.item.i]) || (ui.item.k !== 'v' && !S.pcb.traces[ui.item.i]))) ui.item = null;
+    if (ui.item && ((ui.item.k === 'v' && !S.pcb.vias[ui.item.i]) || (ui.item.k === 'pour' && !(S.pcb.pours || [])[ui.item.i]) || (!['v', 'pour'].includes(ui.item.k) && !S.pcb.traces[ui.item.i]))) ui.item = null;
     if (ui.sel && !Model.comp(ui.sel)) ui.sel = null;
   }
-  return { init, render: () => { validate(); render(); coord(); }, fit, key, ui, exportSVG, setVisible, bindBar, props, setTool, LAYERS, get vp() { return vp; } };
+  return { init, render: () => { validate(); render(); coord(); }, fit, key, ui, exportSVG, setVisible, bindBar, props, setTool, LAYERS, drawOutline: r => { ui.outlineR = +r || 0; setTool('outline'); App.toast('Click the outline corners; click the first corner to close'); }, get vp() { return vp; } };
 })();
 // Expose the editor through the Pcb namespace used by the rest of the app.
 Object.assign(Pcb, { init: PcbView.init, render: PcbView.render, fit: PcbView.fit, key: PcbView.key, exportSVG: PcbView.exportSVG, ui: PcbView.ui });

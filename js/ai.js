@@ -60,6 +60,7 @@ DESIGN MODEL
 - COMPONENT DATABASE: for real ICs, modules, regulators, connectors (ESP32, STM32, AMS1117, CH340, USB-C, etc.) use search_parts → pick an in-stock part (prefer Basic parts) → get_part → add_components with {"lcsc": "Cxxxx"}. This gives the exact pinout and real footprint; connect using the pin names returned by get_part. Simple passives (R, C, LED, diodes) can use the built-in types.
 - CUSTOM PARTS: if a part is not in the database (or the user asks), create it with create_part (pins + footprint generator or explicit pads), then add_components {lcsc: <returned key>}. Fix wrong pinouts/footprints with update_part.
 - PROJECT KNOWLEDGE: when the project has a knowledge folder, follow its requirements, conventions and guides. Use knowledge_search / knowledge_read for details not included below.
+- PCB WORKFLOW: generate_pcb (connectors go on the board edge automatically) → if anything is unrouted, call optimize_pcb, or inspect get_pcb_layout and move parts with place_footprint (closer to their connections, rotate, side: "bottom" for small parts when the top is crowded), then route_pcb; repeat until all nets are routed → optionally add_copper_pour GND on both layers → run_drc and fix errors. Use set_board_shape for rounded / round / custom outlines.
 - If the database is unavailable, use type "ic" with "pins" = the exact datasheet pin names in pin-number order (e.g. NE555: ["GND","TRIG","OUT","RESET","CTRL","THR","DIS","VCC"]) and an appropriate footprint (DIP-8, SOIC-8, ...). Use "connector" for headers/terminals with descriptive pin names.
 
 Use real, purchasable part values and show key calculations briefly (e.g. LED resistor = (Vs - Vf)/I). Keep replies concise and well formatted (markdown).`;
@@ -98,8 +99,11 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
         // Gemini "thinking" models require each tool call's thought_signature to be sent back unchanged.
         // Calls recorded before this fix (or from another provider) get Google's documented bypass value.
         const gem = /generativelanguage\.googleapis\.com/.test(settings.oaiBase);
-        if (m.toolCalls && m.toolCalls.length) o.tool_calls = m.toolCalls.map(t => Object.assign({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.input || {}) } },
-          t.extra ? { extra_content: t.extra } : gem ? { extra_content: { google: { thought_signature: 'skip_thought_signature_validator' } } } : {}));
+        // In a parallel batch Gemini signs only the first call — replay exactly what it sent; batches recorded with no
+        // signature at all (older history) get the bypass value on their first call.
+        const signed = (m.toolCalls || []).some(t => t.extra);
+        if (m.toolCalls && m.toolCalls.length) o.tool_calls = m.toolCalls.map((t, k) => Object.assign({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.input || {}) } },
+          t.extra ? { extra_content: t.extra } : (gem && !signed && k === 0) ? { extra_content: { google: { thought_signature: 'skip_thought_signature_validator' } } } : {}));
         out.push(o);
       } else if (m.role === 'tool') for (const r of m.results) out.push({ role: 'tool', tool_call_id: r.id, content: r.content });
     }

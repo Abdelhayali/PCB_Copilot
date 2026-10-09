@@ -50,6 +50,9 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
 - **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints.
+- **Copper pours, arcs, bottom-side parts, curved boards** — GND (or any net) pours with clearance cut-outs; arc tracks; footprints on the bottom side (mirrored, bottom copper/silk/paste); rounded, round/elliptical or custom board outlines.
+- **Placement optimizer** — moves / rotates / swaps parts and re-routes until every net is connected (also available to the AI).
+- **Gerber export with DRC check** — problems pop up with *Fix on board / Re-route / Optimize / Download anyway*.
 - **EasyEDA-style PCB editor** — Layers panel (EasyEDA colours, show/hide, colour, active layer, dim inactive), PCB Tools (Select, Track `W`, Via `V`, Measure `M`), interactive 45°/90°/any-angle routing with T/B layer switching and automatic vias, live clearance check, track/via properties, segment delete; the autorouter keeps hand-routed tracks.
 - **Design rules & DRC** — JLCPCB 2-layer defaults, editable per project (trace/power widths, per-net widths, clearance, vias, edge clearance, layers); exact-geometry DRC with markers on the board.
 - **Exports** — Gerber + Excellon drill (.zip), BOM (.csv), netlist (.net), schematic and PCB SVG, project JSON.
@@ -194,3 +197,15 @@ Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when t
 ### Connectors on the board edge
 
 **Generate PCB** puts connectors on the nearest board edge automatically: USB, DC jacks, RF and card connectors are rotated so the **opening faces outward, flush with the edge** (so a cable can plug in); pin headers and terminals sit just inside the edge. To choose the edge yourself, select the footprint on the PCB and click **⇤ Left / ⤒ Top / ⤓ Bottom / Right ⇥** in Properties — or ask the AI ("put the USB connector on the bottom edge"), which uses the `place_footprint` tool. The choice is remembered for later re-placements; press **Route** afterwards to reconnect.
+
+### More PCB tools
+
+| Feature | How |
+|---|---|
+| Copper pour | **⬛ Pour GND** (whole board, both layers) or the **Copper area** tool `E`: click corners, click the first corner to close; set net / layer / clearance in Properties. Other nets keep the clearance rule, same-net pads/tracks connect, the outline edge clearance is respected. Exported with clearance cut-outs. |
+| Arc track | `A`: click start, click end, click to set the curve. |
+| Drag tracks | Select tool: drag a segment (neighbours stay attached; a new corner is added at pads) or drag a corner. |
+| Bottom side | Select a footprint → **▼ Bottom** in Properties (mirrored, SMD pads on BottomLayer, BottomSilk, bottom paste/mask). The AI: `place_footprint {side: "bottom"}`. |
+| Board outline | **▭ Board**: rectangle, rounded rectangle, circle/ellipse, or **Draw outline** (custom polygon with rounded corners). Router, DRC, pours and the Edge_Cuts Gerber follow it. |
+| Optimize | **✨ Optimize** moves, rotates and swaps parts (and can grow the board) and re-routes until everything connects, keeping the best result. Connectors on edges stay put. The AI: `optimize_pcb`, or `get_pcb_layout` + `place_footprint` + `route_pcb`. |
+| Gerbers | **Gerbers ⤓** runs DRC first. If anything is wrong a window lists it (click to zoom) with **Fix on board · Re-route · Optimize placement · Download anyway**. Export includes copper, mask, paste, silkscreen (top + bottom), outline and drill. Via MCP, `export_gerbers` refuses on DRC errors unless `force: true`. |

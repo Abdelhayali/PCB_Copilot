@@ -4,18 +4,135 @@ const Pcb = (() => {
   const G = 0.25; // placement snap (mm); routing grid comes from the design rules
 
   // ---------- geometry ----------
+  // Bottom-side parts are mirrored (x → -x, seen from the top) and their SMD pads sit on BottomLayer.
+  const isBottom = c => c.pcb && c.pcb.side === 'B';
   function padsOf(c, idx) {
     const fp = Lib.footprint(c.footprint); if (!fp || !c.pcb) return [];
-    const r = c.pcb.rot || 0, sw = r === 90 || r === 270;
+    const r = c.pcb.rot || 0, sw = r === 90 || r === 270, bot = isBottom(c);
     return fp.pads.map((p, i) => {
-      const [x, y] = Lib.rot(p.x, p.y, r), key = c.ref + '.' + p.num;
-      return { ...p, x: c.pcb.x + x, y: c.pcb.y + y, w: sw ? p.h : p.w, h: sw ? p.w : p.h, key, uid: c.ref + '#' + i, ref: c.ref, net: idx ? idx[key] : undefined };
+      const [x, y] = Lib.rot(bot ? -p.x : p.x, p.y, r), key = c.ref + '.' + p.num;
+      return { ...p, x: c.pcb.x + x, y: c.pcb.y + y, w: sw ? p.h : p.w, h: sw ? p.w : p.h, key, uid: c.ref + '#' + i, ref: c.ref, layer: p.drill ? null : (bot ? 'B' : 'F'), net: idx ? idx[key] : undefined };
     });
   }
   function fpBox(c, pad = 0) {
-    const fp = Lib.footprint(c.footprint), b = Lib.rotBox(fp.box, c.pcb.rot || 0);
+    const fp = Lib.footprint(c.footprint), b0 = fp.box, m = isBottom(c) ? [-b0[2], b0[1], -b0[0], b0[3]] : b0, b = Lib.rotBox(m, c.pcb.rot || 0);
     return [c.pcb.x + b[0] - pad, c.pcb.y + b[1] - pad, c.pcb.x + b[2] + pad, c.pcb.y + b[3] + pad];
   }
+  const padCu = (p, L2) => p.drill ? L2 : [p.layer || 'F'];
+
+  // ---------- board outline (rectangle, rounded rectangle, ellipse, custom polygon with rounded corners) ----------
+  function filletPoly(pts, r, segs = 10) {
+    if (!r || r <= 0 || pts.length < 3) return pts.slice();
+    const out = [], n = pts.length;
+    for (let i = 0; i < n; i++) {
+      const P = pts[i], A = pts[(i - 1 + n) % n], B = pts[(i + 1) % n];
+      const ua = [A[0] - P[0], A[1] - P[1]], ub = [B[0] - P[0], B[1] - P[1]], la = Math.hypot(...ua), lb = Math.hypot(...ub);
+      if (la < 1e-9 || lb < 1e-9) { out.push(P); continue; }
+      ua[0] /= la; ua[1] /= la; ub[0] /= lb; ub[1] /= lb;
+      const ang = Math.acos(Math.max(-1, Math.min(1, ua[0] * ub[0] + ua[1] * ub[1])));
+      if (ang > Math.PI - 1e-3) { out.push(P); continue; }
+      let t = r / Math.tan(ang / 2); t = Math.min(t, la / 2, lb / 2); const rr = t * Math.tan(ang / 2);
+      const T1 = [P[0] + ua[0] * t, P[1] + ua[1] * t], T2 = [P[0] + ub[0] * t, P[1] + ub[1] * t];
+      const bis = [ua[0] + ub[0], ua[1] + ub[1]], bl = Math.hypot(...bis), dc = rr / Math.sin(ang / 2);
+      const C = [P[0] + bis[0] / bl * dc, P[1] + bis[1] / bl * dc];
+      let a1 = Math.atan2(T1[1] - C[1], T1[0] - C[0]), a2 = Math.atan2(T2[1] - C[1], T2[0] - C[0]), d = a2 - a1;
+      while (d > Math.PI) d -= 2 * Math.PI; while (d < -Math.PI) d += 2 * Math.PI;
+      for (let k = 0; k <= segs; k++) { const a = a1 + d * k / segs; out.push([C[0] + rr * Math.cos(a), C[1] + rr * Math.sin(a)]); }
+    }
+    return out;
+  }
+  function boardPoly(board = Model.S.board) {
+    const w = board.w, h = board.h, sh = board.shape || { type: 'rect' };
+    if (sh.type === 'ellipse') { const out = []; for (let k = 0; k < 96; k++) { const a = k / 96 * 2 * Math.PI; out.push([w / 2 + w / 2 * Math.cos(a), h / 2 + h / 2 * Math.sin(a)]); } return out; }
+    if (sh.type === 'polygon' && sh.pts && sh.pts.length >= 3) return filletPoly(sh.pts, +sh.r || 0);
+    const rect = [[0, 0], [w, 0], [w, h], [0, h]];
+    return sh.type === 'rounded' && sh.r > 0 ? filletPoly(rect, Math.min(+sh.r, w / 2, h / 2), 12) : rect;
+  }
+  const isRectBoard = (board = Model.S.board) => !board.shape || !board.shape.type || board.shape.type === 'rect';
+  function inPoly(x, y, poly) {
+    let c = false;
+    for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > y) !== (yj > y) && x < (xj - xi) * (y - yi) / (yj - yi) + xi) c = !c; }
+    return c;
+  }
+  // signed distance from a shape to the board outline (negative = sticks out of the board)
+  function edgeDist(sh, poly) {
+    let d = Infinity;
+    for (let i = 0; i < poly.length; i++) d = Math.min(d, shapeDist({ k: 'seg', a: poly[i], b: poly[(i + 1) % poly.length], r: 0 }, sh));
+    const c = sh.k === 'seg' ? sh.a : sh.k === 'circ' ? sh.c : [sh.cx, sh.cy];
+    return inPoly(c[0], c[1], poly) ? d : -d;
+  }
+  function setBoardShape(o = {}) {
+    const S = Model.S, b = S.board;
+    const type = o.shape || o.type || 'rect';
+    if (!['rect', 'rounded', 'ellipse', 'polygon'].includes(type)) throw new Error('shape must be rect, rounded, ellipse or polygon');
+    if (o.width > 0) b.w = +o.width; if (o.height > 0) b.h = +o.height;
+    const sh = { type };
+    if (type === 'rounded') sh.r = Math.max(0.5, +(o.corner_radius ?? o.r ?? 3));
+    if (type === 'polygon') {
+      const pts = (o.points || o.pts || []).map(q => [+q[0], +q[1]]);
+      if (pts.length < 3) throw new Error('polygon needs at least 3 points');
+      const minx = Math.min(...pts.map(q => q[0])), miny = Math.min(...pts.map(q => q[1]));
+      if (o.normalize !== false && (minx !== 0 || miny !== 0)) { for (const q of pts) { q[0] -= minx; q[1] -= miny; } for (const c of placed()) { c.pcb.x -= minx; c.pcb.y -= miny; } shiftCopper(-minx, -miny); }
+      sh.pts = pts.map(q => [+q[0].toFixed(3), +q[1].toFixed(3)]); sh.r = +(o.corner_radius ?? o.r ?? 0);
+      b.w = +Math.max(...sh.pts.map(q => q[0])).toFixed(3); b.h = +Math.max(...sh.pts.map(q => q[1])).toFixed(3);
+    }
+    b.shape = sh;
+    return { board: { w: b.w, h: b.h, shape: sh.type, corner_radius: sh.r }, outside: placed().filter(c => !fpInside(c)).map(c => c.ref) };
+  }
+  function shiftCopper(dx, dy) {
+    const P = Model.S.pcb;
+    for (const t of P.traces) t.pts = t.pts.map(q => [q[0] + dx, q[1] + dy]);
+    for (const v of P.vias) { v.x += dx; v.y += dy; }
+    for (const pr of P.pours || []) if (pr.pts) pr.pts = pr.pts.map(q => [q[0] + dx, q[1] + dy]);
+  }
+  function fpInside(c) { const b = fpBox(c, -0.1), poly = boardPoly(); return [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].every(q => inPoly(q[0], q[1], poly)); }
+
+  // ---------- copper pours ----------
+  const pourPoly = pr => pr.whole || !pr.pts ? boardPoly() : pr.pts;
+  // Raster of one pour: cells inside the pour and the board, away from other nets' copper. Labels = connected islands.
+  function pourRaster(pr, gStep = 0.2) {
+    const S = Model.S, R = rules(), cl = pr.clearance || R.clearance, poly = pourPoly(pr), bpoly = boardPoly(), idx = Model.pinIndex();
+    const W = Math.ceil(S.board.w / gStep) + 1, H = Math.ceil(S.board.h / gStep) + 1, N = W * H, ok = new Uint8Array(N);
+    const fill = (pl, val) => { for (let y = 0; y < H; y++) { const py = y * gStep, xs = []; for (let i = 0, j = pl.length - 1; i < pl.length; j = i++) { const [xi, yi] = pl[i], [xj, yj] = pl[j]; if ((yi > py) !== (yj > py)) xs.push((xj - xi) * (py - yi) / (yj - yi) + xi); } xs.sort((a, b) => a - b); for (let k = 0; k + 1 < xs.length; k += 2) for (let x = Math.max(0, Math.ceil(xs[k] / gStep)); x <= Math.min(W - 1, Math.floor(xs[k + 1] / gStep)); x++) ok[y * W + x] += val; } };
+    fill(poly, 1); fill(bpoly, 1); for (let i = 0; i < N; i++) ok[i] = ok[i] === 2 ? 1 : 0;
+    const diskOf = {}, disk = r => { const k = r.toFixed(3); if (diskOf[k]) return diskOf[k]; const n = Math.ceil(r / gStep), o = []; for (let dy = -n; dy <= n; dy++) for (let dx = -n; dx <= n; dx++) if ((dx * gStep) ** 2 + (dy * gStep) ** 2 < r * r) o.push(dx, dy); return (diskOf[k] = o); };
+    const blockSeg = (a, b, r) => { // mark a capsule by stamping disks along it
+      const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (gStep / 2))), d = disk(r + gStep * 0.35);
+      for (let k = 0; k <= n; k++) { const cx = Math.round((a[0] + (b[0] - a[0]) * k / n) / gStep), cy = Math.round((a[1] + (b[1] - a[1]) * k / n) / gStep); for (let q = 0; q < d.length; q += 2) { const x = cx + d[q], y = cy + d[q + 1]; if (x >= 0 && y >= 0 && x < W && y < H) ok[y * W + x] = 0; } }
+    };
+    const block = (sh, r) => {
+      if (sh.k === 'seg') return blockSeg(sh.a, sh.b, sh.r + r);
+      const b = bboxOf(sh), x0 = Math.max(0, Math.floor((b[0] - r) / gStep)), x1 = Math.min(W - 1, Math.ceil((b[2] + r) / gStep)), y0 = Math.max(0, Math.floor((b[1] - r) / gStep)), y1 = Math.min(H - 1, Math.ceil((b[3] + r) / gStep));
+      for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const i = y * W + x; if (ok[i] && shapeDist({ k: 'circ', c: [x * gStep, y * gStep], r: 0 }, sh) < r) ok[i] = 0; }
+    };
+    const L2 = R.layers === 1 ? ['F'] : ['F', 'B'];
+    for (const c of placed()) for (const q of padsOf(c, idx)) if (q.net !== pr.net && padCu(q, L2).includes(pr.layer)) block(padShape(q), cl);
+    for (const t of S.pcb.traces) if (t.net !== pr.net && t.layer === pr.layer) for (let i = 1; i < t.pts.length; i++) block({ k: 'seg', a: t.pts[i - 1], b: t.pts[i], r: t.w / 2 }, cl);
+    for (const v of S.pcb.vias) if (v.net !== pr.net) block({ k: 'circ', c: [v.x, v.y], r: v.d / 2 }, cl);
+    // board edge clearance
+    for (let i = 0; i < bpoly.length; i++) block({ k: 'seg', a: bpoly[i], b: bpoly[(i + 1) % bpoly.length], r: 0 }, R.edgeClearance);
+    const label = new Int32Array(N); let n = 0;
+    for (let i = 0; i < N; i++) if (ok[i] && !label[i]) {
+      n++; const st = [i]; label[i] = n;
+      while (st.length) { const k = st.pop(), x = k % W, y = (k / W) | 0; for (const [dx, dy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) { const nx = x + dx, ny = y + dy; if (nx < 0 || ny < 0 || nx >= W || ny >= H) continue; const j = ny * W + nx; if (ok[j] && !label[j]) { label[j] = n; st.push(j); } } }
+    }
+    return { W, H, g: gStep, label, islands: n, at: (x, y) => { const cx = Math.round(x / gStep), cy = Math.round(y / gStep); return cx < 0 || cy < 0 || cx >= W || cy >= H ? 0 : label[cy * W + cx]; } };
+  }
+  function addPour(o = {}) {
+    const S = Model.S; if (!S.board.w) throw new Error('Generate the PCB first');
+    const net = o.net || 'GND'; if (!S.nets[net]) throw new Error(`No net "${net}"`);
+    const layers = o.layer === 'both' ? ['F', 'B'] : [o.layer === 'B' || o.layer === 'bottom' ? 'B' : 'F'];
+    S.pcb.pours = S.pcb.pours || [];
+    const added = [];
+    for (const layer of layers) {
+      const pr = { net, layer };
+      if (o.points && o.points.length >= 3) pr.pts = o.points.map(q => [+q[0], +q[1]]); else pr.whole = true;
+      if (o.clearance > 0) pr.clearance = +o.clearance;
+      S.pcb.pours.push(pr); added.push(S.pcb.pours.length - 1);
+    }
+    return { added, pours: S.pcb.pours.length };
+  }
+
   const placed = () => Model.S.components.filter(c => c.pcb && Lib.footprint(c.footprint));
 
   // ---------- auto placement ----------
@@ -34,6 +151,7 @@ const Pcb = (() => {
       const px = use.reduce((t, q) => t + q.x, 0) / use.length, py = use.reduce((t, q) => t + q.y, 0) / use.length;
       const vx = (fp.box[0] + fp.box[2]) / 2 - px, vy = (fp.box[1] + fp.box[3]) / 2 - py;
       front = Math.abs(vx) > Math.abs(vy) ? [Math.sign(vx) || 1, 0] : [0, Math.sign(vy) || 1];
+      if (isBottom(c)) front[0] = -front[0];
     }
     return { plug, front };
   }
@@ -47,7 +165,7 @@ const Pcb = (() => {
     return wide === horiz ? 0 : 90;
   }
   function separate(cs, gap, lock = new Map()) {
-    const half = c => { const b = Lib.rotBox(Lib.footprint(c.footprint).box, c.pcb.rot); return [(b[2] - b[0]) / 2, (b[3] - b[1]) / 2, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; };
+    const half = c => { const b = fpBox(c), x = c.pcb.x, y = c.pcb.y; return [(b[2] - b[0]) / 2, (b[3] - b[1]) / 2, (b[0] + b[2]) / 2 - x, (b[1] + b[3]) / 2 - y]; };
     for (let it = 0; it < 500; it++) {
       let moved = false;
       for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
@@ -72,7 +190,7 @@ const Pcb = (() => {
     const S = Model.S, cs = S.components.filter(c => Lib.footprint(c.footprint));
     if (!cs.length) throw new Error('No components with footprints to place');
     const k = 0.085, gap = 1.0, m = opt.margin ?? 3;
-    for (const c of cs) c.pcb = { x: c.x * k, y: c.y * k, rot: c.rot || 0 };
+    for (const c of cs) { const side = c.pcb && c.pcb.side; c.pcb = { x: c.x * k, y: c.y * k, rot: c.rot || 0 }; if (side === 'B') c.pcb.side = 'B'; }
     separate(cs, gap);
     // connectors → nearest edge (or the edge chosen earlier with place_footprint)
     const cb = unionBox(cs), cx = (cb[0] + cb[2]) / 2, cy = (cb[1] + cb[3]) / 2;
@@ -111,10 +229,14 @@ const Pcb = (() => {
       for (const c of cs) { const sd = sideOf.get(c); c.pcb.x += sd === 'right' ? ex : sd === 'left' ? 0 : ex / 2; c.pcb.y += sd === 'bottom' ? ey : sd === 'top' ? 0 : ey / 2; }
       W = opt.w; H = opt.h;
     }
+    const shp = S.board.shape;
+    if (shp && shp.type === 'ellipse') { const ex = W * 0.21, ey = H * 0.21; W += 2 * ex; H += 2 * ey; ox += ex; oy += ey; }
+    if (shp && shp.type === 'rounded') { const e = (shp.r || 0) * 0.3; W += 2 * e; H += 2 * e; ox += e; oy += e; }
+    if (shp && shp.type === 'polygon') { const cx2 = (S.board.w - W) / 2, cy2 = (S.board.h - H) / 2; ox += cx2; oy += cy2; W = S.board.w; H = S.board.h; }
     W = Math.ceil(W * 10) / 10; H = Math.ceil(H * 10) / 10;
     for (const c of cs) { c.pcb.x = +(Math.round((c.pcb.x + ox) / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round((c.pcb.y + oy) / 0.05) * 0.05).toFixed(3); }
-    S.board = { w: +W.toFixed(1), h: +H.toFixed(1) };
-    S.pcb = { traces: [], vias: [], routed: {} };
+    S.board = Object.assign({}, S.board, { w: +W.toFixed(1), h: +H.toFixed(1) });
+    S.pcb = { traces: [], vias: [], routed: {}, pours: (S.pcb.pours || []).filter(pr => pr.whole) };
     return { board: S.board, placed: cs.length, on_edge: edgeParts.map(e => `${e.c.ref}:${e.side}${e.plug ? ' (opening outward)' : ''}`) };
   }
 
@@ -123,6 +245,8 @@ const Pcb = (() => {
     const S = Model.S, c = Model.comp(ref);
     if (!c || !Lib.footprint(c.footprint)) throw new Error(`No footprint for "${ref}"`);
     if (!c.pcb || !S.board.w) throw new Error('Generate the PCB first');
+    if (o.side) { const sd = /^b/i.test(o.side) ? 'B' : 'F'; if (sd === 'B') c.pcb.side = 'B'; else delete c.pcb.side; }
+    if (o.lock != null) c.pcb.locked = !!o.lock;
     if (o.edge) {
       if (!NORMAL[o.edge]) throw new Error('edge must be left, right, top or bottom');
       const info = edgeInfo(c) || { plug: false, front: null };
@@ -136,7 +260,7 @@ const Pcb = (() => {
     if (o.x != null) c.pcb.x = +o.x; if (o.y != null) c.pcb.y = +o.y;
     c.pcb.x = +(+c.pcb.x).toFixed(3); c.pcb.y = +(+c.pcb.y).toFixed(3);
     const b = fpBox(c);
-    return { ref: c.ref, x: c.pcb.x, y: c.pcb.y, rot: c.pcb.rot, edge: c.pcbEdge || null, outside_board: b[0] < -0.01 || b[1] < -0.01 || b[2] > S.board.w + 0.01 || b[3] > S.board.h + 0.01 };
+    return { ref: c.ref, x: c.pcb.x, y: c.pcb.y, rot: c.pcb.rot, side: isBottom(c) ? 'bottom' : 'top', edge: c.pcbEdge || null, outside_board: b[0] < -0.01 || b[1] < -0.01 || b[2] > S.board.w + 0.01 || b[3] > S.board.h + 0.01 };
   }
 
   // ---------- design rules ----------
@@ -219,14 +343,31 @@ const Pcb = (() => {
 
     // edge distance per cell (mm)
     const edge = new Float32Array(N);
-    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) edge[y * W + x] = Math.min(x * g, y * g, S.board.w - x * g, S.board.h - y * g);
+    if (isRectBoard()) { for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) edge[y * W + x] = Math.min(x * g, y * g, S.board.w - x * g, S.board.h - y * g); }
+    else {
+      // curved / custom outline: scanline fill for "inside", exact distance near the outline
+      const poly = boardPoly(), reach = R.edgeClearance + Math.max(R.viaDiameter, R.powerTraceWidth, ...Object.values(R.netWidths).map(Number)) + 2 * g;
+      edge.fill(-1);
+      for (let y = 0; y < H; y++) {
+        const py = y * g, xs = [];
+        for (let i = 0, j = poly.length - 1; i < poly.length; j = i++) { const [xi, yi] = poly[i], [xj, yj] = poly[j]; if ((yi > py) !== (yj > py)) xs.push((xj - xi) * (py - yi) / (yj - yi) + xi); }
+        xs.sort((a, b) => a - b);
+        for (let k = 0; k + 1 < xs.length; k += 2) for (let x = Math.max(0, Math.ceil(xs[k] / g)); x <= Math.min(W - 1, Math.floor(xs[k + 1] / g)); x++) edge[y * W + x] = 1e9;
+      }
+      for (let i = 0; i < poly.length; i++) {
+        const a = poly[i], b = poly[(i + 1) % poly.length];
+        const x0 = Math.max(0, Math.floor((Math.min(a[0], b[0]) - reach) / g)), x1 = Math.min(W - 1, Math.ceil((Math.max(a[0], b[0]) + reach) / g));
+        const y0 = Math.max(0, Math.floor((Math.min(a[1], b[1]) - reach) / g)), y1 = Math.min(H - 1, Math.ceil((Math.max(a[1], b[1]) + reach) / g));
+        for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) { const k = y * W + x; if (edge[k] >= 0) { const d = ptSeg([x * g, y * g], a, b); if (d < edge[k]) edge[k] = d; } }
+      }
+    }
 
     // pads: raster cells whose centre lies in the pad (+ nearest cell for tiny pads)
     const allPads = [], padOf = new Int32Array(L * N);
     let orphan = -2;
     for (const c of cs) for (const p of padsOf(c, idx)) {
       p.id = p.net ? netId[p.net] : orphan--;
-      p.layers = L === 1 ? [0] : (p.drill ? [0, 1] : [0]);
+      p.layers = L === 1 ? [0] : (p.drill ? [0, 1] : [p.layer === 'B' ? 1 : 0]);
       p.cells = [];
       const x0 = Math.max(0, Math.floor((p.x - p.w / 2) / g)), x1 = Math.min(W - 1, Math.ceil((p.x + p.w / 2) / g));
       const y0 = Math.max(0, Math.floor((p.y - p.h / 2) / g)), y1 = Math.min(H - 1, Math.ceil((p.y + p.h / 2) / g));
@@ -239,7 +380,7 @@ const Pcb = (() => {
     // Existing copper is kept (opt.keep !== false): it becomes an obstacle for other nets and part of its own net.
     const keep = opt.keep !== false;
     const oldTraces = keep ? S.pcb.traces.slice() : [], oldVias = keep ? S.pcb.vias.slice() : [];
-    if (!keep) S.pcb = { traces: [], vias: [], routed: {} };
+    if (!keep) S.pcb = { traces: [], vias: [], routed: {}, pours: S.pcb.pours || [] };
     const conn = connectivity();
     const preT = [], preV = [];
     let orphanT = -100000;
@@ -266,7 +407,7 @@ const Pcb = (() => {
     }).filter(j => j.pads.length >= 2);
     const already = jobs.filter(j => j.islands.length <= 1).map(j => j.net);
     const todo = jobs.filter(j => j.islands.length > 1);
-    if (!todo.length) { S.pcb = { traces: oldTraces, vias: oldVias, routed: Object.fromEntries(already.map(n => [n, true])) }; return { routed: jobs.length, total: jobs.length, failed: [], necked_down: [], vias: oldVias.length, kept_tracks: oldTraces.length, rules: R.preset }; }
+    if (!todo.length) { S.pcb = { traces: oldTraces, vias: oldVias, pours: S.pcb.pours || [], routed: Object.fromEntries(already.map(n => [n, true])) }; return { routed: jobs.length, total: jobs.length, failed: [], necked_down: [], vias: oldVias.length, kept_tracks: oldTraces.length, rules: R.preset }; }
 
     const maxW = Math.max(R.traceWidth, ...jobs.map(j => j.w));
     const padReach = Math.max(maxW / 2, R.viaDiameter / 2) + R.clearance + R.viaDrill / 2 + R.minHoleToHole;
@@ -371,8 +512,8 @@ const Pcb = (() => {
             }
           }
           if (L > 1 && !blockV[i]) {
-            const pad = padOf[i] ? allPads[padOf[i] - 1] : null; // via-in-pad only inside our own pad, where the via fits
-            if (!pad || pad.drill || own[i] >= dv) {
+            const pi = padOf[i] || (L > 1 ? padOf[N + i] : 0), pad = pi ? allPads[pi - 1] : null; // via-in-pad only inside our own pad, where the via fits
+            if (!pad || pad.drill || Math.max(own[i], L > 1 ? own[N + i] : 0) >= dv) {
               const os = (1 - l) * N + i;
               if (stamp[os] !== sid) { stamp[os] = sid; g2[os] = Infinity; closed[os] = 0; tmask[os] = 0; }
               if (!closed[os]) {
@@ -474,7 +615,7 @@ const Pcb = (() => {
       order = [...order.filter(j => f.has(j.net)), ...order.filter(j => !f.has(j.net))];
     }
     for (const n of already) best.routed[n] = true;
-    S.pcb = { traces: oldTraces.concat(best.traces), vias: oldVias.concat(best.vias), routed: best.routed };
+    S.pcb = { traces: oldTraces.concat(best.traces), vias: oldVias.concat(best.vias), pours: S.pcb.pours || [], routed: best.routed };
     return { routed: Object.keys(best.routed).length, total: jobs.length, kept_tracks: oldTraces.length, failed: best.failed, necked_down: best.necked, vias: best.vias.length, board: S.board, grid_mm: +g.toFixed(3), search: stats, rules: { preset: R.preset, trace: R.traceWidth, power: R.powerTraceWidth, clearance: R.clearance, via: `${R.viaDiameter}/${R.viaDrill}`, layers: L } };
   }
 
@@ -532,7 +673,14 @@ const Pcb = (() => {
     if (!cs.length || !S.board.w) return { violations: out, summary: 'No PCB' };
     const L = R.layers === 1 ? 1 : 2, objs = [];
     let orphan = 0;
-    for (const c of cs) for (const p of padsOf(c, idx)) objs.push({ s: padShape(p), net: p.net || '~' + (orphan++), layers: L === 1 ? ['F'] : (p.drill ? ['F', 'B'] : ['F']), what: `pad ${p.key}`, drill: p.drill, x: p.x, y: p.y });
+    for (const c of cs) for (const p of padsOf(c, idx)) objs.push({ s: padShape(p), net: p.net || '~' + (orphan++), layers: L === 1 ? ['F'] : padCu(p, ['F', 'B']), what: `pad ${p.key}`, drill: p.drill, x: p.x, y: p.y });
+    for (const c of cs) if (!fpInside(c)) add('outline', `${c.ref} is outside the board outline`, c.pcb.x, c.pcb.y);
+    const pours = S.pcb.pours || [];
+    for (let i = 0; i < pours.length; i++) for (let j = i + 1; j < pours.length; j++) {
+      const A = pours[i], B = pours[j]; if (A.layer !== B.layer || A.net === B.net) continue;
+      const pa = pourPoly(A), pb = pourPoly(B);
+      if (pa.some(q => inPoly(q[0], q[1], pb)) || pb.some(q => inPoly(q[0], q[1], pa))) add('pour', `Copper pours ${A.net} and ${B.net} overlap on ${A.layer === 'F' ? 'TopLayer' : 'BottomLayer'} (short)`, pa[0][0], pa[0][1]);
+    }
     for (const t of S.pcb.traces) {
       if (t.w < R.minTraceWidth - 1e-6) add('trace-width', `Trace on ${t.net} is ${t.w} mm (fab minimum ${R.minTraceWidth})`, t.pts[0][0], t.pts[0][1]);
       for (let i = 1; i < t.pts.length; i++) objs.push({ s: { k: 'seg', a: t.pts[i - 1], b: t.pts[i], r: t.w / 2 }, net: t.net || '~t' + S.pcb.traces.indexOf(t), layers: [t.layer], what: `trace ${t.net || '(no net)'}`, x: (t.pts[i - 1][0] + t.pts[i][0]) / 2, y: (t.pts[i - 1][1] + t.pts[i][1]) / 2 });
@@ -560,8 +708,9 @@ const Pcb = (() => {
       return m === Infinity ? Infinity : Math.max(m, d0);
     }
     // board edge
+    const bpoly = boardPoly(), rectB = isRectBoard();
     objs.forEach((o, i) => {
-      const b = boxes[i], d = Math.min(b[0], b[1], S.board.w - b[2], S.board.h - b[3]);
+      const b = boxes[i], d = rectB ? Math.min(b[0], b[1], S.board.w - b[2], S.board.h - b[3]) : edgeDist(o.s, bpoly);
       if (d < R.edgeClearance - 1e-3) add('edge', `${o.what} is ${Math.max(0, d).toFixed(3)} mm from the board edge (rule ${R.edgeClearance})`, o.x, o.y, d < R.minEdgeClearance ? 'error' : 'warning');
     });
     // copper clearance + hole spacing
@@ -591,25 +740,49 @@ const Pcb = (() => {
       }
     }
     const st = status();
-    for (const n of st.unrouted) out.push({ type: 'unrouted', severity: 'warning', msg: `Net ${n} is not routed` });
+    for (const n of st.unrouted) out.push({ type: 'unrouted', severity: 'error', msg: `Net ${n} is not routed (connection error — the board would not work)` });
     const errors = out.filter(v => v.severity === 'error').length, warnings = out.length - errors;
     return { violations: out, errors, warnings, summary: errors ? `${errors} errors, ${warnings} warnings` : warnings ? `0 errors, ${warnings} warnings` : 'DRC passed' };
   }
 
   // Which pads of each net are joined by copper (pads, tracks, vias that touch on a shared layer).
+  let connMemo = { key: null, val: null };
   function connectivity() {
-    const S = Model.S, idx = Model.pinIndex(), L2 = (rules().layers === 1) ? ['F'] : ['F', 'B'];
+    const S = Model.S;
+    const key = JSON.stringify([S.pcb, S.board, S.nets, S.rules, S.components.map(c => [c.ref, c.pcb, c.footprint, c.lcsc])]);
+    if (connMemo.key === key) return connMemo.val;
+    const idx = Model.pinIndex(), L2 = (rules().layers === 1) ? ['F'] : ['F', 'B'];
     const nodes = [];
-    for (const c of placed()) for (const p of padsOf(c, idx)) if (p.net) nodes.push({ k: 'pad', p, net: p.net, layers: p.drill ? L2 : ['F'], shapes: [padShape(p)] });
+    for (const c of placed()) for (const p of padsOf(c, idx)) if (p.net) nodes.push({ k: 'pad', p, net: p.net, layers: padCu(p, L2), shapes: [padShape(p)] });
     S.pcb.traces.forEach((t, i) => { if (t.net) nodes.push({ k: 'trace', i, net: t.net, layers: [t.layer], shapes: t.pts.slice(1).map((q, j) => ({ k: 'seg', a: t.pts[j], b: q, r: t.w / 2 })) }); });
     S.pcb.vias.forEach((v, i) => { if (v.net) nodes.push({ k: 'via', i, net: v.net, layers: L2, shapes: [{ k: 'circ', c: [v.x, v.y], r: v.d / 2 }] }); });
+    // copper pours: each connected island of a pour is a node; same-net copper touching the island joins it
+    const pourNodes = [];
+    (S.pcb.pours || []).forEach((pr, pi) => {
+      if (!S.nets[pr.net] || !L2.includes(pr.layer)) return;
+      const ras = pourRaster(pr), first = nodes.length;
+      for (let k = 1; k <= ras.islands; k++) nodes.push({ k: 'pour', net: pr.net, layers: [pr.layer], shapes: [], pour: pi, island: k });
+      pourNodes.push({ pr, ras, first });
+    });
     const par = nodes.map((_, i) => i), find = i => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; };
+    const samples = sh => {
+      const out = [];
+      if (sh.k === 'circ') out.push(sh.c);
+      else if (sh.k === 'rect') { for (let x = -1; x <= 1; x++) for (let y = -1; y <= 1; y++) out.push([sh.cx + x * sh.hw * 0.8, sh.cy + y * sh.hh * 0.8]); }
+      else { const n = Math.max(1, Math.ceil(Math.hypot(sh.b[0] - sh.a[0], sh.b[1] - sh.a[1]) / 0.2)); for (let k = 0; k <= n; k++) out.push([sh.a[0] + (sh.b[0] - sh.a[0]) * k / n, sh.a[1] + (sh.b[1] - sh.a[1]) * k / n]); }
+      return out;
+    };
+    for (const { pr, ras, first } of pourNodes) nodes.forEach((n, i) => {
+      if (n.k === 'pour' || n.net !== pr.net || !n.layers.includes(pr.layer)) return;
+      for (const sh of n.shapes) for (const q of samples(sh)) { const lab = ras.at(q[0], q[1]); if (lab) { const a = find(i), b = find(first + lab - 1); if (a !== b) par[a] = b; } }
+    });
     const byNet = {};
     nodes.forEach((n, i) => (byNet[n.net] = byNet[n.net] || []).push(i));
     for (const ids of Object.values(byNet)) {
       const boxes = ids.map(i => { let b = [Infinity, Infinity, -Infinity, -Infinity]; for (const sh of nodes[i].shapes) { const q = bboxOf(sh); b = [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[2]), Math.max(b[3], q[3])]; } return b; });
       for (let a = 0; a < ids.length; a++) for (let b = a + 1; b < ids.length; b++) {
         const A = nodes[ids[a]], B = nodes[ids[b]], ba = boxes[a], bb = boxes[b];
+        if (!A.shapes.length || !B.shapes.length) continue;
         if (ba[0] > bb[2] + 0.01 || bb[0] > ba[2] + 0.01 || ba[1] > bb[3] + 0.01 || bb[1] > ba[3] + 0.01) continue;
         if (!A.layers.some(l => B.layers.includes(l)) || find(ids[a]) === find(ids[b])) continue;
         if (A.shapes.some(sa => B.shapes.some(sb => shapeDist(sa, sb) <= 0.002))) par[find(ids[a])] = find(ids[b]);
@@ -623,6 +796,7 @@ const Pcb = (() => {
       const g = Object.values(groups);
       out[net] = { pads, groups: g, complete: g.length === 1 };
     }
+    connMemo = { key, val: out };
     return out;
   }
   // Ratsnest: shortest lines that would join the still-separate copper islands of each net.
@@ -661,22 +835,42 @@ const Pcb = (() => {
     }
     const f6 = v => v.toFixed(6);
     const padAp = (p, grow = 0) => p.shape === 'round' ? `C,${f6(p.w + grow)}` : p.shape === 'oval' ? `O,${f6(p.w + grow)}X${f6(p.h + grow)}` : `R,${f6(p.w + grow)}X${f6(p.h + grow)}`;
+    const R = rules(), onLayer = (p, layer) => p.drill || (p.layer || 'F') === layer;
+    const drawCopper = (A, b, layer, grow, net) => {
+      for (const t of S.pcb.traces) if (t.layer === layer && (net === undefined || t.net !== net)) { b.push(A(`C,${f6(t.w + grow)}`) + '*'); b.push(X(...t.pts[0]) + 'D02*'); for (const q of t.pts.slice(1)) b.push(X(...q) + 'D01*'); }
+      for (const p of pads) if (onLayer(p, layer) && (net === undefined || p.net !== net)) { b.push(A(padAp(p, grow)) + '*'); b.push(X(p.x, p.y) + 'D03*'); }
+      for (const v of S.pcb.vias) if (net === undefined || v.net !== net) { b.push(A(`C,${f6(v.d + grow)}`) + '*'); b.push(X(v.x, v.y) + 'D03*'); }
+    };
+    const outline = boardPoly();
     const copper = (layer, func) => file(func, (A, b) => {
-      for (const t of S.pcb.traces.filter(t => t.layer === layer)) {
-        b.push(A(`C,${f6(t.w)}`) + '*'); b.push(X(...t.pts[0]) + 'D02*'); for (const p of t.pts.slice(1)) b.push(X(...p) + 'D01*');
+      // copper pours: dark region, then clear (LPC) other nets' copper + the board-edge band, then all copper on top
+      const pours = (S.pcb.pours || []).filter(pr => pr.layer === layer && S.nets[pr.net]);
+      if (pours.length) {
+        b.push('G01*');
+        for (const pr of pours) {
+          const poly = pourPoly(pr), cl = pr.clearance || R.clearance;
+          b.push('%LPD*%', 'G36*', X(...poly[0]) + 'D02*'); for (const q of poly.slice(1)) b.push(X(...q) + 'D01*'); b.push(X(...poly[0]) + 'D01*', 'G37*');
+          b.push('%LPC*%'); drawCopper(A, b, layer, 2 * cl, pr.net);
+          b.push(A(`C,${f6(2 * R.edgeClearance)}`) + '*', X(...outline[0]) + 'D02*'); for (const q of outline.slice(1)) b.push(X(...q) + 'D01*'); b.push(X(...outline[0]) + 'D01*');
+        }
+        b.push('%LPD*%');
       }
-      for (const p of pads) if (p.drill || layer === 'F') { b.push(A(padAp(p)) + '*'); b.push(X(p.x, p.y) + 'D03*'); }
-      for (const v of S.pcb.vias) { b.push(A(`C,${f6(v.d)}`) + '*'); b.push(X(v.x, v.y) + 'D03*'); }
+      drawCopper(A, b, layer, 0);
     });
-    const mask = (layer, func) => file(func, (A, b) => { for (const p of pads) if (p.drill || layer === 'F') { b.push(A(padAp(p, 0.1)) + '*'); b.push(X(p.x, p.y) + 'D03*'); } });
+    const mask = (layer, func) => file(func, (A, b) => { for (const p of pads) if (onLayer(p, layer)) { b.push(A(padAp(p, 0.1)) + '*'); b.push(X(p.x, p.y) + 'D03*'); } });
+    const paste = (layer, func) => file(func, (A, b) => { for (const p of pads) if (!p.drill && (p.layer || 'F') === layer) { b.push(A(padAp(p)) + '*'); b.push(X(p.x, p.y) + 'D03*'); } });
     const rectPath = (b, x0, y0, x1, y1) => { b.push(X(x0, y0) + 'D02*'); b.push(X(x1, y0) + 'D01*'); b.push(X(x1, y1) + 'D01*'); b.push(X(x0, y1) + 'D01*'); b.push(X(x0, y0) + 'D01*'); };
+    const silk = side => (A, b) => { b.push(A('C,0.150000') + '*'); for (const c of cs) if ((isBottom(c) ? 'B' : 'F') === side) { const bb = fpBox(c); rectPath(b, bb[0], bb[1], bb[2], bb[3]); } };
     const files = {
       'board-F_Cu.gtl': copper('F', 'Copper,L1,Top'),
       'board-B_Cu.gbl': copper('B', 'Copper,L2,Bot'),
       'board-F_Mask.gts': mask('F', 'Soldermask,Top'),
       'board-B_Mask.gbs': mask('B', 'Soldermask,Bot'),
-      'board-F_Silkscreen.gto': file('Legend,Top', (A, b) => { b.push(A('C,0.150000') + '*'); for (const c of cs) { const bb = fpBox(c); rectPath(b, bb[0], bb[1], bb[2], bb[3]); } }),
-      'board-Edge_Cuts.gm1': file('Profile,NP', (A, b) => { b.push(A('C,0.100000') + '*'); rectPath(b, 0, 0, S.board.w, S.board.h); }),
+      'board-F_Paste.gtp': paste('F', 'Paste,Top'),
+      'board-B_Paste.gbp': paste('B', 'Paste,Bot'),
+      'board-F_Silkscreen.gto': file('Legend,Top', silk('F')),
+      'board-B_Silkscreen.gbo': file('Legend,Bot', silk('B')),
+      'board-Edge_Cuts.gm1': file('Profile,NP', (A, b) => { b.push(A('C,0.100000') + '*'); b.push(X(...outline[0]) + 'D02*'); for (const q of outline.slice(1)) b.push(X(...q) + 'D01*'); b.push(X(...outline[0]) + 'D01*'); }),
     };
     const holes = [...pads.filter(p => p.drill).map(p => ({ x: p.x, y: p.y, d: p.drill })), ...S.pcb.vias.map(v => ({ x: v.x, y: v.y, d: v.drill }))];
     const tools = [...new Set(holes.map(h => h.d.toFixed(3)))];
@@ -685,7 +879,75 @@ const Pcb = (() => {
     files['board-PTH.drl'] = drl + 'M30\n';
     return files;
   }
-  return { autoPlace, placeFootprint, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
+  function optimize(opt = {}) {
+    const S = Model.S, t0 = Date.now(), limit = (opt.time_limit_s || 60) * 1000, maxIt = opt.iterations || 12, grow = opt.allow_grow !== false, flip = !!opt.allow_bottom;
+    if (!placed().length || !S.board.w) throw new Error('Generate the PCB first');
+    const manual = { traces: S.pcb.traces.filter(t => t.manual), vias: S.pcb.vias.filter(v => v.manual) };
+    const clone = o => JSON.parse(JSON.stringify(o));
+    const snapPlace = () => placed().map(c => [c.ref, clone(c.pcb)]);
+    const applyPlace = arr => arr.forEach(([ref, q]) => { const c = Model.comp(ref); if (c) c.pcb = clone(q); });
+    let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    let it = 0;
+    const evaluate = () => {
+      S.pcb = { traces: manual.traces.slice(), vias: manual.vias.slice(), pours: S.pcb.pours || [], routed: {} };
+      route({ tries: 1, onProgress: opt.onProgress ? p => opt.onProgress(Object.assign({ iteration: it, of: maxIt }, p)) : null });
+      const st = status(); return { failed: st.unrouted.length, len: st.trace_length_mm, unrouted: st.unrouted };
+    };
+    const better = (a, b) => a.failed < b.failed || (a.failed === b.failed && a.len < b.len - 0.5);
+    let cur = evaluate();
+    let best = { score: cur, place: snapPlace(), pcb: clone(S.pcb), board: clone(S.board) };
+    const history = [{ iteration: 0, unrouted: cur.failed, length_mm: cur.len, move: 'start' }];
+    const idx = Model.pinIndex();
+    const movable = () => placed().filter(c => !c.pcbEdge && !c.pcb.locked && !edgeInfo(c));
+    while (it < maxIt && best.score.failed > 0 && Date.now() - t0 < limit) {
+      it++;
+      applyPlace(best.place); S.board = clone(best.board); S.pcb = clone(best.pcb);
+      const failed = best.score.unrouted, pads = placed().flatMap(c => padsOf(c, idx));
+      const involved = movable().filter(c => pads.some(p => p.ref === c.ref && failed.includes(p.net)));
+      const pool = involved.length ? involved : movable();
+      const pick = () => pool[Math.floor(rnd() * pool.length)];
+      const kind = ['toward', 'rotate', 'swap', 'toward', grow ? 'grow' : 'rotate', flip ? 'flip' : 'toward'][(it - 1) % 6];
+      let desc = kind;
+      if (kind === 'toward' && pool.length) {
+        const c = pick(), own = new Set(padsOf(c, idx).map(p => p.net).filter(n => failed.includes(n) || rnd() < 0.3));
+        const tgt = pads.filter(p => p.ref !== c.ref && own.has(p.net));
+        if (tgt.length) { const tx = tgt.reduce((a, p) => a + p.x, 0) / tgt.length, ty = tgt.reduce((a, p) => a + p.y, 0) / tgt.length, f = 0.35 + 0.3 * rnd(); c.pcb.x += (tx - c.pcb.x) * f; c.pcb.y += (ty - c.pcb.y) * f; desc = `move ${c.ref} toward its connections`; }
+      } else if (kind === 'rotate' && pool.length) { const c = pick(); c.pcb.rot = ((c.pcb.rot || 0) + (rnd() < 0.5 ? 90 : 180)) % 360; desc = `rotate ${c.ref}`; }
+      else if (kind === 'swap' && pool.length > 1) {
+        const a = pick(); let b = pick(); for (let k = 0; k < 6 && b === a; k++) b = pick();
+        if (a !== b) { const ax = a.pcb.x, ay = a.pcb.y; a.pcb.x = b.pcb.x; a.pcb.y = b.pcb.y; b.pcb.x = ax; b.pcb.y = ay; desc = `swap ${a.ref} ↔ ${b.ref}`; }
+      } else if (kind === 'flip' && pool.length) { const c = pick(); if (c.pcb.side === 'B') delete c.pcb.side; else c.pcb.side = 'B'; desc = `move ${c.ref} to the ${c.pcb.side === 'B' ? 'bottom' : 'top'} side`; }
+      else if (kind === 'grow') {
+        const f = 1.1, cx = S.board.w / 2, cy = S.board.h / 2;
+        for (const c of placed()) { c.pcb.x = cx * f + (c.pcb.x - cx) * f; c.pcb.y = cy * f + (c.pcb.y - cy) * f; }
+        S.board.w = +(S.board.w * f).toFixed(1); S.board.h = +(S.board.h * f).toFixed(1);
+        if (S.board.shape && S.board.shape.pts) S.board.shape.pts = S.board.shape.pts.map(q => [q[0] * f, q[1] * f]);
+        desc = `enlarge board to ${S.board.w}×${S.board.h} mm`;
+      }
+      // keep connectors on their edges, remove overlaps, stay on the board
+      const lock = new Map();
+      for (const c of placed()) if (c.pcbEdge || edgeInfo(c) || c.pcb.locked) lock.set(c, 'xy');
+      separate(placed(), 1.0, lock);
+      for (const c of placed()) if (c.pcbEdge || edgeInfo(c)) {
+        const b = fpBox(c), side = c.pcbEdge || [['left', b[0]], ['right', S.board.w - b[2]], ['top', b[1]], ['bottom', S.board.h - b[3]]].sort((p, q) => p[1] - q[1])[0][0];
+        const had = c.pcbEdge; placeFootprint(c.ref, { edge: side }); if (!had) delete c.pcbEdge;
+      } else {
+        const b = fpBox(c), m = 1;
+        if (b[0] < m) c.pcb.x += m - b[0]; if (b[1] < m) c.pcb.y += m - b[1];
+        if (b[2] > S.board.w - m) c.pcb.x -= b[2] - (S.board.w - m); if (b[3] > S.board.h - m) c.pcb.y -= b[3] - (S.board.h - m);
+      }
+      for (const c of placed()) { c.pcb.x = +(Math.round(c.pcb.x / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round(c.pcb.y / 0.05) * 0.05).toFixed(3); }
+      const sc = evaluate();
+      const kept = better(sc, best.score);
+      history.push({ iteration: it, move: desc, unrouted: sc.failed, length_mm: sc.len, kept });
+      if (kept) best = { score: sc, place: snapPlace(), pcb: clone(S.pcb), board: clone(S.board) };
+    }
+    applyPlace(best.place); S.board = clone(best.board); S.pcb = clone(best.pcb);
+    const st = status();
+    return { iterations: it, routed: st.routed, total: st.nets, unrouted: st.unrouted, trace_length_mm: st.trace_length_mm, board: S.board, seconds: +((Date.now() - t0) / 1000).toFixed(1), history };
+  }
+
+  return { autoPlace, placeFootprint, optimize, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
 })();
 
 // Minimal ZIP (store, no compression) writer.
