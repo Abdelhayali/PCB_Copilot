@@ -36,6 +36,7 @@ const App = (() => {
     let s = `${S.components.length} parts · ${Object.keys(S.nets).length} nets · <span class="${e ? 'bad' : w ? 'warn' : 'good'}" id="ercLink" title="Click for ERC details">ERC: ${e} errors, ${w} warnings</span>`;
     const st = Pcb.status();
     if (st.placed && S.board.w) s += ` · PCB ${S.board.w}×${S.board.h} mm · <span class="${st.unrouted.length ? 'warn' : 'good'}">${st.routed}/${st.nets} routed</span> · ${st.vias} vias · ${st.trace_length_mm} mm copper`;
+    if (Pcb.ui.drc) s += ` · <span class="${Pcb.ui.drc.errors ? 'bad' : Pcb.ui.drc.warnings ? 'warn' : 'good'}">DRC: ${esc(Pcb.ui.drc.summary)}</span>`;
     $('#status').innerHTML = s;
     $('#ercLink').onclick = () => {
       $('#props').innerHTML = '<div class="ph">ERC report</div>' + (erc.length ? '<ul class="erc">' + erc.map(i => `<li class="${i.level}">${esc(i.msg)}</li>`).join('') + '</ul>' : '<div class="muted">No issues 🎉</div>');
@@ -157,6 +158,81 @@ const App = (() => {
         Sch.select(ref);
       }
     });
+  }
+
+  // ---------- autorouter in a Web Worker ----------
+  let worker = null, routeReject = null;
+  function runRouter({ place = null, opt = {} } = {}) {
+    if (worker) worker.terminate();
+    return new Promise((resolve, reject) => {
+      routeReject = reject;
+      worker = new Worker('js/route-worker.js');
+      $('#routeBusy').classList.remove('hidden'); $('#routeMsg').textContent = place ? 'Placing…' : 'Routing…';
+      worker.onmessage = e => {
+        const m = e.data;
+        if (m.type === 'progress') { $('#routeMsg').textContent = `Routing ${m.net} (${m.done + 1}/${m.total})${m.attempt > 1 ? ' · pass ' + m.attempt : ''}`; return; }
+        worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden');
+        if (m.type === 'error') { reject(new Error(m.message)); return; }
+        Model.mutate(() => {
+          const S = Model.S;
+          for (const [ref, pcb] of m.positions) { const c = Model.comp(ref); if (c) c.pcb = pcb; }
+          S.board = m.board; S.pcb = m.pcb;
+        });
+        Pcb.ui.drc = null;
+        resolve({ placement: m.placement, routing: m.routing });
+      };
+      worker.onerror = e => { worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden'); reject(new Error(e.message || 'Router crashed')); };
+      worker.postMessage({ state: JSON.parse(Model.snapshot()), place, opt });
+    });
+  }
+
+  // ---------- design rules + DRC ----------
+  let rDraft = null;
+  function openRules() {
+    rDraft = JSON.parse(JSON.stringify(Pcb.rules()));
+    $('#rPreset').innerHTML = Object.entries(Pcb.RULE_PRESETS).map(([k, v]) => `<option value="${k}">${esc(v.label)}</option>`).join('');
+    fillRules(); $('#rulesModal').classList.remove('hidden');
+  }
+  function fillRules() {
+    $('#rPreset').value = rDraft.preset;
+    $$('#rulesModal [data-r]').forEach(el => { const v = rDraft[el.dataset.r]; if (el.type === 'checkbox') el.checked = !!v; else el.value = v; });
+    $('#rNets').innerHTML = Object.entries(rDraft.netWidths).map(([n, w]) => `<div class="nr"><b>${esc(n)}</b><span>${w} mm</span><button data-rm="${esc(n)}" class="danger">✕</button></div>`).join('') || '<div class="muted small">No per-net widths — power/GND nets use the power width.</div>';
+    $('#rNetSel').innerHTML = Object.keys(Model.S.nets).sort().map(n => `<option>${esc(n)}</option>`).join('');
+    const w = Pcb.ruleWarnings(rDraft); $('#rWarn').innerHTML = w.map(x => '⚠ ' + esc(x)).join('<br>');
+  }
+  function readRules() {
+    $$('#rulesModal [data-r]').forEach(el => { const k = el.dataset.r; rDraft[k] = el.type === 'checkbox' ? el.checked : +el.value; });
+  }
+  async function saveRules(route) {
+    readRules();
+    const u = Object.assign({}, rDraft), cur = Pcb.rules();
+    const removed = Object.keys(cur.netWidths).filter(n => !(n in rDraft.netWidths));
+    u.netWidths = Object.assign({}, rDraft.netWidths); removed.forEach(n => u.netWidths[n] = 0);
+    try {
+      const r = Model.mutate(() => { Model.S.rules = { preset: rDraft.preset, netWidths: Model.S.rules && Model.S.rules.netWidths || {} }; return Pcb.setRules(u); });
+      $('#rulesModal').classList.add('hidden');
+      toast(r.warnings.length ? '⚠ ' + r.warnings[0] : 'Design rules saved');
+      if (route) { showView('pcb'); $('#btnRoute').click(); }
+    } catch (e) { $('#rWarn').textContent = e.message; }
+  }
+  function initRules() {
+    $('#rulesClose').onclick = $('#rulesCancel').onclick = () => $('#rulesModal').classList.add('hidden');
+    $('#rPreset').onchange = e => { const nw = rDraft.netWidths; rDraft = Object.assign({ preset: e.target.value, netWidths: nw }, Pcb.RULE_PRESETS[e.target.value].values); fillRules(); };
+    $('#rulesModal').addEventListener('input', e => { if (e.target.dataset.r) { readRules(); $('#rWarn').innerHTML = Pcb.ruleWarnings(rDraft).map(x => '⚠ ' + esc(x)).join('<br>'); } });
+    $('#rNets').onclick = e => { const b = e.target.closest('[data-rm]'); if (b) { readRules(); delete rDraft.netWidths[b.dataset.rm]; fillRules(); } };
+    $('#rNetAdd').onclick = () => { readRules(); const n = $('#rNetSel').value, w = +$('#rNetW').value; if (n && w > 0) { rDraft.netWidths[n] = w; $('#rNetW').value = ''; fillRules(); } };
+    $('#rulesSave').onclick = () => saveRules(false); $('#rulesRoute').onclick = () => saveRules(true);
+  }
+  function showDrc(goto) {
+    const d = Pcb.drc(); Pcb.ui.drc = d;
+    if (goto && view !== 'pcb') showView('pcb'); else Pcb.render();
+    renderStatus();
+    const items = d.violations;
+    $('#props').innerHTML = `<div class="ph">Design rule check · <span class="${d.errors ? 'bad' : d.warnings ? 'warn' : 'good'}">${esc(d.summary || '')}</span></div>
+      <div class="muted small">Rules: ${esc(Pcb.RULE_PRESETS[Pcb.rules().preset] ? Pcb.RULE_PRESETS[Pcb.rules().preset].label : 'custom')}</div>` +
+      (items.length ? '<ul class="erc drc">' + items.map((v, i) => `<li class="${v.severity === 'error' ? 'error' : 'warn'}" data-v="${i}">${esc(v.msg)}</li>`).join('') + '</ul>' : '<div class="good">✓ No violations</div>');
+    $('#props').querySelectorAll('[data-v]').forEach(li => li.onclick = () => { const v = items[+li.dataset.v]; if (v.x != null) Pcb.vp.fit([v.x - 3, v.y - 3, v.x + 3, v.y + 3], 1); });
+    return d;
   }
 
   // ---------- project knowledge folder ----------
@@ -349,10 +425,11 @@ const App = (() => {
     Sch.ui.onSelect = () => renderProps(); Pcb.ui.onSelect = () => renderProps();
     let saved = null; try { saved = localStorage.getItem('cp.design'); } catch (e) { }
     if (saved) try { Model.load(saved); } catch (e) { }
-    Model.subscribe(kind => { if (kind === 'move') { view === 'sch' ? Sch.render() : Pcb.render(); } else renderAll(); });
+    Model.subscribe(kind => { if (kind !== 'move') Pcb.ui.drc = null; if (kind === 'move') { view === 'sch' ? Sch.render() : Pcb.render(); } else renderAll(); });
     PartEditor.init();
     Engine.env.myLib = () => Projects.myLib;
     Engine.env.savePart = def => Projects.savePart(def).then(() => renderParts());
+    Engine.env.route = runRouter;
     Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } };
     initKnowledge();
     Projects.init().then(renderParts);
@@ -375,11 +452,15 @@ const App = (() => {
     $('#connStyle').value = Model.S.connStyle || 'auto';
     $('#connStyle').onchange = e => Model.mutate(() => { Model.S.connStyle = e.target.value; });
     $('#btnErc').onclick = () => { renderStatus(); $('#ercLink').click(); };
-    const pcbRun = (fn, msg) => { try { const r = Model.mutate(fn); Pcb.fit(); if (msg) toast(msg(r)); } catch (e) { toast(e.message); } };
-    const routeMsg = r => r ? `Routed ${r.routed}/${r.total} nets${r.failed.length ? ' — unrouted: ' + r.failed.join(', ') : ''}` : '';
-    $('#btnGen').onclick = () => pcbRun(() => { const w = +$('#boardW').value || 0, h = +$('#boardH').value || 0; Pcb.autoPlace({ w, h }); return Pcb.route(); }, routeMsg);
-    $('#btnPlace').onclick = () => pcbRun(() => Pcb.autoPlace({ w: +$('#boardW').value || 0, h: +$('#boardH').value || 0 }), () => 'Placed — press Route');
-    $('#btnRoute').onclick = () => pcbRun(() => Pcb.route(), routeMsg);
+    const routeMsg = r => r && r.routing ? `Routed ${r.routing.routed}/${r.routing.total} nets${r.routing.failed.length ? ' — unrouted: ' + r.routing.failed.join(', ') : ''}${r.routing.necked_down && r.routing.necked_down.length ? ' · necked down: ' + r.routing.necked_down.join(', ') : ''}` : 'Placed — press Route';
+    const runPcb = async (place, noRoute) => { try { const r = await runRouter({ place, opt: { noRoute } }); Pcb.fit(); toast(routeMsg(r), 6000); if (!noRoute) showDrc(); } catch (e) { toast(e.message); } };
+    const boardWH = () => ({ w: +$('#boardW').value || 0, h: +$('#boardH').value || 0 });
+    $('#btnGen').onclick = () => runPcb(boardWH(), false);
+    $('#btnPlace').onclick = () => runPcb(boardWH(), true);
+    $('#btnRoute').onclick = () => runPcb(null, false);
+    $('#btnRules').onclick = openRules; $('#btnDrc').onclick = () => showDrc(true);
+    $('#routeCancel').onclick = () => { if (worker) { worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden'); if (routeReject) routeReject(new Error('Routing cancelled')); } };
+    initRules();
     $('#btnUnroute').onclick = () => Model.mutate(() => { Model.S.pcb = { traces: [], vias: [], routed: {} }; });
     const setBoard = () => Model.mutate(() => { const w = +$('#boardW').value, h = +$('#boardH').value; if (w > 0 && h > 0) { Model.S.board = { w, h }; Model.S.pcb = { traces: [], vias: [], routed: {} }; } });
     $('#boardW').onchange = setBoard; $('#boardH').onchange = setBoard;

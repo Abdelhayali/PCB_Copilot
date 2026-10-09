@@ -9,6 +9,7 @@ const Engine = (() => {
     myLib: () => [],           // user's saved parts
     savePart: async () => { }, // persist a part to My Library
     ui: () => { },             // ui('fit-sch') | ui('show-pcb')
+    route: null,               // optional async router (browser: Web Worker): ({ place, opt }) => { placement, routing }
   };
 
   async function api(path, opts = {}) {
@@ -60,7 +61,10 @@ const Engine = (() => {
     { name: 'run_erc', ro: true, description: 'Run the electrical rule check: unconnected pins, single-pin nets, missing ground, overlapping symbols.', input_schema: { type: 'object', properties: {} } },
     { name: 'clear_design', description: 'Delete everything in the current project and start an empty design.', input_schema: { type: 'object', properties: {} } },
     { name: 'generate_pcb', description: 'Create the PCB: place all footprints on a board (based on schematic positions) and autoroute with a 2-layer router. Returns routing statistics.', input_schema: { type: 'object', properties: { board_width: { type: 'number', description: 'mm, optional (auto-sized if omitted)' }, board_height: { type: 'number', description: 'mm, optional' }, route: { type: 'boolean', description: 'default true' } } } },
-    { name: 'route_pcb', description: 'Re-run the autorouter on the current placement.', input_schema: { type: 'object', properties: {} } },
+    { name: 'route_pcb', description: 'Re-run the autorouter on the current placement (follows the design rules).', input_schema: { type: 'object', properties: {} } },
+    { name: 'get_design_rules', ro: true, description: 'Current PCB design rules (trace widths, clearance, vias, edge clearance, layers, per-net widths) and the fab minimums they are checked against. Defaults follow JLCPCB 2-layer capabilities. Lists available presets.', input_schema: { type: 'object', properties: {} } },
+    { name: 'set_design_rules', description: 'Change PCB design rules (mm). The autorouter follows them and DRC checks them. Use preset to load a profile, net_widths for per-net trace widths (0 removes an override). Returns warnings for values below the fab minimums.', input_schema: { type: 'object', properties: { preset: { type: 'string', description: 'jlcpcb | jlcpcb_min | jlcpcb_power | home' }, traceWidth: { type: 'number' }, powerTraceWidth: { type: 'number', description: 'Width for power/ground nets' }, clearance: { type: 'number' }, viaDiameter: { type: 'number' }, viaDrill: { type: 'number' }, edgeClearance: { type: 'number' }, layers: { type: 'number', enum: [1, 2] }, neckDown: { type: 'boolean', description: 'Allow narrowing a trace when the full width does not fit' }, net_widths: { type: 'object', additionalProperties: { type: 'number' }, description: 'e.g. {"+5V": 0.8, "MOTOR": 1.2}' } } } },
+    { name: 'run_drc', ro: true, description: 'Design rule check of the PCB with exact geometry: clearances/shorts, trace widths, via size/annular ring, hole spacing, board-edge clearance and unrouted nets.', input_schema: { type: 'object', properties: {} } },
     { name: 'pcb_status', ro: true, description: 'Board size, number of placed parts, routed / unrouted nets, via count, trace length.', input_schema: { type: 'object', properties: {} } },
     { name: 'create_part', description: 'Create a NEW custom part (symbol pins + PCB footprint) when nothing suitable exists in the database. Saved to the design and to My Library; returns its key for add_components {lcsc: key}.', input_schema: { type: 'object', required: ['name', 'pins', 'footprint'], properties: { name: { type: 'string' }, prefix: { type: 'string', description: 'Reference prefix, default U' }, value: { type: 'string' }, pins: pinDefs, footprint: fpSpec, save_to_library: { type: 'boolean', description: 'default true' } } } },
     { name: 'update_part', description: 'Modify an existing part definition used in the design (database or custom): pins, footprint, name, prefix, value. All placed instances follow.', input_schema: { type: 'object', required: ['key'], properties: { key: { type: 'string', description: 'LCSC code or library key' }, name: { type: 'string' }, prefix: { type: 'string' }, value: { type: 'string' }, pins: pinDefs, footprint: fpSpec, save_to_library: { type: 'boolean', description: 'default true' } } } },
@@ -170,11 +174,24 @@ const Engine = (() => {
       case 'rename_net': return Model.mutate(() => { Model.renameNet(input.from, input.to); return { ok: true }; });
       case 'auto_layout': Model.mutate(() => Model.autoLayout()); env.ui('fit-sch'); return { ok: true };
       case 'clear_design': Model.mutate(() => Model.clear()); return { ok: true };
-      case 'generate_pcb': {
-        const r = Model.mutate(() => ({ placement: Pcb.autoPlace({ w: input.board_width, h: input.board_height }), routing: input.route === false ? null : Pcb.route() }));
-        env.ui('show-pcb'); return r;
+      case 'generate_pcb': case 'route_pcb': {
+        const place = name === 'generate_pcb' ? { w: input.board_width, h: input.board_height } : null, noRoute = input.route === false;
+        let r;
+        if (env.route) r = await env.route({ place, opt: { noRoute } });
+        else r = Model.mutate(() => ({ placement: place ? Pcb.autoPlace(place) : undefined, routing: noRoute ? null : Pcb.route() }));
+        env.ui('show-pcb');
+        const d = Pcb.drc();
+        return Object.assign({}, r, { drc: { summary: d.summary, top: d.violations.filter(v => v.severity === 'error').slice(0, 8).map(v => v.msg) } });
       }
-      case 'route_pcb': { const r = Model.mutate(() => Pcb.route()); env.ui('show-pcb'); return r; }
+      case 'get_design_rules': {
+        const R = Pcb.rules();
+        return { rules: R, warnings: Pcb.ruleWarnings(R), presets: Object.fromEntries(Object.entries(Pcb.RULE_PRESETS).map(([k, v]) => [k, v.label])), note: 'JLCPCB defaults; check jlcpcb.com/capabilities for current limits' };
+      }
+      case 'set_design_rules': {
+        const u = Object.assign({}, input); if (u.net_widths) { u.netWidths = u.net_widths; delete u.net_widths; }
+        return Model.mutate(() => Pcb.setRules(u));
+      }
+      case 'run_drc': { const d = Pcb.drc(); return { summary: d.summary, errors: d.errors, warnings: d.warnings, violations: d.violations.slice(0, 60) }; }
       case 'create_part':
       case 'update_part': {
         const old = name === 'update_part' ? (Model.S.lib[input.key] || env.myLib().find(p => p.key === input.key)) : null;

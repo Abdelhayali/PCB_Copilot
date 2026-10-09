@@ -189,6 +189,19 @@ details.tool pre.res { color: #b8f5d6; } details.tool.err pre.res { color: var(-
 .lcscinfo { font-size: 12px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; margin: 6px 0; }
 .lcscinfo a { color: var(--accent); }
 
+/* design rules, DRC, routing */
+.rgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 4px 16px; margin: 8px 0; }
+.rgrid label, .dlg .rgrid label { display: flex; align-items: center; gap: 6px; margin: 2px 0; color: var(--text); font-size: 12px; }
+.dlg .rgrid label input:not([type=checkbox]), .dlg .rgrid select { width: 86px !important; margin: 0 0 0 auto; display: inline-block; }
+.rgrid label span { color: var(--muted); width: 22px; }
+.rh { grid-column: 1 / -1; font-weight: 700; font-size: 11px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); margin-top: 8px; }
+#rNets .nr { display: flex; gap: 8px; align-items: center; padding: 3px 0; border-bottom: 1px solid var(--line); font-size: 12px; }
+#rNets .nr b { flex: 1; }
+#routeBusy { position: absolute; top: 12px; left: 50%; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line); border-radius: 8px; padding: 6px 12px; display: flex; gap: 8px; align-items: center; box-shadow: 0 6px 20px #0008; z-index: 5; font-size: 12px; }
+.drcmark circle { fill: #ff3b3b33; stroke: #ff3b3b; stroke-width: .12; }
+.drcmark path { stroke: #ff3b3b; stroke-width: .14; }
+.drcmark.warning circle { fill: #f0b42922; stroke: #f0b429; } .drcmark.warning path { stroke: #f0b429; }
+ul.drc li { cursor: pointer; } ul.drc li:hover { text-decoration: underline; }
 /* knowledge */
 #knowFiles { margin-top: 8px; max-height: 50vh; overflow: auto; font-size: 12px; }
 #knowFiles .kf { display: flex; justify-content: space-between; gap: 8px; padding: 3px 6px; border-bottom: 1px solid var(--line); }

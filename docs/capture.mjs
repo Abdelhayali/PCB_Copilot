@@ -177,6 +177,9 @@ try {
   }, { hold: 2.5 });
   await js(`Pcb.fit(); return 1`); await sleep(400);
   await shot('pcb');
+  await js(`document.querySelector('#btnRules').click(); return 1`); await sleep(500);
+  await shot('design-rules');
+  await js(`document.querySelector('#rulesClose').click(); return 1`);
 
   // 3) GIF: parts database search → place
   await js(`App.showView('sch'); Sch.fit(); return 1`); await sleep(400);

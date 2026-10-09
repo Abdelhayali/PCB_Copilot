@@ -22,9 +22,14 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 |---|---|
 | ![Part editor](docs/media/part-editor.gif) | ![Edit a database part](docs/media/part-editor.png) |
 
-| Autorouted 2-layer PCB | Projects | Project knowledge |
-|---|---|---|
-| ![PCB](docs/media/pcb.png) | ![Projects](docs/media/projects.png) | ![Knowledge](docs/media/knowledge.png) |
+| Design rules (JLCPCB defaults) | Autorouted 2-layer PCB |
+|---|---|
+| ![Design rules](docs/media/design-rules.png) | ![PCB](docs/media/pcb.png) |
+
+| Projects | Project knowledge |
+|---|---|
+| ![Projects](docs/media/projects.png) | ![Knowledge](docs/media/knowledge.png) |
+
 
 ## Features
 
@@ -36,7 +41,8 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
-- **PCB** — auto-placement from the schematic, A* 2-layer autorouter with vias, ratsnest, draggable footprints.
+- **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints.
+- **Design rules & DRC** — JLCPCB 2-layer defaults, editable per project (trace/power widths, per-net widths, clearance, vias, edge clearance, layers); exact-geometry DRC with markers on the board.
 - **Exports** — Gerber + Excellon drill (.zip), BOM (.csv), netlist (.net), schematic and PCB SVG, project JSON.
 - **Automation** — MCP server for Claude Code / Claude Desktop / Cursor, plus a REST + OpenAPI interface.
 
@@ -138,3 +144,25 @@ curl -H "Authorization: Bearer <password>" -X POST http://127.0.0.1:5174/tools/s
 ```
 
 `GET /openapi.json` returns an OpenAPI 3.1 spec of every tool. Add `"project": "<id or name>"` to any call to switch project. The REST server listens on 127.0.0.1 only (add `--public` to expose it).
+
+## Design rules (JLCPCB defaults) and DRC
+
+**PCB → ⚙ Rules** edits the project's design rules. The autorouter follows them and **DRC** checks the finished board against them.
+
+| Rule | Default (JLCPCB 2-layer, recommended) | JLCPCB minimum |
+|---|---|---|
+| Trace width | 0.25 mm | 0.127 mm (5 mil) |
+| Power / GND trace width | 0.5 mm | — |
+| Clearance (copper–copper) | 0.2 mm | 0.127 mm (5 mil) |
+| Via diameter / drill | 0.6 / 0.3 mm | 0.5 / 0.3 mm, annular ring 0.13 mm |
+| Copper to board edge | 0.3 mm | 0.3 mm |
+| Hole to hole | — | 0.5 mm |
+
+- Presets: **JLCPCB recommended**, **JLCPCB minimum (5/5 mil)**, **JLCPCB power/robust**, **Home etching / CNC (1 layer)** — then tweak any value.
+- **Per-net widths** (e.g. `+5V` 0.8 mm, `MOTOR` 1.2 mm); power and ground nets automatically use the power width.
+- **Neck-down**: when a wide trace can't reach a fine-pitch pad, the router narrows it (power width → trace width → fab minimum) and reports which nets were necked down.
+- Clearance is computed against the real pad shapes, so traces escape fine-pitch QFN/USB-C pads at JLCPCB clearances. Vias are allowed inside a net's own large pads (e.g. module ground pads).
+- **DRC** uses exact geometry: shorts and clearance, trace width, via drill and annular ring, hole-to-hole spacing, copper-to-edge, unrouted nets, and rules set below the fab minimums. Click a violation to zoom to it.
+- The AI and MCP/REST clients get `get_design_rules`, `set_design_rules` and `run_drc`; `generate_pcb` reports the DRC result.
+
+Values follow JLCPCB's published capabilities; check [jlcpcb.com/capabilities](https://jlcpcb.com/capabilities/pcb-capabilities) for the latest before ordering.
