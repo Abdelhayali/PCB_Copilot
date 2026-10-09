@@ -82,7 +82,7 @@
         <button id="btnPourGnd" title="Copper pour (GND) on both layers">⬛ Pour GND</button>
         <button id="btnRules" title="Design rules (JLCPCB defaults)">⚙ Rules</button>
         <button id="btnDrc" title="Design rule check">DRC</button>
-        <label>Board <input id="boardW" type="number" min="5" step="1" placeholder="auto">×<input id="boardH" type="number" min="5" step="1" placeholder="auto"> mm</label>
+        <label>Board <input id="boardW" type="number" min="5" step="1" placeholder="auto" title="Empty = size the board to the parts; a value keeps that size and fits the parts inside">×<input id="boardH" type="number" min="5" step="1" placeholder="auto" title="Empty = size the board to the parts; a value keeps that size and fits the parts inside"> mm</label>
         <span class="tsep"></span>
         <label title="Active routing layer (T / B / L)">Layer <select id="pLayer"><option value="F">TopLayer</option><option value="B">BottomLayer</option></select></label>
         <label title="Track width for new tracks (+ / - while routing). Empty = design-rule width">Width <input id="pWidth" type="number" step="0.05" min="0.05" placeholder="auto"> mm</label>

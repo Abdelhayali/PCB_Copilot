@@ -211,6 +211,8 @@ Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when t
 
 ### Connectors on the board edge
 
+**Board size is kept**: once a board exists (or you type a size in Board W×H), Auto-place and Generate PCB fit the parts *inside* the existing outline — rectangle, rounded, round or custom — scaling the schematic arrangement to the board, keeping parts inside the edge clearance, rotating long parts and tightening spacing when crowded. The board is never enlarged on its own: if the parts cannot fit you get a message with how much of the board they need. Clear the Board W×H boxes to size the board to the parts instead. The ✨ Optimizer also keeps the board size.
+
 **Generate PCB** puts connectors on the nearest board edge automatically: USB, DC jacks, RF and card connectors are rotated so the **opening faces outward, flush with the edge** (so a cable can plug in); pin headers and terminals sit just inside the edge. To choose the edge yourself, select the footprint on the PCB and click **⇤ Left / ⤒ Top / ⤓ Bottom / Right ⇥** in Properties — or ask the AI ("put the USB connector on the bottom edge"), which uses the `place_footprint` tool. The choice is remembered for later re-placements; press **Route** afterwards to reconnect.
 
 ### More PCB tools

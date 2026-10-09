@@ -189,9 +189,9 @@ const Pcb = (() => {
     const b = Lib.footprint(c.footprint).box, wide = (b[2] - b[0]) >= (b[3] - b[1]), horiz = side === 'top' || side === 'bottom';
     return wide === horiz ? 0 : 90;
   }
-  function separate(cs, gap, lock = new Map()) {
+  function separate(cs, gap, lock = new Map(), maxIt = 500) {
     const half = c => { const b = fpBox(c), x = c.pcb.x, y = c.pcb.y; return [(b[2] - b[0]) / 2, (b[3] - b[1]) / 2, (b[0] + b[2]) / 2 - x, (b[1] + b[3]) / 2 - y]; };
-    for (let it = 0; it < 500; it++) {
+    for (let it = 0; it < maxIt; it++) {
       let moved = false;
       for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
         const a = cs[i], b = cs[j], ha = half(a), hb = half(b);
@@ -211,7 +211,101 @@ const Pcb = (() => {
   }
   const unionBox = list => { let b = [Infinity, Infinity, -Infinity, -Infinity]; for (const c of list) { const a = fpBox(c); b = [Math.min(b[0], a[0]), Math.min(b[1], a[1]), Math.max(b[2], a[2]), Math.max(b[3], a[3])]; } return b; };
 
+  // Auto-place. With an existing board (or a given size) the outline is kept and parts are fitted inside it;
+  // the board is only sized to the parts when there is none yet, or when opt.fit (auto-size) is set.
   function autoPlace(opt = {}) {
+    const S = Model.S;
+    const given = +opt.w > 0 && +opt.h > 0;
+    if (opt.fit || (!given && !(S.board.w > 0))) return autoSize(opt);
+    if (given && (Math.abs(+opt.w - S.board.w) > 1e-6 || Math.abs(+opt.h - S.board.h) > 1e-6)) {
+      // the user typed a new size: scale a custom outline with it, keep the shape type
+      const sx = S.board.w ? +opt.w / S.board.w : 1, sy = S.board.h ? +opt.h / S.board.h : 1;
+      if (S.board.shape && S.board.shape.pts) S.board.shape.pts = S.board.shape.pts.map(q => [+(q[0] * sx).toFixed(3), +(q[1] * sy).toFixed(3)]);
+      S.board.w = +opt.w; S.board.h = +opt.h;
+    }
+    return fitInside(opt);
+  }
+
+  function fitInside(opt = {}) {
+    const S = Model.S, cs = S.components.filter(c => Lib.footprint(c.footprint));
+    if (!cs.length) throw new Error('No components with footprints to place');
+    const R = rules(), W = S.board.w, H = S.board.h, poly = boardPoly();
+    const margin = Math.max(R.edgeClearance + 0.4, 0.8), cx0 = W / 2, cy0 = H / 2;
+    for (const c of cs) { const side = c.pcb && c.pcb.side; c.pcb = { x: 0, y: 0, rot: c.rot || 0 }; if (side === 'B') c.pcb.side = 'B'; }
+    // 1) keep the schematic arrangement, scaled to fit the board
+    const xs = cs.map(c => c.x), ys = cs.map(c => c.y), sxm = (Math.min(...xs) + Math.max(...xs)) / 2, sym = (Math.min(...ys) + Math.max(...ys)) / 2;
+    const spanX = Math.max(1, Math.max(...xs) - Math.min(...xs)), spanY = Math.max(1, Math.max(...ys) - Math.min(...ys));
+    const k = Math.min(0.12, (W - 2 * margin) * 0.7 / spanX, (H - 2 * margin) * 0.7 / spanY);
+    for (const c of cs) { c.pcb.x = cx0 + (c.x - sxm) * k; c.pcb.y = cy0 + (c.y - sym) * k; }
+    // 2) connectors on the board edges (plugs flush, headers just inside), slid inward on curved outlines
+    const edgeParts = [], lock = new Map();
+    for (const c of cs) {
+      const info = edgeInfo(c); if (!info && !c.pcbEdge) continue;
+      const fb = fpBox(c), px = (fb[0] + fb[2]) / 2, py = (fb[1] + fb[3]) / 2;
+      const side = c.pcbEdge || [['left', px], ['right', W - px], ['top', py], ['bottom', H - py]].sort((a, b) => a[1] - b[1])[0][0];
+      c.pcb.rot = edgeRot(c, side, info || { front: null });
+      const plug = !!(info && info.plug), inset = plug ? 0 : 1.5, b = fpBox(c);
+      if (side === 'left') c.pcb.x += inset - b[0]; if (side === 'right') c.pcb.x += W - inset - b[2];
+      if (side === 'top') c.pcb.y += inset - b[1]; if (side === 'bottom') c.pcb.y += H - inset - b[3];
+      const n = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[side];
+      for (let t = 0; t < 80 && !boxInside(c, poly, plug ? 0 : margin); t++) { c.pcb.x += n[0] * 0.25; c.pcb.y += n[1] * 0.25; }
+      edgeParts.push({ c, side, plug }); lock.set(c, side === 'left' || side === 'right' ? 'x' : 'y');
+    }
+    const free = cs.filter(c => !lock.has(c));
+    // 3) push overlapping parts apart while keeping everything inside the outline
+    const settle = gap => {
+      for (let round = 0; round < 40; round++) {
+        separate(cs, gap, lock, 60);
+        for (const c of free) clampInside(c, poly, margin, W, H);
+        for (const e of edgeParts) clampAlong(e, W, H);
+        if (!overlaps(cs, gap * 0.5).length) return true;
+      }
+      return false;
+    };
+    // parts that clearly cannot fit: don't grind — report it
+    const need = cs.reduce((a, c) => { const b = fpBox(c); return a + (b[2] - b[0]) * (b[3] - b[1]); }, 0);
+    let ok = need < W * H * 0.9 ? settle(1.0) : false;
+    // 4) still crowded: turn long parts to fit, then tighten the spacing
+    if (!ok && need < W * H * 0.9) {
+      for (const [a] of overlaps(cs, 0.3)) { if (lock.has(a)) continue; const b = fpBox(a), wide = (b[2] - b[0]) > (b[3] - b[1]) * 1.3; if (wide || (b[3] - b[1]) > (b[2] - b[0]) * 1.3) a.pcb.rot = ((a.pcb.rot || 0) + 90) % 360; }
+      ok = settle(0.6) || settle(0.3);
+    }
+    for (const c of cs) { c.pcb.x = +(Math.round(c.pcb.x / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round(c.pcb.y / 0.05) * 0.05).toFixed(3); }
+    const area = cs.reduce((a, c) => { const b = fpBox(c); return a + (b[2] - b[0]) * (b[3] - b[1]); }, 0);
+    let boardArea = 0; for (let i = 0; i < poly.length; i++) { const p = poly[i], q = poly[(i + 1) % poly.length]; boardArea += p[0] * q[1] - q[0] * p[1]; } boardArea = Math.abs(boardArea / 2);
+    const hadHoles = (S.pcb.holes || []).filter(h => h.auto), holeD = hadHoles.length ? hadHoles[0].d : 0;
+    S.pcb = { traces: [], vias: [], routed: {}, pours: (S.pcb.pours || []).filter(pr => pr.whole), holes: [] };
+    if (holeD) addMountingHoles({ diameter: holeD });
+    const still = overlaps(cs, -0.1).map(([a, b]) => `${a.ref}/${b.ref}`), outside = cs.filter(c => !boxInside(c, poly, -0.1)).map(c => c.ref);
+    const res = { board: S.board, kept_board: true, placed: cs.length, fits: !still.length && !outside.length, parts_area_pct: Math.round(area / boardArea * 100), on_edge: edgeParts.map(e => `${e.c.ref}:${e.side}${e.plug ? ' (opening outward)' : ''}`) };
+    if (!res.fits) { res.overlapping = still; res.outside = outside; res.hint = `The parts need about ${Math.round(area / boardArea * 100)}% of the board area — enlarge the board (Board W×H, or clear it for auto-size), move parts to the bottom side, or use smaller packages.`; }
+    return res;
+  }
+  function boxInside(c, poly, inset) {
+    const b = fpBox(c, inset);
+    if (!isRectBoard()) return [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]], [(b[0] + b[2]) / 2, b[1]], [(b[0] + b[2]) / 2, b[3]], [b[0], (b[1] + b[3]) / 2], [b[2], (b[1] + b[3]) / 2]].every(q => inPoly(q[0], q[1], poly));
+    return b[0] >= -1e-6 && b[1] >= -1e-6 && b[2] <= Model.S.board.w + 1e-6 && b[3] <= Model.S.board.h + 1e-6;
+  }
+  function clampInside(c, poly, m, W, H) {
+    const b = fpBox(c);
+    if (b[0] < m) c.pcb.x += m - b[0]; if (b[1] < m) c.pcb.y += m - b[1];
+    const b2 = fpBox(c);
+    if (b2[2] > W - m) c.pcb.x -= b2[2] - (W - m); if (b2[3] > H - m) c.pcb.y -= b2[3] - (H - m);
+    if (!isRectBoard()) for (let t = 0; t < 60 && !boxInside(c, poly, m); t++) { const dx = W / 2 - c.pcb.x, dy = H / 2 - c.pcb.y, l = Math.hypot(dx, dy) || 1; c.pcb.x += dx / l * 0.3; c.pcb.y += dy / l * 0.3; }
+  }
+  function clampAlong(e, W, H) { // edge parts may slide along their edge but stay on the board
+    const b = fpBox(e.c);
+    if (e.side === 'left' || e.side === 'right') { if (b[1] < 0.8) e.c.pcb.y += 0.8 - b[1]; else if (b[3] > H - 0.8) e.c.pcb.y -= b[3] - (H - 0.8); }
+    else { if (b[0] < 0.8) e.c.pcb.x += 0.8 - b[0]; else if (b[2] > W - 0.8) e.c.pcb.x -= b[2] - (W - 0.8); }
+  }
+  function overlaps(cs, gap) {
+    const out = [], B = cs.map(c => fpBox(c, gap / 2));
+    for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) { const a = B[i], b = B[j]; if (a[0] < b[2] && b[0] < a[2] && a[1] < b[3] && b[1] < a[3]) out.push([cs[i], cs[j]]); }
+    return out;
+  }
+
+  // board sized to the parts (first placement, or auto-size requested)
+  function autoSize(opt = {}) {
     const S = Model.S, cs = S.components.filter(c => Lib.footprint(c.footprint));
     if (!cs.length) throw new Error('No components with footprints to place');
     const k = 0.085, gap = 1.0, m = opt.margin ?? 3;
@@ -917,7 +1011,7 @@ const Pcb = (() => {
     return files;
   }
   function optimize(opt = {}) {
-    const S = Model.S, t0 = Date.now(), limit = (opt.time_limit_s || 60) * 1000, maxIt = opt.iterations || 12, grow = opt.allow_grow !== false, flip = !!opt.allow_bottom;
+    const S = Model.S, t0 = Date.now(), limit = (opt.time_limit_s || 60) * 1000, maxIt = opt.iterations || 12, grow = !!opt.allow_grow, flip = !!opt.allow_bottom;
     if (!placed().length || !S.board.w) throw new Error('Generate the PCB first');
     const manual = { traces: S.pcb.traces.filter(t => t.manual), vias: S.pcb.vias.filter(v => v.manual) };
     const clone = o => JSON.parse(JSON.stringify(o));

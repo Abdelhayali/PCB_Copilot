@@ -560,8 +560,9 @@ const App = (() => {
     $('#connStyle').onchange = e => Model.mutate(() => { Model.S.connStyle = e.target.value; });
     $('#btnErc').onclick = () => { renderStatus(); $('#ercLink').click(); };
     const routeMsg = r => r && r.routing ? `Routed ${r.routing.routed}/${r.routing.total} nets${r.routing.failed.length ? ' — unrouted: ' + r.routing.failed.join(', ') : ''}${r.routing.necked_down && r.routing.necked_down.length ? ' · necked down: ' + r.routing.necked_down.join(', ') : ''}` : 'Placed — press Route';
-    const runPcb = async (place, noRoute) => { try { const r = await runRouter({ place, opt: { noRoute } }); Pcb.fit(); toast(routeMsg(r), 6000); if (!noRoute) showDrc(); } catch (e) { toast(e.message); } };
-    const boardWH = () => ({ w: +$('#boardW').value || 0, h: +$('#boardH').value || 0 });
+    const runPcb = async (place, noRoute) => { try { const r = await runRouter({ place, opt: { noRoute } }); Pcb.fit(); const pl = r && r.placement, bad = pl && pl.fits === false; toast(routeMsg(r) + (bad ? ' · ⚠ ' + pl.hint : ''), bad ? 12000 : 6000); if (!noRoute) showDrc(); } catch (e) { toast(e.message); } };
+    // empty Board W×H boxes = size the board to the parts; otherwise the outline is kept and the parts are fitted inside
+    const boardWH = () => { const w = +$('#boardW').value || 0, h = +$('#boardH').value || 0; return w > 0 && h > 0 ? { w, h } : { fit: true }; };
     $('#btnGen').onclick = () => runPcb(boardWH(), false);
     $('#btnPlace').onclick = () => runPcb(boardWH(), true);
     $('#btnRoute').onclick = () => runPcb(null, false);
