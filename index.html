@@ -17,6 +17,7 @@
       <div class="ddm">
         <button data-exp="json">Project file (.json)</button>
         <button data-exp="gerber">Gerber + drill (.zip)</button>
+        <button data-exp="bomjlc">BOM for JLCPCB assembly (.csv)</button>
         <button data-exp="bom">Bill of materials (.csv)</button>
         <button data-exp="net">Netlist (.net)</button>
         <button data-exp="svg">Schematic (.svg)</button>
@@ -52,6 +53,7 @@
       </div>
       <div id="schTools" class="tools">
         <button id="btnLayout">Auto-layout</button>
+        <button id="btnDbParts" title="Give every built-in part the footprint and pinout of a real JLCPCB part">⇄ JLCPCB parts</button>
         <button id="btnErc">ERC</button>
         <label>Connections <select id="connStyle"><option value="auto">Auto</option><option value="wires">Wires</option><option value="labels">Net labels</option></select></label>
         <button id="btnFitS" title="F">Fit</button>

@@ -11,7 +11,8 @@ const Pcb = (() => {
     const r = c.pcb.rot || 0, sw = r === 90 || r === 270, bot = isBottom(c);
     return fp.pads.map((p, i) => {
       const [x, y] = Lib.rot(bot ? -p.x : p.x, p.y, r), key = c.ref + '.' + p.num;
-      return { ...p, x: c.pcb.x + x, y: c.pcb.y + y, w: sw ? p.h : p.w, h: sw ? p.w : p.h, key, uid: c.ref + '#' + i, ref: c.ref, layer: p.drill ? null : (bot ? 'B' : 'F'), net: idx ? idx[key] : undefined };
+      const net = idx ? (idx[key] || (c.pinAlias && c.pinAlias[p.num] ? idx[c.ref + '.' + c.pinAlias[p.num]] : undefined)) : undefined;
+      return { ...p, x: c.pcb.x + x, y: c.pcb.y + y, w: sw ? p.h : p.w, h: sw ? p.w : p.h, key, uid: c.ref + '#' + i, ref: c.ref, layer: p.drill ? null : (bot ? 'B' : 'F'), net };
     });
   }
   function fpBox(c, pad = 0) {

@@ -53,6 +53,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 
 - **Model picker** — Claude (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5) or any OpenAI-compatible endpoint (OpenAI, Gemini, Grok, OpenRouter, Ollama, LM Studio, llama.cpp, local servers).
 - **Three copilot modes** — **Agent** edits the design with tools, **Ask** is read-only review and Q&A, **Plan** writes a BOM + netlist plan you approve with **Execute plan**.
+- **Every palette part is a real JLCPCB part** — the schematic keeps clean symbols while the footprint and pinout come from a specific LCSC part (Basic parts where possible, LEDs by colour); **⇄ JLCPCB parts** converts older designs and **Export → BOM for JLCPCB assembly** matches part numbers for every value.
 - **Real component database** — JLCPCB/LCSC search with stock and price; exact pinouts and footprints from the EasyEDA library, cached locally.
 - **Part editor** — create or modify symbols and footprints (generators for SOIC/TSSOP/QFN/DIP/SOT…, draggable pads); saved to *My Library*.
 - **Projects** — saved on the server with autosave; same projects on PC and phone.
@@ -101,7 +102,7 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 
 ## Limitations
 
-- Footprints are simplified generators, not KiCad library footprints — verify pad sizes and pinouts (especially TO-92/TO-220) before fabrication.
+- Palette parts (resistor, capacitor, LED, diodes, transistors, MOSFETs, regulator, op-amp, crystal, fuse, inductor, potentiometer, buzzer) are backed by real JLCPCB parts — their footprints and pinouts come from the JLCEDA/EasyEDA library and pins are matched by name, so e.g. the AMS1117's IN/OUT/tab and each LED's cathode land on the right pads. Pin headers / generic connectors and the push button keep standard generated footprints (a 4-pin tact switch's internal pairs are not documented in the library); if you pick a generated footprint from the Footprint menu, verify its pin order against your part's datasheet.
 - The router is a basic grid router (0.25 mm trace/clearance, no copper pours or rip-up-and-retry); dense boards may leave nets unrouted.
 - Touch editing (drag/pinch) on phones is not implemented yet.
 

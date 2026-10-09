@@ -70,6 +70,16 @@ const App = (() => {
       Sch.select(c.ref); toast(`Added ${c.ref} · ${m.name} (${m.pins.length} pins, ${m.footprint ? m.footprint.pads.length + ' pads' : 'no footprint'})`);
     } catch (e) { toast('Could not load ' + code + ': ' + e.message, 6000); }
   }
+  // palette parts come with the real JLCPCB part behind the symbol (falls back to a generated footprint offline)
+  async function placeBuiltin(type) {
+    const d = Lib.dbDefault(type, null);
+    let part = null;
+    if (d) { try { part = await AI.loadPart(d.lcsc); } catch (e) { toast('Parts database unavailable — using a generated footprint', 4000); } }
+    const vb = Sch.vp.vb || [0, 0, 0, 0];
+    const c = Model.mutate(() => Model.addComponent({ type, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2, dbPart: part }));
+    Sch.select(c.ref);
+    if (c.pinMap) toast(`${c.ref}: ${part.name} · ${c.lcscPart} · ${part.footprint.name}`, 4000);
+  }
   function placeLibPart(key) {
     const m = Projects.myLib.find(p => p.key === key) || Model.S.lib[key];
     if (!m) { toast('Part not found: ' + key); return; }
@@ -107,7 +117,8 @@ const App = (() => {
     }
     $('#partList').innerHTML = Object.entries(cats).map(([c, ts]) => `<div class="pcat">${c}</div>` + ts.map(t => {
       const d = Lib.type(t), b = d.box({ type: t }), pad = 6;
-      return `<button class="part" data-type="${t}" title="Add ${esc(d.name)}"><svg viewBox="${b[0] - pad} ${b[1] - pad} ${b[2] - b[0] + 2 * pad} ${b[3] - b[1] + 2 * pad}"><g class="comp mini">${d.draw({ type: t })}</g></svg><span>${esc(d.name)}</span></button>`;
+      const db = Lib.dbDefault(t, null);
+      return `<button class="part" data-type="${t}" title="Add ${esc(d.name)}${db ? ` — JLCPCB ${db.lcsc} (${esc(db.value)}, ${esc(db.pkg)})` : ' — standard footprint'}"><svg viewBox="${b[0] - pad} ${b[1] - pad} ${b[2] - b[0] + 2 * pad} ${b[3] - b[1] + 2 * pad}"><g class="comp mini">${d.draw({ type: t })}</g></svg><span>${esc(d.name)}</span>${db ? `<i class="jlc">${db.lcsc}</i>` : ''}</button>`;
     }).join('')).join('') + renderMyLib(q) + renderDb();
   }
 
@@ -194,6 +205,21 @@ const App = (() => {
       worker.postMessage({ state: JSON.parse(Model.snapshot()), place, opt, optimize });
       if (optimize) $('#routeMsg').textContent = 'Optimizing placement…';
     });
+  }
+
+  async function jlcBom() {
+    toast('Matching JLCPCB parts for every value…', 20000);
+    const r = await Engine.matchJlcpcb(false), S = Model.S;
+    const g = {};
+    for (const c of S.components) {
+      const lib = (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && S.lib[c.dbfp]), fpn = (lib && lib.footprint && lib.footprint.name) || c.footprint;
+      const code = c.type === 'part' ? c.lcsc : c.lcscPart || '';
+      const k = [c.value, fpn, code].join('|'); (g[k] = g[k] || []).push(c.ref);
+    }
+    const q = s => '"' + String(s).replace(/"/g, '""') + '"';
+    const csv = 'Comment,Designator,Footprint,LCSC Part #\n' + Object.entries(g).map(([k, refs]) => { const [v, f, code] = k.split('|'); return [q(v), q(refs.join(',')), q(f), q(code)].join(','); }).join('\n');
+    download(fname('-BOM-JLCPCB.csv'), csv, 'text/csv');
+    toast(`JLCPCB BOM: ${r.matched}/${r.total} parts have LCSC numbers${r.matched < r.total ? ' — the rest need a part chosen (connectors / custom ICs)' : ''}`, 7000);
   }
 
   // ---------- placement optimiser ----------
@@ -450,6 +476,7 @@ const App = (() => {
       if (kind === 'gerber') { gerberCheck(); return; }
       if (kind === 'svg') download(fname('-schematic.svg'), Sch.exportSVG(), 'image/svg+xml');
       if (kind === 'pcbsvg') { if (!S.board.w) throw new Error('No PCB yet'); if (view !== 'pcb') Pcb.render(); download(fname('-pcb.svg'), Pcb.exportSVG(), 'image/svg+xml'); }
+      if (kind === 'bomjlc') { jlcBom(); return; }
       if (kind === 'bom') {
         const g = {};
         for (const c of S.components) { const k = [c.type, c.value, c.footprint].join('|'); (g[k] = g[k] || []).push(c.ref); }
@@ -504,10 +531,11 @@ const App = (() => {
       const dl = e.target.closest('[data-del]'); if (dl) { if (confirm('Remove this part from My Library? (Designs that use it keep their copy.)')) Projects.deletePart(dl.dataset.del).then(renderParts).catch(err => toast(err.message)); return; }
       const ml = e.target.closest('.mylib'); if (ml) { placeLibPart(ml.dataset.key); return; }
       const d = e.target.closest('.dbpart'); if (d) { placeDbPart(d.dataset.lcsc); return; }
-      const b = e.target.closest('.part'); if (b) { if (view !== 'sch') showView('sch'); Sch.placeNew(b.dataset.type); }
+      const b = e.target.closest('.part'); if (b) { if (view !== 'sch') showView('sch'); placeBuiltin(b.dataset.type); }
     };
     $$('.tab').forEach(b => b.onclick = () => showView(b.dataset.view));
     $('#btnLayout').onclick = () => { Model.mutate(() => Model.autoLayout()); Sch.fit(); };
+    $('#btnDbParts').onclick = async () => { toast('Loading JLCPCB parts…', 15000); const r = await Engine.useDatabaseParts(); toast(r.converted.length ? `${r.converted.length} parts now use real JLCPCB footprints${r.failed.length ? ' · ' + r.failed.length + ' failed' : ''}` : 'Every part already uses a database footprint', 6000); };
     $('#btnFitS').onclick = () => Sch.fit(); $('#btnFitP').onclick = () => Pcb.fit();
     $('#connStyle').value = Model.S.connStyle || 'auto';
     $('#connStyle').onchange = e => Model.mutate(() => { Model.S.connStyle = e.target.value; });

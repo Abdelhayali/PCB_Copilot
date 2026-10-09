@@ -295,3 +295,4 @@ ul.cutl li { padding: 2px 0; }
 .p3bar { position: absolute; top: 10px; left: 10px; display: flex; gap: 4px; z-index: 2; }
 .p3bar button, .p3bar select { font-size: 12px; padding: 3px 9px; }
 .p3bar button.on, #btn3d.on { border-color: var(--accent); color: #fff; background: #2f6bff33; }
+.part .jlc { margin-left: auto; font-style: normal; font-size: 9.5px; color: var(--muted); border: 1px solid var(--line); border-radius: 4px; padding: 0 4px; }

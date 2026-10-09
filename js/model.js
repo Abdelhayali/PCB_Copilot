@@ -99,6 +99,9 @@ const Model = (() => {
     if (d.generic && !c.pins && typeof spec.pins === 'number') c.pins = Array.from({ length: spec.pins }, (_, i) => String(i + 1));
     const fps = Lib.fpsFor(c);
     c.footprint = spec.footprint && Lib.footprint(spec.footprint) ? spec.footprint : fps[0];
+    if (spec.dbPart && !d.generic && !spec.footprint && attachDb(c, spec.dbPart) && spec.value == null) {
+      const dd = Lib.DB_DEFAULTS[c.type]; if (dd && !dd.byValue) c.value = dd.value;   // e.g. regulator → AMS1117-3.3 (the part actually used)
+    }
     if (spec.x != null && spec.y != null) { c.x = Math.round(+spec.x / 10) * 10; c.y = Math.round(+spec.y / 10) * 10; }
     else {
       let maxX = -Infinity; for (const o of S.components) maxX = Math.max(maxX, bbox(o)[2]);
@@ -140,7 +143,10 @@ const Model = (() => {
     }
     if (u.footprint != null) {
       if (!Lib.footprint(u.footprint)) throw new Error(`Unknown footprint "${u.footprint}". Known: ${Lib.FOOTPRINT_PATTERNS.join(', ')}`);
-      c.footprint = u.footprint; invalidate(netsOfComp(c.ref));
+      if (c.type !== 'part' && c.pinMap && !/^(LCSC|LIB):/.test(u.footprint)) detachDb(c, u.footprint);
+      else if (c.type !== 'part' && c.dbfp && u.footprint === 'LCSC:' + c.dbfp && !c.pinMap && S.lib[c.dbfp]) attachDb(c, S.lib[c.dbfp]);
+      else c.footprint = u.footprint;
+      invalidate(netsOfComp(c.ref));
     }
     if (u.new_ref && u.new_ref !== c.ref) {
       if (comp(u.new_ref)) throw new Error(`Ref ${u.new_ref} already exists`);
@@ -149,6 +155,32 @@ const Model = (() => {
       c.ref = u.new_ref;
     }
     return c;
+  }
+  // Use a real database part's footprint for a built-in symbol (pins matched by name). Returns false if it does not fit.
+  function attachDb(c, part) {
+    const key = part.key || part.lcsc, d0 = Lib.DB_DEFAULTS[c.type] || {};
+    const m = Lib.matchPins(c.type, part.pins || [], d0.lcsc === key || (d0.byValue && Object.values(d0.byValue).includes(key)) ? d0.map : null);
+    if (!m || !part.footprint) return false;
+    const old = c.pinMap || null;
+    if (!S.lib[key]) S.lib[key] = Object.assign({}, part, { key });
+    Lib.clearCache && Lib.clearCache('LCSC:' + key);
+    renumber(c, old, m.map);
+    c.pinMap = m.map; if (Object.keys(m.alias).length) c.pinAlias = m.alias; else delete c.pinAlias;
+    c.dbfp = key; c.footprint = 'LCSC:' + key; c.lcscPart = key;
+    invalidate(netsOfComp(c.ref));
+    return true;
+  }
+  function detachDb(c, footprint) {
+    const old = c.pinMap || null; renumber(c, old, null);
+    delete c.pinMap; delete c.pinAlias; delete c.lcscPart; c.footprint = footprint;
+  }
+  // move net entries from one pin numbering to another (symbol pin → old pad number → new pad number)
+  function renumber(c, oldMap, newMap) {
+    const sym = Lib.type(c.type).pins(Object.assign({}, c, { pinMap: null })).map(p => p.num);
+    const from = n => (oldMap && oldMap[n]) || n, to = n => (newMap && newMap[n]) || n, ren = {};
+    for (const n of sym) if (from(n) !== to(n)) ren[c.ref + '.' + from(n)] = c.ref + '.' + to(n);
+    if (!Object.keys(ren).length) return;
+    for (const net in S.nets) S.nets[net] = S.nets[net].map(k => ren[k] || k);
   }
   const fpNameFor = key => (/^C\d+$/.test(key) ? 'LCSC:' : 'LIB:') + key;
   // Add or replace a library part definition; every placed instance follows the new definition.
@@ -283,6 +315,6 @@ const Model = (() => {
     get S() { return S; }, blank, subscribe: f => subs.push(f), emit, begin, mutate, load, undo, redo, snapshot,
     canUndo: () => undoStack.length > 0, canRedo: () => redoStack.length > 0,
     comp, pinsWorld, bbox, pinIndex, netOf, resolvePins, addComponent, removeComponent, updateComponent, connect, disconnect,
-    renameNet, removeNet, clear, setLibPart, fpNameFor, erc, autoLayout, summary, isPower, isGround, invalidate, netsOfComp
+    renameNet, removeNet, clear, setLibPart, fpNameFor, attachDb, erc, autoLayout, summary, isPower, isGround, invalidate, netsOfComp
   };
 })();

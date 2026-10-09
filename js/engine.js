@@ -61,6 +61,8 @@ const Engine = (() => {
     { name: 'run_erc', ro: true, description: 'Run the electrical rule check: unconnected pins, single-pin nets, missing ground, overlapping symbols.', input_schema: { type: 'object', properties: {} } },
     { name: 'clear_design', description: 'Delete everything in the current project and start an empty design.', input_schema: { type: 'object', properties: {} } },
     { name: 'generate_pcb', description: 'Create the PCB: place all footprints on a board (based on schematic positions) and autoroute with a 2-layer router. Returns routing statistics.', input_schema: { type: 'object', properties: { board_width: { type: 'number', description: 'mm, optional (auto-sized if omitted)' }, board_height: { type: 'number', description: 'mm, optional' }, route: { type: 'boolean', description: 'default true' } } } },
+    { name: 'use_database_parts', description: 'Give built-in schematic symbols (resistor, LED, transistor, regulator, ...) the footprint and pinout of a real JLCPCB part (Basic parts where possible). Without refs: every built-in part that still uses a generated footprint.', input_schema: { type: 'object', properties: { refs: { type: 'array', items: { type: 'string' } } } } },
+    { name: 'match_jlcpcb_parts', description: 'Find JLCPCB/LCSC part numbers for every component value (e.g. 4.7k 0603, 22uF 0805) for an assembly BOM; prefers in-stock Basic parts with the same package.', input_schema: { type: 'object', properties: { overwrite: { type: 'boolean' } } } },
     { name: 'get_enclosure', ro: true, description: 'The 3D-printable enclosure fitted to the PCB: outer size, heights, standoffs, every cutout (automatic ones for edge connectors / LEDs / buttons and custom ones), estimated part heights and all parameters.', input_schema: { type: 'object', properties: {} } },
     { name: 'set_enclosure', description: 'Change enclosure parameters (mm): wall, floor, lidThickness, clearance, pcbThickness, topClearance, extraHeight, standoffHeight, standoffDiameter, screwHole, lidFit, lipHeight, lipWidth, vents, ventWidth, ventLength, ventSpacing, autoConnectorCutouts, autoLidHoles, partHeights ({ref: mm}). Opens the Enclosure tab.', input_schema: { type: 'object', properties: { wall: { type: 'number' }, floor: { type: 'number' }, lidThickness: { type: 'number' }, clearance: { type: 'number' }, pcbThickness: { type: 'number' }, topClearance: { type: 'number' }, extraHeight: { type: 'number' }, standoffHeight: { type: 'number' }, standoffDiameter: { type: 'number' }, screwHole: { type: 'number' }, lidFit: { type: 'number' }, lipHeight: { type: 'number' }, lipWidth: { type: 'number' }, vents: { type: 'boolean' }, ventWidth: { type: 'number' }, ventLength: { type: 'number' }, ventSpacing: { type: 'number' }, autoConnectorCutouts: { type: 'boolean' }, autoLidHoles: { type: 'boolean' }, partHeights: { type: 'object', additionalProperties: { type: 'number' } } } } },
     { name: 'add_enclosure_cutout', description: 'Add an opening to the enclosure. side = left | right | front | back (walls; u = mm along the wall from its centre, z = mm above the bed, default 4 mm above the PCB) or lid | floor (x, y in enclosure coordinates = board x, minus board y). shape rect or circle.', input_schema: { type: 'object', required: ['side', 'width'], properties: { side: { type: 'string', enum: ['left', 'right', 'front', 'back', 'lid', 'floor'] }, shape: { type: 'string', enum: ['rect', 'circle'] }, width: { type: 'number' }, height: { type: 'number' }, u: { type: 'number' }, z: { type: 'number' }, x: { type: 'number' }, y: { type: 'number' }, label: { type: 'string' } } } },
@@ -169,6 +171,10 @@ const Engine = (() => {
       case 'add_components': {
         const list = Array.isArray(input.components) ? input.components : [input];
         const libs = {};
+        // built-in symbols get the real JLCPCB part behind them (unless a footprint was given)
+        for (const s of list) if (s.type && !s.lcsc && !s.part && !s.footprint && Lib.dbDefault(s.type, s.value)) {
+          try { s.dbPart = await loadPart(Lib.dbDefault(s.type, s.value).lcsc); } catch (e) { /* database unavailable → generated footprint */ }
+        }
         for (const s of list) if (s.lcsc || s.part) { const m = await loadPart(s.lcsc || s.part); libs[keyOf(m)] = m; s.part = keyOf(m); delete s.lcsc; }
         return Model.mutate(() => {
           for (const [k, m] of Object.entries(libs)) if (!Model.S.lib[k]) Model.setLibPart(k, m);
@@ -185,6 +191,8 @@ const Engine = (() => {
       case 'rename_net': return Model.mutate(() => { Model.renameNet(input.from, input.to); return { ok: true }; });
       case 'auto_layout': Model.mutate(() => Model.autoLayout()); env.ui('fit-sch'); return { ok: true };
       case 'clear_design': Model.mutate(() => Model.clear()); return { ok: true };
+      case 'use_database_parts': return useDatabaseParts(input.refs);
+      case 'match_jlcpcb_parts': return matchJlcpcb(!!input.overwrite);
       case 'get_enclosure': { const d = Enclosure.describe(); env.ui('show-enc'); return d; }
       case 'set_enclosure': { const r = Model.mutate(() => Enclosure.setParams(input)); env.ui('show-enc'); return { outer_mm: r.outer_mm, base_height: r.base_height, cutouts: r.cutouts.length, params: r.params }; }
       case 'add_enclosure_cutout': { const r = Model.mutate(() => Enclosure.addCutout(input)); env.ui('show-enc'); return r; }
@@ -259,6 +267,41 @@ const Engine = (() => {
     }
   }
 
+  // ---------- database parts behind built-in symbols ----------
+  async function useDatabaseParts(refs) {
+    const S = Model.S, todo = S.components.filter(c => c.type !== 'part' && !c.pinMap && (!refs || refs.includes(c.ref)) && Lib.dbDefault(c.type, c.value));
+    const done = [], failed = [];
+    for (const c of todo) {
+      try { const part = await loadPart(Lib.dbDefault(c.type, c.value).lcsc); const ok = Model.mutate(() => Model.attachDb(Model.comp(c.ref), part)); (ok ? done : failed).push(c.ref + (ok ? ' → ' + part.lcsc + ' ' + (part.footprint && part.footprint.name) : ' (pins did not match)')); }
+      catch (e) { failed.push(c.ref + ': ' + e.message); }
+    }
+    return { converted: done, failed, skipped: S.components.filter(c => c.type !== 'part' && !c.pinMap && !Lib.dbDefault(c.type, c.value)).map(c => c.ref + ' (' + c.type + ', keeps its standard footprint)') };
+  }
+  // value → JLCPCB part number for the BOM (keeps the footprint; prefers in-stock Basic parts in the same package)
+  async function matchJlcpcb(overwrite) {
+    const S = Model.S, out = [];
+    const pkgOf = c => { const l = c.dbfp && S.lib[c.dbfp]; const t = [(l && l.package) || '', (l && l.footprint && l.footprint.name) || '', c.footprint].join(' ').toUpperCase(); const m = t.match(/\b(0201|0402|0603|0805|1206|1210|2512|SOD-?123F?|SOD-?323|SMA|SMB|SOT-?23(-\d)?|SOT-?223|SOIC-?\d+|SOP-?\d+|TSSOP-?\d+|QFN-?\d+)\b/); return m ? m[1] : ''; };
+    const norm = (t, v) => { v = String(v).trim(); if (t === 'resistor' && /^[\d.]+[kKmMR]?$/.test(v)) return v.replace(/R$/, '') + (/[kKmM]$/.test(v) ? 'Ω' : 'Ω'); if (/capacitor/.test(t) && /^[\d.]+[pnuμ]$/.test(v)) return v.replace('u', 'µ') + 'F'; if (t === 'inductor' && /^[\d.]+[nuμ]$/.test(v)) return v.replace('u', 'µ') + 'H'; return v; };
+    for (const c of S.components) {
+      if (c.type === 'part') { out.push({ ref: c.ref, lcsc: c.lcsc, source: 'database part' }); continue; }
+      if (c.lcscPart && !overwrite) {
+        const d = Lib.dbDefault(c.type, c.value);
+        const same = d && d.lcsc === c.lcscPart && (d.byValue || String(c.value).toLowerCase() === String(d.value).toLowerCase());
+        if (!d || d.lcsc !== c.lcscPart || same) { out.push({ ref: c.ref, value: c.value, lcsc: c.lcscPart, source: 'kept' }); continue; }
+      }
+      if (['connector', 'battery', 'ic'].includes(c.type)) { out.push({ ref: c.ref, lcsc: null, source: 'skipped (choose the exact part)' }); continue; }
+      const pkg = pkgOf(c), q = `${norm(c.type, c.value)} ${pkg}`.trim();
+      try {
+        const j = await partsApi('search?q=' + encodeURIComponent(q) + '&limit=20');
+        const ok = j.results.filter(r => r.stock > 0 && (!pkg || String(r.package || '').toUpperCase().replace(/[^A-Z0-9]/g, '').includes(pkg.toUpperCase().replace(/[^A-Z0-9]/g, ''))));
+        const best = ok.sort((a, b) => (b.basic - a.basic) || (b.stock - a.stock))[0];
+        if (best) { Model.mutate(() => { Model.comp(c.ref).lcscPart = best.lcsc; }); out.push({ ref: c.ref, value: c.value, lcsc: best.lcsc, part: best.mfr_part, package: best.package, basic: !!best.basic, stock: best.stock }); }
+        else out.push({ ref: c.ref, value: c.value, lcsc: null, source: `no in-stock match for "${q}"` });
+      } catch (e) { out.push({ ref: c.ref, lcsc: null, source: e.message }); }
+    }
+    return { matched: out.filter(o => o.lcsc).length, total: out.length, parts: out };
+  }
+
   // Knowledge digest for the AI system prompt (cached per folder).
   const digests = {};
   async function knowledgeDigest(force) {
@@ -278,6 +321,6 @@ const Engine = (() => {
     return txt;
   }
 
-  return { env, TOOLS, exec, loadPart, partsApi, api, designContext, knowledgeDigest, newKey };
+  return { env, TOOLS, exec, useDatabaseParts, matchJlcpcb, loadPart, partsApi, api, designContext, knowledgeDigest, newKey };
 })();
 if (typeof module !== 'undefined') module.exports = Engine;

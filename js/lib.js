@@ -5,7 +5,11 @@ const Lib = (() => {
   const pin = (num, name, x, y, dx, dy, len = 0, show = false) =>
     ({ num: String(num), name: String(name), x, y, dx, dy, len, show });
   const two = (h, n1 = '1', n2 = '2') => () => [pin(1, n1, -h, 0, -1, 0), pin(2, n2, h, 0, 1, 0)];
-  const def = (type, o) => { T[type] = Object.assign({ type }, o); };
+  // c.pinMap renumbers a built-in symbol's pins to the pads of its real (database) footprint
+  const def = (type, o) => {
+    if (o.pins) { const raw = o.pins; o.pins = c => { const ps = raw(c); return c && c.pinMap ? ps.map(p => Object.assign({}, p, { num: c.pinMap[p.num] || p.num })) : ps; }; }
+    T[type] = Object.assign({ type }, o);
+  };
 
   // ---------- passives ----------
   def('resistor', {
@@ -236,8 +240,56 @@ const Lib = (() => {
   const clearCache = name => { if (name) delete cache[name]; else for (const k in cache) if (/^(LCSC|LIB):/.test(k)) delete cache[k]; };
   const drawPart = d => { const g = partGeoDef(d); return { g, svg: `<rect class="body" x="${-g.hw}" y="${-g.hh}" width="${2 * g.hw}" height="${2 * g.hh}" rx="2"/>` + '<path d="' + g.pins.map(p => `M${p.x} ${p.y}H${p.x - p.dx * p.len}`).join('') + '"/>' }; };
 
+  // Real JLCPCB/LCSC parts behind the palette symbols (verified pinouts; Basic parts where possible).
+  // value → part for LEDs; map = explicit symbol-pin → part-pin when names cannot be matched.
+  const DB_DEFAULTS = {
+    resistor: { lcsc: 'C25804', value: '10k', pkg: '0603' },
+    capacitor: { lcsc: 'C14663', value: '100n', pkg: '0603' },
+    capacitor_polarized: { lcsc: 'C2895271', value: '10u 25V', pkg: 'SMD D4' },
+    inductor: { lcsc: 'C1046', value: '10u', pkg: '0805' },
+    potentiometer: { lcsc: 'C118954', value: '10k', pkg: '3296W' },
+    fuse: { lcsc: 'C69688', value: '500mA', pkg: '1206' },
+    crystal: { lcsc: 'C13738', value: '16MHz', pkg: '3225', map: { 1: '1', 2: '3' } },
+    diode: { lcsc: 'C81598', value: '1N4148W', pkg: 'SOD-123F' },
+    schottky: { lcsc: 'C8678', value: 'SS34', pkg: 'SMA' },
+    zener: { lcsc: 'C2117', value: 'BZT52C5V1', pkg: 'SOD-123' },
+    led: { lcsc: 'C2286', value: 'Red', pkg: '0603', byValue: { red: 'C2286', green: 'C72043', blue: 'C72041', yellow: 'C72038', white: 'C2290' } },
+    npn: { lcsc: 'C20526', value: 'MMBT3904', pkg: 'SOT-23' },
+    pnp: { lcsc: 'C2143', value: 'MMBT3906', pkg: 'SOT-23' },
+    nmos: { lcsc: 'C8545', value: '2N7002', pkg: 'SOT-23' },
+    pmos: { lcsc: 'C15127', value: 'AO3401A', pkg: 'SOT-23' },
+    opamp: { lcsc: 'C7972', value: 'LMV321', pkg: 'SOT-23-5' },
+    regulator: { lcsc: 'C6186', value: 'AMS1117-3.3', pkg: 'SOT-223' },
+    switch: { lcsc: null, value: 'SW_Push', pkg: 'THT 6mm', note: '4-pin tact switches do not document which pins are joined — keeps the 2-pin footprint' },
+    buzzer: { lcsc: 'C252915', value: 'GMC1205YA passive buzzer', pkg: 'THT 12mm' },
+  };
+  function dbDefault(type, value) {
+    const d = DB_DEFAULTS[type]; if (!d || !d.lcsc) return null;
+    if (d.byValue && value) { const k = Object.keys(d.byValue).find(k => String(value).toLowerCase().includes(k)); if (k) return Object.assign({}, d, { lcsc: d.byValue[k] }); }
+    return d;
+  }
+  // match a symbol's pins to a database part's pins by name (with aliases), then by number
+  const ALIAS = { K: ['K', 'C', 'CATHODE', 'KA'], A: ['A', 'ANODE'], IN: ['IN', 'VIN', 'VI', 'INPUT'], OUT: ['OUT', 'VOUT', 'VO', 'OUTPUT'], GND: ['GND', 'ADJ/GND', 'GND/ADJ', 'VSS'],
+    B: ['B', 'BASE'], E: ['E', 'EMITTER'], C: ['C', 'COLLECTOR'], G: ['G', 'GATE'], S: ['S', 'SOURCE'], D: ['D', 'DRAIN'],
+    'IN+': ['IN+', '+IN', 'INP', '+'], 'IN-': ['IN-', '-IN', 'INN', '-'], 'V+': ['V+', 'VCC', 'VDD', '+VS', 'VS+'], 'V-': ['V-', 'VEE', 'VSS', 'GND', '-VS', 'VS-'], W: ['W', 'WIPER'] };
+  function matchPins(type, dbPins, explicit) {
+    const sym = T[type].pins({ type }), used = new Set(), map = {};
+    const up = s => String(s).trim().toUpperCase();
+    for (const p of sym) {
+      let hit = null;
+      if (explicit && explicit[p.num]) hit = dbPins.find(q => q.num === String(explicit[p.num]));
+      if (!hit) { const names = ALIAS[up(p.name)] || [up(p.name)]; hit = dbPins.filter(q => !used.has(q.num) && names.includes(up(q.name))).sort((a, b) => (+a.num - +b.num) || 0)[0]; }
+      if (!hit && /^\d+$/.test(p.num)) hit = dbPins.find(q => !used.has(q.num) && q.num === p.num && /^\d+$/.test(q.name));
+      if (!hit) return null;
+      used.add(hit.num); map[p.num] = hit.num;
+    }
+    // extra pads with the same name as a mapped pin (e.g. the AMS1117 tab = VOUT) join that pin's net
+    const alias = {}, nameOf = n => up((dbPins.find(q => q.num === n) || {}).name);
+    for (const q of dbPins) if (!used.has(q.num)) { const twin = Object.values(map).find(n => nameOf(n) === up(q.name)); if (twin) alias[q.num] = twin; }
+    return { map, alias };
+  }
   const type = t => T[t];
-  const fpsFor = c => { const d = T[c.type]; return typeof d.fps === 'function' ? d.fps(c) : d.fps; };
+  const fpsFor = c => { const d = T[c.type], f = typeof d.fps === 'function' ? d.fps(c) : d.fps; return c.dbfp && !f.includes('LCSC:' + c.dbfp) ? ['LCSC:' + c.dbfp].concat(f) : f; };
   function rot(x, y, r) {
     switch (((r % 360) + 360) % 360) { case 90: return [-y, x]; case 180: return [-x, -y]; case 270: return [y, -x]; default: return [x, y]; }
   }
@@ -245,5 +297,5 @@ const Lib = (() => {
     const a = rot(b[0], b[1], r), c = rot(b[2], b[3], r);
     return [Math.min(a[0], c[0]), Math.min(a[1], c[1]), Math.max(a[0], c[0]), Math.max(a[1], c[1])];
   }
-  return { T, type, types: () => Object.keys(T).filter(t => !T[t].hidden), footprint, clearCache, drawPart, partGeoDef, fpsFor, rot, rotBox, FOOTPRINT_PATTERNS };
+  return { T, type, types: () => Object.keys(T).filter(t => !T[t].hidden), footprint, DB_DEFAULTS, dbDefault, matchPins, clearCache, drawPart, partGeoDef, fpsFor, rot, rotBox, FOOTPRINT_PATTERNS };
 })();
