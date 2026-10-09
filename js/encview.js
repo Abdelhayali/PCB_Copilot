@@ -18,7 +18,27 @@ const EncView = (() => {
   }
   function init() {
     wrap = $('#encView');
-    wrap.innerHTML = '<div id="encMsg" class="encmsg"></div><div id="encInfo" class="encinfo"></div>';
+    wrap.innerHTML = `<div id="encMsg" class="encmsg"></div><div id="encInfo" class="encinfo"></div>
+      <div id="encCodePanel" class="enc-code hidden">
+        <div class="ecp-head"><b>3D script</b>
+          <select id="encTpl" title="Start from a template"><option value="">Templates…</option><option value="wristband">Wristband pod (Whoop-style)</option><option value="ecg">ECG chest patch (3 electrodes)</option><option value="box">Rounded box + lid</option></select>
+          <button id="encHelp" title="Script API reference">?</button>
+          <button id="encRun" class="primary" title="Build the model (Ctrl+Enter)">▶ Run</button>
+          <button id="encCodeClose" title="Hide the editor">✕</button></div>
+        <textarea id="encCode" spellcheck="false" autocomplete="off" autocapitalize="off"></textarea>
+        <div id="encOut" class="ecp-out"></div>
+      </div>`;
+    $('#encMode').onclick = e => { const b = e.target.closest('button'); if (b) setMode(b.dataset.m); };
+    $('#encCodeBtn').onclick = () => toggleCode();
+    $('#encCodeClose').onclick = () => toggleCode(false);
+    $('#encRun').onclick = runEditor;
+    $('#encCode').addEventListener('input', () => { codeDirty = true; });
+    $('#encCode').addEventListener('keydown', e => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runEditor(); }
+      else if (e.key === 'Tab') { e.preventDefault(); const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); codeDirty = true; }
+    });
+    $('#encTpl').onchange = e => { const k = e.target.value; e.target.value = ''; if (!k) return; if (codeDirty && !confirm('Replace the script in the editor with the template?')) return; $('#encCode').value = Shape3D.EXAMPLES[k]; codeDirty = true; runEditor(); };
+    $('#encHelp').onclick = () => { $('#encOut').innerHTML = `<pre class="ecp-help">${esc(Shape3D.HELP)}</pre>`; };
     $('#encRegen').onclick = () => { dirty = true; rebuild(true); };
     $('#encExplode').onclick = () => { ui.explode = !ui.explode; $('#encExplode').classList.toggle('on', ui.explode); place(); };
     $('#encLid').onclick = () => { ui.lid = !ui.lid; $('#encLid').classList.toggle('on', ui.lid); place(); };
@@ -67,7 +87,14 @@ const EncView = (() => {
     new ResizeObserver(() => { if (active) { resize(); draw(); } }).observe(wrap);
     resize();
   }
-  function resize() { if (!renderer) return; const r = wrap.getBoundingClientRect(); if (!r.width) return; renderer.setSize(r.width, r.height); camera.aspect = r.width / r.height; camera.updateProjectionMatrix(); }
+  function resize() {
+    if (!renderer) return;
+    const r = wrap.getBoundingClientRect(); if (!r.width) return;
+    let w = r.width, h = r.height;
+    const p = $('#encCodePanel');   // keep the 3D view beside / above the script editor
+    if (p && !p.classList.contains('hidden')) { const q = p.getBoundingClientRect(); if (q.top > r.top + 4) h = Math.max(120, q.top - r.top); else w = Math.max(160, r.width - q.width); }
+    renderer.setSize(w, h); camera.aspect = w / h; camera.updateProjectionMatrix();
+  }
   function draw() {
     if (!renderer) return;
     camera.position.set(cam.tx + cam.r * Math.sin(cam.ph) * Math.cos(cam.th), cam.ty + cam.r * Math.sin(cam.ph) * Math.sin(cam.th), cam.tz + cam.r * Math.cos(cam.ph));
@@ -96,22 +123,150 @@ const EncView = (() => {
     }
     return g;
   }
+  function syncToolbar() {
+    const m = Enclosure.mode();
+    document.querySelectorAll('#encMode button').forEach(b => b.classList.toggle('on', b.dataset.m === m));
+    $('#encCodeBtn').classList.toggle('hidden', m !== 'custom');
+    $('#encLid').textContent = m === 'custom' ? 'Covers' : 'Lid';
+    $('#encLid').title = m === 'custom' ? 'Show the parts that have an explode offset (lids, covers)' : 'Show the lid';
+    if (m !== 'custom') $('#encCodePanel').classList.add('hidden');
+  }
   function place() {
     if (!root || !ui.built) return;
+    if (ui.built.custom) {
+      for (const m of meshes.parts || []) {
+        const p = m.userData, ex = ui.explode && p.explode ? p.explode : [0, 0, 0];
+        m.position.set(ex[0], ex[1], ex[2]);
+        m.visible = ui.lid || !p.explode;
+        m.material.opacity = ui.xray ? 0.35 : 1; m.material.depthWrite = !ui.xray;
+      }
+      if (meshes.pcb) meshes.pcb.visible = ui.pcb;
+      draw(); return;
+    }
     const L = ui.built.L, ex = ui.explode ? (L.P.explode || 12) + L.P.lipHeight : 0;
     if (meshes.base) { meshes.base.material.opacity = ui.xray ? 0.35 : 1; meshes.base.material.depthWrite = !ui.xray; }
     if (meshes.lid) { meshes.lid.visible = ui.lid; meshes.lid.position.z = ex; meshes.lid.material.opacity = ui.xray ? 0.35 : 1; meshes.lid.material.depthWrite = !ui.xray; }
     if (meshes.pcb) meshes.pcb.visible = ui.pcb;
     draw();
   }
+  // ---------- custom mode: free-form 3D script (shape3d.js) built in a Web Worker ----------
+  let worker = null, seq = 0, lastRun = null, codeDirty = false;
+  const pending = new Map();
+  function getWorker() {
+    if (worker) return worker;
+    worker = new Worker('js/shape-worker.js');
+    worker.onmessage = e => {
+      const p = pending.get(e.data.id); if (!p) return;
+      pending.delete(e.data.id); clearTimeout(p.t);
+      if (e.data.ok) p.res(e.data.r); else p.rej(Object.assign(new Error(e.data.error), { line: e.data.line, logs: e.data.logs }));
+    };
+    worker.onerror = e => { for (const p of pending.values()) { clearTimeout(p.t); p.rej(new Error(e.message || 'the 3D worker crashed')); } pending.clear(); worker = null; };
+    return worker;
+  }
+  function scriptCtx() { try { return Shape3D.context(Enclosure.layout()); } catch (e) { return { pcb: null }; } }
+  // build a script (cached: the same script on the same board is not rebuilt)
+  function runScript(code) {
+    const ctx = scriptCtx(), key = code + '\u0000' + JSON.stringify(ctx);
+    if (lastRun && lastRun.key === key) return lastRun.p;
+    const id = ++seq;
+    const p = new Promise((res, rej) => {
+      const t = setTimeout(() => { if (worker) worker.terminate(); worker = null; pending.delete(id); rej(new Error('The 3D script ran longer than 2 minutes and was stopped — use a lower resolution(), fewer hull points or fewer booleans.')); }, 120000);
+      pending.set(id, { res, rej, t });
+      getWorker().postMessage({ id, code, ctx, opts: { timeLimitMs: 110000 } });
+    });
+    lastRun = { key, p };
+    ui.running = true; out();
+    p.then(r => { if (lastRun && lastRun.p === p) { ui.custom = { r, ctx }; ui.running = false; ui.err = null; showCustom(true); } },
+      e => { if (lastRun && lastRun.p === p) { ui.custom = { r: null, ctx, err: e }; ui.running = false; lastRun = null; showCustom(false); } });
+    return p;
+  }
+  function setMode(m) {
+    try {
+      Model.mutate(() => {
+        const u = { mode: m };
+        if (m === 'custom' && !Enclosure.script()) u.script = Shape3D.EXAMPLES[scriptCtx().pcb ? 'box' : 'wristband'];
+        Enclosure.setParams(u);
+      });
+      if (m === 'custom') toggleCode(true);
+      dirty = true; rebuild(true);
+    } catch (e) { App.toast(e.message); }
+  }
+  function toggleCode(on) {
+    const p = $('#encCodePanel'); on = on ?? p.classList.contains('hidden');
+    p.classList.toggle('hidden', !on); $('#encCodeBtn').classList.toggle('on', on);
+    if (on && !codeDirty) $('#encCode').value = Enclosure.script();
+    resize(); draw();
+  }
+  function runEditor() {
+    const code = $('#encCode').value;
+    codeDirty = false;
+    Model.mutate(() => Enclosure.setParams({ mode: 'custom', script: code }));
+    dirty = true; rebuild(false);
+  }
+  function out() {
+    const el = $('#encOut'); if (!el) return;
+    const c = ui.custom, r = c && c.r;
+    let h = '';
+    if (ui.running) h = '<div class="muted"><span class="spin"></span> Building the 3D model…</div>';
+    else if (c && c.err) h = `<div class="bad">⚠ ${esc(c.err.message)}</div>` + (c.err.logs && c.err.logs.length ? `<pre>${esc(c.err.logs.join('\n'))}</pre>` : '');
+    else if (r) {
+      h = `<div class="good">✓ ${r.parts.length} part${r.parts.length > 1 ? 's' : ''} in ${(r.ms / 1000).toFixed(1)} s</div>` +
+        `<table class="pins">${r.parts.map(p => `<tr><td>${esc(p.name)}</td><td>${p.size_mm.map(v => v.toFixed(1)).join(' × ')} mm</td><td>${p.volume_cm3} cm³</td><td>${p.open_edges ? '<span class="muted" title="small mesh gaps — slicers repair them">≈ closed</span>' : 'watertight'}</td></tr>`).join('')}</table>` +
+        (r.report.collisions.length ? `<div class="bad">⚠ Collides with the board: ${r.report.collisions.map(x => `${esc(x.part)} ↔ ${esc(x.with)} (${x.overlap_mm3} mm³)`).join(', ')}</div>` : (c.ctx.pcb ? '<div class="muted">Fit check: no collisions with the PCB or components.</div>' : '')) +
+        (r.logs.length ? `<pre>${esc(r.logs.join('\n'))}</pre>` : '');
+    }
+    el.innerHTML = h;
+  }
+  function showCustom(fit) {
+    out();
+    const c = ui.custom, r = c && c.r;
+    if (!r) { msg(c && c.err ? '3D script error — see the editor' : ''); ui.built = null; if (root) { while (root.children.length) root.remove(root.children[0]); draw(); } infoCustom(); return; }
+    msg('');
+    ui.built = { custom: true };
+    infoCustom();
+    if (!root) return;
+    const T = window.THREE;
+    while (root.children.length) root.remove(root.children[0]);
+    const palette = [0x4f8fd9, 0x9fd27a, 0xe0a050, 0xc080e0, 0x60c0c0];
+    meshes.parts = r.parts.map((p, i) => {
+      const g = new T.BufferGeometry(); g.setAttribute('position', new T.BufferAttribute(p.pos, 3)); g.setAttribute('normal', new T.BufferAttribute(p.nor, 3));
+      let col; try { col = new T.Color(p.color || palette[i % palette.length]); } catch (e) { col = new T.Color(palette[i % palette.length]); }
+      const m = new T.Mesh(g, new T.MeshStandardMaterial({ color: col, roughness: 0.6, metalness: 0.05, transparent: true, opacity: 1, side: T.DoubleSide }));
+      m.userData = p; root.add(m); return m;
+    });
+    meshes.pcb = null;
+    if (c.ctx.pcb) { try { const L = Enclosure.layout(), g = pcbGroup(L); g.position.set(-c.ctx.origin[0], -c.ctx.origin[1], -c.ctx.origin[2]); meshes.pcb = g; root.add(g); } catch (e) { } }
+    if (fit || !ui.fitted) {
+      const b = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      for (const p of r.parts) for (let k = 0; k < 3; k++) { b[k] = Math.min(b[k], p.bbox[k]); b[k + 3] = Math.max(b[k + 3], p.bbox[k + 3]); }
+      cam.tx = (b[0] + b[3]) / 2; cam.ty = (b[1] + b[4]) / 2; cam.tz = (b[2] + b[5]) / 2; cam.r = Math.max(b[3] - b[0], b[4] - b[1], b[5] - b[2]) * 2.6; ui.fitted = true;
+    }
+    resize(); place();
+    if (active) App.renderAll();
+  }
+  function infoCustom() {
+    const c = ui.custom, r = c && c.r;
+    $('#encInfo').innerHTML = r ? `<b>Custom 3D</b> · ${r.parts.map(p => `${esc(p.name)} ${p.size_mm.map(v => v.toFixed(1)).join('×')} mm`).join(' · ')}${r.report.collisions.length ? ' · <span class="bad">⚠ collisions</span>' : ''}<br><span class="muted">Drag to orbit · right-drag / Shift-drag to pan · wheel to zoom · ask the AI to change the design</span>`
+      : `<b>Custom 3D</b> · ${ui.running ? 'building…' : 'no model yet'}`;
+  }
   function rebuild(fit) {
     dirty = false;
+    syncToolbar();
+    if (Enclosure.mode() === 'custom') {
+      if (!codeDirty && $('#encCode')) $('#encCode').value = Enclosure.script();
+      const code = Enclosure.script();
+      if (!code.trim()) { ui.custom = null; showCustom(false); msg('Write a 3D script (</> Script) or ask the AI, e.g. “make a wristband pod like Whoop for this PCB”'); return; }
+      if (fit) ui.fitted = false;
+      runScript(code).catch(() => { });
+      return;
+    }
     let r;
     try { r = Enclosure.build(); ui.err = null; msg(''); } catch (e) { ui.err = e.message; msg(e.message); ui.built = null; if (root) { while (root.children.length) root.remove(root.children[0]); draw(); } App.renderAll(); return; }
     const first = !ui.built; ui.built = r;
     info(r);
     if (!root) return;
     while (root.children.length) root.remove(root.children[0]);
+    meshes.parts = null; ui.built.custom = false;
     meshes.base = meshFrom(r.base, 0x4f8fd9); meshes.lid = meshFrom(r.lid, 0x9fd27a); meshes.pcb = pcbGroup(r.L);
     root.add(meshes.base, meshes.lid, meshes.pcb);
     if (first || fit) { const b = r.L.bbox; cam.tx = (b[0] + b[2]) / 2; cam.ty = (b[1] + b[3]) / 2; cam.tz = r.L.H / 2; cam.r = Math.max(b[2] - b[0], b[3] - b[1], r.L.H) * 2.4; }
@@ -133,7 +288,20 @@ const EncView = (() => {
   function props(el) {
     const P = Enclosure.params(), S = Model.S;
     let d = null; try { d = Enclosure.describe(); } catch (e) { }
-    let h = `<div class="ph">Enclosure</div>`;
+    const mode = Enclosure.mode();
+    let h = `<div class="ph">Enclosure</div><div class="seg encmodeseg"><button data-m="box" class="${mode === 'box' ? 'on' : ''}">Box</button><button data-m="custom" class="${mode === 'custom' ? 'on' : ''}">Custom 3D</button></div>`;
+    if (mode === 'custom') {
+      const c = ui.custom, r = c && c.r;
+      h += `<div class="muted small">Free-form model from a 3D script: wristbands, chest patches, clips, curved or organic cases. Describe what you need to the AI — e.g. <i>“make a Whoop-style wristband pod for this board with a USB-C opening”</i> or <i>“ECG chest patch with 3 snap-electrode holes 60 mm apart”</i> — or edit the script yourself.</div>
+        <div class="row"><button id="encOpenCode">&lt;/&gt; Edit script</button></div>`;
+      if (r) h += `<div class="ph small">Parts (one STL each)</div><table class="pins">${r.parts.map(p => `<tr><td>${esc(p.name)}</td><td>${p.size_mm.map(v => v.toFixed(1)).join(' × ')}</td></tr>`).join('')}</table>` +
+        (r.report.collisions.length ? `<div class="bad small">⚠ ${r.report.collisions.map(x => esc(x.part + ' ↔ ' + x.with)).join(', ')}</div>` : '');
+      else if (c && c.err) h += `<div class="bad small">⚠ ${esc(c.err.message)}</div>`;
+      el.innerHTML = h;
+      el.querySelectorAll('.encmodeseg button').forEach(b => b.onclick = () => setMode(b.dataset.m));
+      $('#encOpenCode').onclick = () => toggleCode(true);
+      return true;
+    }
     if (!d) { el.innerHTML = h + `<div class="muted">${esc(ui.err || 'Generate the PCB first — the enclosure is fitted to it.')}</div>`; return true; }
     h += `<div class="lcscinfo"><b>${d.outer_mm.join(' × ')} mm</b><br>PCB ${S.board.w}×${S.board.h} mm · ${(S.board.shape || { type: 'rect' }).type} outline</div>`;
     for (const [title, fs] of FIELDS) {
@@ -155,6 +323,7 @@ const EncView = (() => {
       <div class="ph small">Part heights (mm)</div><table class="pins">${Object.entries(d.part_heights).map(([ref, v]) => `<tr><td>${esc(ref)}</td><td><input data-ph="${esc(ref)}" type="number" step="0.5" value="${v}" style="width:70px"></td></tr>`).join('')}</table>
       <div class="muted small">Heights are estimated from the package; change any to fit real parts.</div>`;
     el.innerHTML = h;
+    el.querySelectorAll('.encmodeseg button').forEach(b => b.onclick = () => setMode(b.dataset.m));
     el.querySelectorAll('[data-ep]').forEach(i => i.onchange = () => { try { Model.mutate(() => Enclosure.setParams({ [i.dataset.ep]: i.type === 'checkbox' ? i.checked : +i.value })); } catch (e) { App.toast(e.message); } });
     el.querySelectorAll('[data-ph]').forEach(i => i.onchange = () => Model.mutate(() => Enclosure.setParams({ partHeights: { [i.dataset.ph]: i.value === '' ? null : +i.value } })));
     el.querySelectorAll('[data-rmcut]').forEach(b => b.onclick = () => Model.mutate(() => { const c = (Model.S.enclosure.cutouts || []).slice(); c.splice(+b.dataset.rmcut, 1); Model.S.enclosure = Object.assign({}, Model.S.enclosure, { cutouts: c }); }));
@@ -166,6 +335,7 @@ const EncView = (() => {
 
   // ---------- exports ----------
   function exportAll(kind) {
+    if (Enclosure.mode() === 'custom') return exportCustom(kind);
     try {
       const { files, info } = Enclosure.exportFiles();
       const names = Object.keys(files);
@@ -175,5 +345,20 @@ const EncView = (() => {
       App.toast(`Enclosure ${info.outer_mm.join(' × ')} mm exported`);
     } catch (e) { App.toast(e.message); }
   }
-  return { init, show, hide, props, ui, rebuild: () => rebuild(true) };
+  function exportCustom(kind) {
+    const r = ui.custom && ui.custom.r;
+    if (!r) { App.toast(ui.running ? 'Still building the 3D model…' : 'Run the 3D script first'); return; }
+    const base = (Model.S.name || 'design').replace(/[^\w.-]+/g, '_'), files = {};
+    for (const p of r.parts) files[`${base}-${p.name}.stl`] = p.stl;
+    files[base + '-enclosure.scad'] = r.scad;
+    files[base + '-enclosure-script.js'] = Enclosure.script();
+    files[base + '-enclosure-README.txt'] = ['CircuitPilot custom enclosure — ' + (Model.S.name || 'design'), '', ...r.parts.map(p => `${p.name}: ${p.size_mm.join(' x ')} mm, ${p.volume_cm3} cm3`), '',
+      'STL files are oriented for printing (lids/covers flipped where the script asks for it) and sit on the bed.',
+      'The .scad file is equivalent OpenSCAD source; the -script.js file is the CircuitPilot 3D script (paste it into the Enclosure script editor).'].join('\n');
+    if (kind === 'stl') { for (const n of Object.keys(files).filter(n => n.endsWith('.stl'))) App.download(n, new Blob([files[n]], { type: 'model/stl' })); }
+    else if (kind === 'scad') App.download(base + '-enclosure.scad', r.scad, 'text/plain');
+    else App.download(base + '-enclosure.zip', makeZip(files));
+    App.toast(`Exported ${r.parts.length} part${r.parts.length > 1 ? 's' : ''}`);
+  }
+  return { init, show, hide, props, ui, rebuild: () => rebuild(true), runScript };
 })();

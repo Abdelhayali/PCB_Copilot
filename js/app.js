@@ -603,6 +603,7 @@ const App = (() => {
     Engine.env.myLib = () => Projects.myLib;
     Engine.env.savePart = def => Projects.savePart(def).then(() => renderParts());
     Engine.env.route = runRouter;
+    Engine.env.shape = code => EncView.runScript(code);
     Engine.env.searchKey = () => AI.settings.braveKey;
     Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } if (what === 'show-enc') { showView('enc'); EncView.rebuild(); } };
     EncView.init(); Pcb3D.init();

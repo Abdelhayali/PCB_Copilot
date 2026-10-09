@@ -28,7 +28,7 @@ const ctx = vm.createContext({
   console: { log, info: log, warn: log, error: log }, fetch, TextEncoder, TextDecoder, Blob, URL, URLSearchParams,
   setTimeout, clearTimeout, AbortController, AbortSignal,
 });
-for (const [file, name] of [['lib.js', 'Lib'], ['model.js', 'Model'], ['pcb.js', 'Pcb'], ['enclosure.js', 'Enclosure'], ['engine.js', 'Engine']]) {
+for (const [file, name] of [['lib.js', 'Lib'], ['model.js', 'Model'], ['pcb.js', 'Pcb'], ['enclosure.js', 'Enclosure'], ['shape3d.js', 'Shape3D'], ['engine.js', 'Engine']]) {
   vm.runInContext(fs.readFileSync(path.join(ROOT, 'js', file), 'utf8') + `\n;globalThis.${name} = ${name};`, ctx, { filename: file });
 }
 const { Engine, Model, Pcb } = ctx;
@@ -81,7 +81,7 @@ const EXTRA = [
   { name: 'create_project', description: 'Create a new empty project and make it current.', input_schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' }, knowledge_folder: { type: 'string', description: 'Optional knowledge folder path' } } } },
   { name: 'rename_project', description: 'Rename the current project.', input_schema: { type: 'object', required: ['name'], properties: { name: { type: 'string' } } } },
   { name: 'export_gerbers', description: 'Run DRC, then write Gerber (copper, mask, paste, silkscreen, outline) + Excellon drill files and a .zip for the fab into a folder on this machine. Refuses when DRC has errors unless force is true.', input_schema: { type: 'object', required: ['out_dir'], properties: { out_dir: { type: 'string', description: 'Absolute folder path (created if missing)' }, force: { type: 'boolean', description: 'export even with DRC errors' } } } },
-  { name: 'export_enclosure', description: 'Write the 3D-printable enclosure for the current project (base + lid STL, parametric OpenSCAD .scad, notes, and a .zip) into a folder on this machine.', input_schema: { type: 'object', required: ['out_dir'], properties: { out_dir: { type: 'string', description: 'Absolute folder path (created if missing)' } } } },
+  { name: 'export_enclosure', description: 'Write the 3D-printable enclosure for the current project into a folder on this machine: box mode → base + lid STL, parametric OpenSCAD .scad and notes; custom 3D mode → one STL per part, OpenSCAD source and the 3D script; plus a .zip.', input_schema: { type: 'object', required: ['out_dir'], properties: { out_dir: { type: 'string', description: 'Absolute folder path (created if missing)' } } } },
   { name: 'get_bom', description: 'Bill of materials of the current project as CSV text (qty, refs, type, value, footprint, LCSC part).', input_schema: { type: 'object', properties: {} } },
 ];
 const TOOLS = [...EXTRA, ...Engine.TOOLS.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema }))];
@@ -115,12 +115,20 @@ async function callTool(name, input = {}) {
       return { exported: true, drc: d.summary, warnings: d.violations.filter(v => v.severity !== 'error').slice(0, 10).map(v => v.msg), folder: dir, files: Object.keys(files), zip: zipPath };
     });
     case 'export_enclosure': return withProject(async () => {
-      const { files, info } = ctx.Enclosure.exportFiles(), dir = path.resolve(String(input.out_dir || ''));
+      const dir = path.resolve(String(input.out_dir || ''));
+      let files, info;
+      if (ctx.Enclosure.mode() === 'custom') {   // free-form 3D script: one STL per part + OpenSCAD + the script
+        const sc = (() => { try { return ctx.Shape3D.context(ctx.Enclosure.layout()); } catch { return { pcb: null }; } })();
+        const r = ctx.Shape3D.run(ctx.Enclosure.script(), sc, { mesh: false }), base = (Model.S.name || 'design').replace(/[^\w.-]+/g, '_');
+        files = {}; for (const p of r.parts) files[base + '-' + p.name + '.stl'] = p.stl;
+        files[base + '-enclosure.scad'] = r.scad; files[base + '-enclosure-script.js'] = ctx.Enclosure.script();
+        info = { mode: 'custom', parts: r.parts.map(p => ({ name: p.name, size_mm: p.size_mm })), collisions: r.report.collisions, cutouts: [] };
+      } else ({ files, info } = ctx.Enclosure.exportFiles());
       fs.mkdirSync(dir, { recursive: true });
       for (const [n, data] of Object.entries(files)) fs.writeFileSync(path.join(dir, n), data instanceof Uint8Array ? Buffer.from(data) : data);
       const zipPath = path.join(dir, (Model.S.name || 'board').replace(/[^\w.-]+/g, '_') + '-enclosure.zip');
       fs.writeFileSync(zipPath, Buffer.from(await ctx.makeZip(files).arrayBuffer()));
-      return { folder: dir, files: Object.keys(files), zip: zipPath, outer_mm: info.outer_mm, cutouts: info.cutouts.length };
+      return { folder: dir, files: Object.keys(files), zip: zipPath, mode: info.mode || 'box', outer_mm: info.outer_mm, parts: info.parts, collisions: info.collisions, cutouts: info.cutouts.length };
     });
     case 'get_bom': return withProject(() => {
       const g = {};

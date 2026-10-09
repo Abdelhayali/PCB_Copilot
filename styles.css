@@ -342,3 +342,18 @@ ul.cutl li { padding: 2px 0; }
 .lact { color: var(--strong); }
 [data-theme="light"] #pcbCoord { background: #000c; }
 [data-theme="light"] .rgrid label, [data-theme="light"] .dlg label.chk { color: var(--text); }
+
+/* custom 3D enclosure: script editor panel */
+.enc-code { position: absolute; top: 0; right: 0; bottom: 0; width: min(46%, 560px); display: flex; flex-direction: column; background: var(--panel); border-left: 1px solid var(--line); z-index: 2; }
+.enc-code.hidden { display: none; }
+.ecp-head { display: flex; align-items: center; gap: 6px; padding: 6px 8px; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+.ecp-head b { margin-right: auto; }
+.ecp-head select { max-width: 180px; }
+#encCode { flex: 1; min-height: 120px; resize: none; border: 0; border-radius: 0; padding: 8px 10px; font: 12px/1.45 ui-monospace, SFMono-Regular, Consolas, monospace; background: var(--bg); color: var(--text); white-space: pre; overflow: auto; tab-size: 2; }
+.ecp-out { max-height: 38%; overflow: auto; padding: 6px 10px; border-top: 1px solid var(--line); font-size: 12px; }
+.ecp-out pre { white-space: pre-wrap; font-size: 11px; margin: 4px 0; }
+.ecp-out .ecp-help { max-height: none; }
+.ecp-out table td { padding: 1px 6px 1px 0; }
+.encmodeseg { margin: 4px 0 8px; display: inline-flex; }
+#encMode { margin-right: 6px; }
+@media (max-width: 700px) { .enc-code { width: 100%; top: 40%; border-left: 0; border-top: 1px solid var(--line); } }

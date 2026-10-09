@@ -34,8 +34,9 @@ const Enclosure = (() => {
           if (ti !== 2) F.push(vi); if (ti !== 1) B.push(vi);
           if ((ti | tj) === 3) { const t = (this.w - this.n.dot(vi)) / this.n.dot(vj.minus(vi)), v = vi.lerp(vj, t); F.push(v); B.push(v); }
         }
-        if (F.length >= 3) { const p = Poly.make(F); if (p) f.push(p); }
-        if (B.length >= 3) { const p = Poly.make(B); if (p) b.push(p); }
+        // fragments keep the parent plane (recomputing it drops slivers and leaves holes)
+        if (F.length >= 3) f.push(new Poly(F, poly.plane.clone()));
+        if (B.length >= 3) b.push(new Poly(B, poly.plane.clone()));
       }
     }
   }
@@ -47,29 +48,46 @@ const Enclosure = (() => {
   }
   class Node {
     constructor(polys) { this.plane = null; this.front = null; this.back = null; this.polys = []; if (polys) this.build(polys); }
-    invert() { for (const p of this.polys) p.flip(); if (this.plane) this.plane.flip(); if (this.front) this.front.invert(); if (this.back) this.back.invert(); const t = this.front; this.front = this.back; this.back = t; }
+    // all tree walks are iterative: curved models make deep trees that would overflow the call stack
+    nodes() { const out = [], st = [this]; while (st.length) { const n = st.pop(); out.push(n); if (n.front) st.push(n.front); if (n.back) st.push(n.back); } return out; }
+    invert() { for (const n of this.nodes()) { for (const p of n.polys) p.flip(); if (n.plane) n.plane.flip(); const t = n.front; n.front = n.back; n.back = t; } }
     clip(polys) {
-      if (!this.plane) return polys.slice();
-      let f = [], b = [];
-      for (const p of polys) this.plane.split(p, f, b, f, b);
-      if (this.front) f = this.front.clip(f);
-      b = this.back ? this.back.clip(b) : [];
-      return f.concat(b);
+      const out = [], st = [[this, polys]];
+      while (st.length) {
+        const [n, ps] = st.pop();
+        if (!n.plane) { for (const p of ps) out.push(p); continue; }
+        const f = [], b = [];
+        check();
+        for (const p of ps) n.plane.split(p, f, b, f, b);
+        if (f.length) { if (n.front) st.push([n.front, f]); else for (const p of f) out.push(p); }
+        if (b.length && n.back) st.push([n.back, b]);
+      }
+      return out;
     }
-    clipTo(bsp) { this.polys = bsp.clip(this.polys); if (this.front) this.front.clipTo(bsp); if (this.back) this.back.clipTo(bsp); }
-    all() { let p = this.polys.slice(); if (this.front) p = p.concat(this.front.all()); if (this.back) p = p.concat(this.back.all()); return p; }
+    clipTo(bsp) { for (const n of this.nodes()) n.polys = bsp.clip(n.polys); }
+    all() { const out = []; for (const n of this.nodes()) for (const p of n.polys) out.push(p); return out; }
     build(polys) {
-      if (!polys.length) return;
-      if (!this.plane) this.plane = polys[0].plane.clone();
-      const f = [], b = [];
-      for (const p of polys) this.plane.split(p, this.polys, this.polys, f, b);
-      if (f.length) { if (!this.front) this.front = new Node(); this.front.build(f); }
-      if (b.length) { if (!this.back) this.back = new Node(); this.back.build(b); }
+      const st = [[this, polys]];
+      while (st.length) {
+        const [n, ps] = st.pop();
+        if (!ps.length) continue;
+        if (!n.plane) n.plane = ps[0].plane.clone();
+        const f = [], b = [];
+        check();
+        for (const p of ps) n.plane.split(p, n.polys, n.polys, f, b);
+        if (guard.maxPolys && n.polys.length + f.length + b.length > guard.maxPolys) throw new Error('Model too complex: the boolean operations produced too many polygons. Use fewer segments (resolution / fn) or simpler shapes.');
+        if (f.length) { if (!n.front) n.front = new Node(); st.push([n.front, f]); }
+        if (b.length) { if (!n.back) n.back = new Node(); st.push([n.back, b]); }
+      }
     }
   }
+  // guard for runaway booleans: a deadline (ms epoch) and a polygon budget, checked inside the BSP loops
+  const guard = { deadline: 0, maxPolys: 0, n: 0 };
+  const check = () => { if ((++guard.n & 1023) === 0 && guard.deadline && Date.now() > guard.deadline) throw new Error('Model too complex: the boolean operations took too long. Use fewer segments (resolution / fn) or simpler shapes.'); };
   const cl = ps => ps.map(p => p.clone());
   function union(A, B) { if (!A.length) return cl(B); if (!B.length) return cl(A); const a = new Node(cl(A)), b = new Node(cl(B)); a.clipTo(b); b.clipTo(a); b.invert(); b.clipTo(a); b.invert(); a.build(b.all()); return a.all(); }
   function subtract(A, B) { if (!B.length) return cl(A); const a = new Node(cl(A)), b = new Node(cl(B)); a.invert(); a.clipTo(b); b.clipTo(a); b.invert(); b.clipTo(a); b.invert(); a.build(b.all()); a.invert(); return a.all(); }
+  function intersect(A, B) { if (!A.length || !B.length) return []; const a = new Node(cl(A)), b = new Node(cl(B)); a.invert(); b.clipTo(a); b.invert(); a.clipTo(b); b.clipTo(a); a.build(b.all()); a.invert(); return a.all(); }
 
   // ---------------- 2D helpers ----------------
   const area = P => { let a = 0; for (let i = 0; i < P.length; i++) { const p = P[i], q = P[(i + 1) % P.length]; a += p[0] * q[1] - q[0] * p[1]; } return a / 2; };
@@ -195,15 +213,19 @@ const Enclosure = (() => {
   function setParams(u = {}) {
     const S = Model.S, cur = Object.assign({}, S.enclosure || {});
     for (const [k, v] of Object.entries(u)) {
-      if (!(k in DEFAULTS)) throw new Error(`Unknown enclosure parameter "${k}". Known: ${Object.keys(DEFAULTS).join(', ')}`);
+      // mode: 'box' = this parametric box, 'custom' = free-form 3D script (shape3d.js) stored in .script
+      if (k === 'mode') { if (!['box', 'custom'].includes(v)) throw new Error('mode must be "box" or "custom"'); cur.mode = v; continue; }
+      if (k === 'script') { cur.script = String(v || ''); continue; }
+      if (!(k in DEFAULTS)) throw new Error(`Unknown enclosure parameter "${k}". Known: mode, script, ${Object.keys(DEFAULTS).join(', ')}`);
       if (k === 'partHeights') { cur.partHeights = Object.assign({}, cur.partHeights || {}); for (const [r, h] of Object.entries(v || {})) { if (h == null || h === '') delete cur.partHeights[r]; else cur.partHeights[r] = +h; } }
       else if (k === 'cutouts') cur.cutouts = v;
       else if (typeof DEFAULTS[k] === 'boolean') cur[k] = !!v;
       else { const n = +v; if (!(n >= 0 && n < 500)) throw new Error(`${k} must be a number in mm`); cur[k] = n; }
     }
     S.enclosure = cur;
-    return describe();
+    try { return describe(); } catch (e) { if ('mode' in u || 'script' in u) return { mode: cur.mode || 'box' }; throw e; }
   }
+  const mode = () => (Model.S.enclosure || {}).mode || 'box', script = () => (Model.S.enclosure || {}).script || '';
   function addCutout(c) {
     const S = Model.S, cur = Object.assign({}, S.enclosure || {});
     const side = String(c.side || '').toLowerCase();
@@ -353,6 +375,88 @@ const Enclosure = (() => {
     return out;
   }
 
+  // Where curved surfaces meet at grazing angles, the two sides of a boolean seam get their vertices from
+  // different (ill-conditioned) plane intersections and end up to ~0.1 mm apart, leaving the seam unstitched.
+  // Zip it: only along unpaired (open) edges, snap nearby endpoints together and insert endpoints that lie
+  // close to an opposite open edge into that edge.
+  function zipSeams(polys, tol = 0.1) {
+    const q = v => `${Math.round(v.x * 1e4)},${Math.round(v.y * 1e4)},${Math.round(v.z * 1e4)}`;
+    const openEdges = () => {
+      const dir = new Set(), out = [];
+      for (const p of polys) for (let i = 0; i < p.v.length; i++) dir.add(q(p.v[i]) + '|' + q(p.v[(i + 1) % p.v.length]));
+      for (const p of polys) for (let i = 0; i < p.v.length; i++) { const a = p.v[i], b = p.v[(i + 1) % p.v.length]; if (q(a) !== q(b) && !dir.has(q(b) + '|' + q(a))) out.push({ p, a, b }); }
+      return out;
+    };
+    const cellK = (x, y, z) => `${Math.floor(x / tol)},${Math.floor(y / tol)},${Math.floor(z / tol)}`;
+    for (let pass = 0; pass < 2; pass++) {
+      let open = openEdges();
+      if (!open.length || open.length > 50000) return polys;
+      // 1) snap open-edge endpoints that are within tol of each other
+      const ends = new Map(); for (const e of open) { ends.set(q(e.a), e.a); ends.set(q(e.b), e.b); }
+      const grid = new Map(), rep = new Map();
+      for (const v of ends.values()) { const k = cellK(v.x, v.y, v.z); if (!grid.has(k)) grid.set(k, []); grid.get(k).push(v); }
+      for (const v of ends.values()) {
+        if (rep.has(v)) continue;
+        const cx = Math.floor(v.x / tol), cy = Math.floor(v.y / tol), cz = Math.floor(v.z / tol);
+        for (let i = -1; i <= 1; i++) for (let j = -1; j <= 1; j++) for (let k = -1; k <= 1; k++) for (const u of grid.get(`${cx + i},${cy + j},${cz + k}`) || [])
+          if (u !== v && !rep.has(u) && u.minus(v).len() < tol) rep.set(u, v);
+      }
+      if (rep.size) for (const p of polys) p.v = p.v.map(v => rep.get(v) || v).filter((v, i, a) => v !== a[(i + 1) % a.length]);
+      for (let i = polys.length - 1; i >= 0; i--) if (polys[i].v.length < 3) polys.splice(i, 1);
+      // 2) T-junctions along open edges with the larger tolerance
+      open = openEdges(); if (!open.length) return polys;
+      const eg = new Map();
+      open.forEach((e, idx) => {
+        const lo = [Math.min(e.a.x, e.b.x), Math.min(e.a.y, e.b.y), Math.min(e.a.z, e.b.z)].map(c => Math.floor((c - tol) / tol)), hi = [Math.max(e.a.x, e.b.x), Math.max(e.a.y, e.b.y), Math.max(e.a.z, e.b.z)].map(c => Math.floor((c + tol) / tol));
+        if ((hi[0] - lo[0] + 1) * (hi[1] - lo[1] + 1) * (hi[2] - lo[2] + 1) > 20000) return;
+        for (let x = lo[0]; x <= hi[0]; x++) for (let y = lo[1]; y <= hi[1]; y++) for (let z = lo[2]; z <= hi[2]; z++) { const k = `${x},${y},${z}`; if (!eg.has(k)) eg.set(k, []); eg.get(k).push(idx); }
+      });
+      const ins = new Map(); // edge index → [[t, v]]
+      const pts = new Map(); for (const e of open) { pts.set(q(e.a), e.a); pts.set(q(e.b), e.b); }
+      for (const v of pts.values()) for (const idx of eg.get(cellK(v.x, v.y, v.z)) || []) {
+        const e = open[idx]; if (e.a === v || e.b === v) continue;
+        const ab = e.b.minus(e.a), L2 = ab.dot(ab); if (L2 < 1e-12) continue;
+        const t = v.minus(e.a).dot(ab) / L2; if (t <= 1e-4 || t >= 1 - 1e-4) continue;
+        if (e.a.plus(ab.times(t)).minus(v).len() < tol) { if (!ins.has(idx)) ins.set(idx, []); if (!ins.get(idx).some(x => x[1] === v)) ins.get(idx).push([t, v]); }
+      }
+      if (!ins.size) return polys;
+      const byPoly = new Map();
+      for (const [idx, list] of ins) { const e = open[idx]; if (!byPoly.has(e.p)) byPoly.set(e.p, new Map()); byPoly.get(e.p).set(e.a, list.sort((x, y) => x[0] - y[0]).map(x => x[1])); }
+      for (const [p, m] of byPoly) { const nv = []; for (const v of p.v) { nv.push(v); for (const w of m.get(v) || []) nv.push(w); } p.v = nv; }
+    }
+    return polys;
+  }
+
+  // Close the thin sliver gaps that BSP booleans leave where curved surfaces meet at grazing angles:
+  // follow loops of unpaired edges and cap each loop with a fan of triangles.
+  function fillHoles(polys) {
+    const q = v => `${Math.round(v.x * 1e4)},${Math.round(v.y * 1e4)},${Math.round(v.z * 1e4)}`;
+    const dir = new Set();
+    for (const p of polys) for (let i = 0; i < p.v.length; i++) dir.add(q(p.v[i]) + '|' + q(p.v[(i + 1) % p.v.length]));
+    const open = new Map(); // start key → [{a, b}]
+    let count = 0;
+    for (const p of polys) for (let i = 0; i < p.v.length; i++) {
+      const a = p.v[i], b = p.v[(i + 1) % p.v.length], ka = q(a), kb = q(b);
+      if (ka === kb || dir.has(kb + '|' + ka)) continue;
+      if (!open.has(ka)) open.set(ka, []); open.get(ka).push({ a, b, kb, used: false }); count++;
+    }
+    if (!count || count > 20000) return polys;
+    const out = polys.slice();
+    for (const list of open.values()) for (const e0 of list) {
+      if (e0.used) continue;
+      const loop = [e0.a]; e0.used = true; let cur = e0, ok = false;
+      for (let guard = 0; guard < 2000; guard++) {
+        if (cur.kb === q(e0.a)) { ok = true; break; }
+        const nx = (open.get(cur.kb) || []).find(e => !e.used); if (!nx) break;
+        nx.used = true; loop.push(nx.a); cur = nx;
+      }
+      if (!ok || loop.length < 3) continue;
+      const r = loop.slice().reverse();
+      for (let i = 1; i < r.length - 1; i++) { const p = Poly.make([r[0], r[i], r[i + 1]]); if (p) out.push(p); }
+    }
+    return out;
+  }
+
   // ---------------- outputs ----------------
   function triangles(polys, tf) {
     const t = [];
@@ -434,7 +538,7 @@ const Enclosure = (() => {
   function describe(r) {
     const L = r ? r.L : layout(), cuts = r ? r.cuts : cutoutList(L), P = L.P;
     return {
-      params: P, outer_mm: [+(L.bbox[2] - L.bbox[0]).toFixed(1), +(L.bbox[3] - L.bbox[1]).toFixed(1), +(L.H + P.lidThickness).toFixed(1)],
+      mode: P.mode || 'box', params: P, outer_mm: [+(L.bbox[2] - L.bbox[0]).toFixed(1), +(L.bbox[3] - L.bbox[1]).toFixed(1), +(L.H + P.lidThickness).toFixed(1)],
       base_height: L.H, lid_thickness: P.lidThickness, tallest_part_mm: L.topH, under_board_mm: L.botH, standoff_mm: L.standoff, pcb_bottom_z: +L.pcbZ.toFixed(2),
       mounting_holes: L.holes.length, supports: L.holes.length || supportPoints(L).length,
       cutouts: cuts.map((c, i) => ({ side: c.side, shape: c.shape, w: +(+c.w).toFixed(2), h: +(+c.h).toFixed(2), label: c.label, auto: !!c.auto, index: c.auto ? undefined : P.cutouts.indexOf(P.cutouts.find(q => q.label === c.label && q.side === c.side)) })),
@@ -450,6 +554,8 @@ const Enclosure = (() => {
     });
     return { pos, nor, triangles: tris.length };
   }
-  return { DEFAULTS, params, setParams, addCutout, layout, build, exportFiles, describe, meshArrays, partHeight, stl, offset };
+  // CSG kernel, shared with the script modeller (shape3d.js)
+  const csg = { guard, V, Plane, Poly, union, subtract, intersect, repair, zipSeams, fillHoles, earcut, ccw, dedupe, offset, area, triangles, stl, meshArrays };
+  return { DEFAULTS, mode, script, params, setParams, addCutout, layout, build, exportFiles, describe, meshArrays, partHeight, stl, offset, csg };
 })();
 if (typeof module !== 'undefined') module.exports = Enclosure;

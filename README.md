@@ -96,6 +96,7 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 | `js/model.js` | Design state, nets, undo, ERC, schematic auto-layout |
 | `js/schematic.js` | Schematic rendering and editing |
 | `js/pcb.js` | Placement, autorouter, PCB view, Gerber/drill/zip export |
+| `js/enclosure.js`, `js/shape3d.js`, `js/shape-worker.js` | Parametric box enclosure, CSG kernel, custom 3D script modeller (+ sandboxed worker) |
 | `js/ai.js` | Providers, tool definitions, agent loop |
 | `js/app.js` | Panels, chat, settings, exports |
 | `js/engine.js` | Design tools shared by the copilot, MCP server and REST API |
@@ -239,6 +240,19 @@ The **Enclosure** tab builds a printable case around the current PCB and preview
 - **Lid**: snap-fit lip with an adjustable fit tolerance, optional vent slots.
 - **Export**: **STL ⤓** (base + lid; the lid is already oriented for printing), **OpenSCAD ⤓** (parametric source of the same design), or **All (.zip)** with print notes.
 - **AI**: "make the walls 3 mm, add a 6×4 mm cable slot on the right and more room above the board" → `set_enclosure`, `add_enclosure_cutout`, `add_mounting_holes`, `get_enclosure`; Claude Code can also `export_enclosure` straight to a folder.
+
+### Custom 3D designs (wearables, patches, organic cases)
+
+Switch the Enclosure tab to **Custom 3D** for anything that is not a box: a Whoop-style **wristband pod** with a curved underside and strap lugs, an **ECG chest patch** with snap-electrode holes, clips, mounts, rounded or organic housings. Just describe it to the AI:
+
+> "Make a wristband pod like Whoop for this board: 22 mm strap, USB-C opening, as thin as possible"
+> "ECG chest node with 3 snap-electrode holes 60 mm apart on the skin side and a window over the LED"
+
+The AI writes a short **3D script** (`set_enclosure_script`): rounded boxes, convex hulls, extrude / revolve, union / difference / intersection, transforms — positioned relative to the PCB, whose outline, part boxes, heights and edge connectors it gets as context. Every build returns a **fit report** (printed parts colliding with the board or components, script errors with line numbers), so the AI iterates until it is clean.
+
+- **</> Script** opens the editor (Ctrl+Enter to build, templates: wristband pod, ECG patch, rounded box; **?** shows the API).
+- Builds run in a sandboxed Web Worker (no network access) and produce **watertight meshes**.
+- **Export**: one **STL per part** (lids/covers flipped for printing), equivalent **OpenSCAD** source, and the script itself in the zip.
 
 The geometry engine (CSG with watertight-mesh repair) is self-contained JavaScript, so it runs in the browser and in the MCP server; only the 3D preview loads three.js from cdnjs.
 

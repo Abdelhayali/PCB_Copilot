@@ -11,6 +11,7 @@ const Engine = (() => {
     ui: () => { },             // ui('fit-sch') | ui('show-pcb')
     searchKey: null,           // optional Brave Search API key (else DuckDuckGo)
     route: null,               // optional async router (browser: Web Worker): ({ place, opt }) => { placement, routing }
+    shape: null,               // optional async 3D-script runner (browser: Web Worker): code => Shape3D.run result
   };
 
   async function api(path, opts = {}) {
@@ -67,9 +68,11 @@ const Engine = (() => {
     { name: 'use_database_parts', description: 'Give built-in schematic symbols (resistor, LED, transistor, regulator, ...) the footprint and pinout of a real JLCPCB part (Basic parts where possible). Without refs: every built-in part that still uses a generated footprint.', input_schema: { type: 'object', properties: { refs: { type: 'array', items: { type: 'string' } } } } },
     { name: 'match_jlcpcb_parts', description: 'Find JLCPCB/LCSC part numbers for every component value (e.g. 4.7k 0603, 22uF 0805) for an assembly BOM; prefers in-stock Basic parts with the same package.', input_schema: { type: 'object', properties: { overwrite: { type: 'boolean' } } } },
     { name: 'get_enclosure', ro: true, description: 'The 3D-printable enclosure fitted to the PCB: outer size, heights, standoffs, every cutout (automatic ones for edge connectors / LEDs / buttons and custom ones), estimated part heights and all parameters.', input_schema: { type: 'object', properties: {} } },
-    { name: 'set_enclosure', description: 'Change enclosure parameters (mm): wall, floor, lidThickness, clearance, pcbThickness, topClearance, extraHeight, standoffHeight, standoffDiameter, screwHole, lidFit, lipHeight, lipWidth, vents, ventWidth, ventLength, ventSpacing, autoConnectorCutouts, autoLidHoles, partHeights ({ref: mm}). Opens the Enclosure tab.', input_schema: { type: 'object', properties: { wall: { type: 'number' }, floor: { type: 'number' }, lidThickness: { type: 'number' }, clearance: { type: 'number' }, pcbThickness: { type: 'number' }, topClearance: { type: 'number' }, extraHeight: { type: 'number' }, standoffHeight: { type: 'number' }, standoffDiameter: { type: 'number' }, screwHole: { type: 'number' }, lidFit: { type: 'number' }, lipHeight: { type: 'number' }, lipWidth: { type: 'number' }, vents: { type: 'boolean' }, ventWidth: { type: 'number' }, ventLength: { type: 'number' }, ventSpacing: { type: 'number' }, autoConnectorCutouts: { type: 'boolean' }, autoLidHoles: { type: 'boolean' }, partHeights: { type: 'object', additionalProperties: { type: 'number' } } } } },
+    { name: 'set_enclosure', description: 'Change enclosure parameters (mm). mode: "box" (this parametric box) or "custom" (the free-form 3D script, see set_enclosure_script). Box parameters: wall, floor, lidThickness, clearance, pcbThickness, topClearance, extraHeight, standoffHeight, standoffDiameter, screwHole, lidFit, lipHeight, lipWidth, vents, ventWidth, ventLength, ventSpacing, autoConnectorCutouts, autoLidHoles, partHeights ({ref: mm}). Opens the Enclosure tab.', input_schema: { type: 'object', properties: { mode: { type: 'string', enum: ['box', 'custom'] }, wall: { type: 'number' }, floor: { type: 'number' }, lidThickness: { type: 'number' }, clearance: { type: 'number' }, pcbThickness: { type: 'number' }, topClearance: { type: 'number' }, extraHeight: { type: 'number' }, standoffHeight: { type: 'number' }, standoffDiameter: { type: 'number' }, screwHole: { type: 'number' }, lidFit: { type: 'number' }, lipHeight: { type: 'number' }, lipWidth: { type: 'number' }, vents: { type: 'boolean' }, ventWidth: { type: 'number' }, ventLength: { type: 'number' }, ventSpacing: { type: 'number' }, autoConnectorCutouts: { type: 'boolean' }, autoLidHoles: { type: 'boolean' }, partHeights: { type: 'object', additionalProperties: { type: 'number' } } } } },
     { name: 'add_enclosure_cutout', description: 'Add an opening to the enclosure. side = left | right | front | back (walls; u = mm along the wall from its centre, z = mm above the bed, default 4 mm above the PCB) or lid | floor (x, y in enclosure coordinates = board x, minus board y). shape rect or circle.', input_schema: { type: 'object', required: ['side', 'width'], properties: { side: { type: 'string', enum: ['left', 'right', 'front', 'back', 'lid', 'floor'] }, shape: { type: 'string', enum: ['rect', 'circle'] }, width: { type: 'number' }, height: { type: 'number' }, u: { type: 'number' }, z: { type: 'number' }, x: { type: 'number' }, y: { type: 'number' }, label: { type: 'string' } } } },
     { name: 'remove_enclosure_cutout', description: 'Remove a custom enclosure cutout by index (see get_enclosure), or all custom cutouts when index is omitted.', input_schema: { type: 'object', properties: { index: { type: 'number' } } } },
+    { name: 'enclosure_script_help', ro: true, description: 'Docs for custom 3D enclosures: the 3D script API (rounded boxes, hulls, extrude/revolve, booleans, transforms, parts), coordinates relative to the PCB, the PCB context (outline, part boxes and heights, edge connectors) and complete example scripts (Whoop-style wristband pod, ECG chest patch with snap-electrode holes, rounded box). Call this before writing set_enclosure_script.', input_schema: { type: 'object', properties: { example: { type: 'string', enum: ['wristband', 'ecg', 'box', 'all', 'none'], description: 'which example script to include (default all)' } } } },
+    { name: 'set_enclosure_script', description: 'Design a free-form 3D-printable enclosure / housing / wearable (wristband pod, chest patch, clip, curved or organic case …) as a JavaScript 3D script (see enclosure_script_help). Saves the script in the project, switches the Enclosure tab to custom mode, builds it and returns each part (size, volume, watertightness) plus a fit report: collisions of the printed parts with the PCB or components (fix all of them) and script errors with line numbers. Exports: one STL per part + OpenSCAD source.', input_schema: { type: 'object', required: ['code'], properties: { code: { type: 'string', description: 'the full 3D script' } } } },
     { name: 'add_mounting_holes', description: 'Add non-plated mounting holes to the PCB (default 4 × M3 Ø3.2 mm at the corners, nudged clear of parts) — the enclosure then gets screw standoffs. Re-run route_pcb afterwards.', input_schema: { type: 'object', properties: { diameter: { type: 'number' }, inset: { type: 'number' }, points: { type: 'array', items: { type: 'array', items: { type: 'number' } }, description: 'explicit [[x,y],...] in board mm' } } } },
     { name: 'get_pcb_layout', ro: true, description: 'PCB layout for reasoning about placement: board size/shape, every footprint (ref, x, y, rotation, side, bounding box, edge lock, nets), unrouted nets with the pads that still need connecting, copper pours.', input_schema: { type: 'object', properties: {} } },
     { name: 'optimize_pcb', description: 'Automatically move / rotate / swap parts (optionally enlarge the board or use the bottom side) and re-route until every net is connected, keeping the best result. Connectors on edges and locked parts stay put. Use when route_pcb leaves nets unrouted.', input_schema: { type: 'object', properties: { time_limit_s: { type: 'number', description: 'default 60' }, iterations: { type: 'number', description: 'default 12' }, allow_grow: { type: 'boolean', description: 'may enlarge the board (default false — the board size is kept)' }, allow_bottom: { type: 'boolean', description: 'may move parts to the bottom side (default false)' } } } },
@@ -148,6 +151,18 @@ const Engine = (() => {
   const kApi = (op, q) => api('/api/knowledge/' + op + '?' + new URLSearchParams(Object.assign({ path: kPath() }, q)).toString());
 
   // ---------- executor ----------
+  // ---------- custom 3D enclosure scripts ----------
+  function shapeContext() { try { return Shape3D.context(Enclosure.layout()); } catch (e) { return { pcb: null }; } }
+  // summary for the AI: sizes, fit report, errors with line numbers (meshes stay in the viewer)
+  async function runShape(code) {
+    let r;
+    try { r = env.shape ? await env.shape(code) : Shape3D.run(code, shapeContext(), { mesh: false, stl: false }); }
+    catch (e) { return { ok: false, error: e.message, line: e.line || null, logs: e.logs || [], hint: 'Fix the script and call set_enclosure_script again (enclosure_script_help has the API).' }; }
+    const out = { ok: true, parts: r.parts.map(p => ({ name: p.name, size_mm: p.size_mm, bbox: p.bbox, volume_cm3: p.volume_cm3, triangles: p.triangles, watertight: !p.open_edges })), collisions: r.report.collisions, warnings: r.report.warnings, logs: r.logs, build_ms: r.ms };
+    if (r.report.collisions.length) out.fix = 'Printed parts overlap the PCB/components listed in collisions — make the cavity bigger/taller or move the features, then run set_enclosure_script again.';
+    return out;
+  }
+
   async function exec(name, input, mode = 'agent') {
     const t = TOOLS.find(t => t.name === name);
     if (!t) throw new Error('Unknown tool ' + name);
@@ -198,7 +213,21 @@ const Engine = (() => {
       case 'web_fetch': { const r = await api('/api/web/fetch?' + new URLSearchParams({ url: input.url || '', offset: input.offset || 0, length: input.max_chars || 12000 })); return r; }
       case 'use_database_parts': return useDatabaseParts(input.refs);
       case 'match_jlcpcb_parts': return matchJlcpcb(!!input.overwrite);
-      case 'get_enclosure': { const d = Enclosure.describe(); env.ui('show-enc'); return d; }
+      case 'get_enclosure': {
+        if (Enclosure.mode() === 'custom') { const r = await runShape(Enclosure.script()); env.ui('show-enc'); return Object.assign({ mode: 'custom', script: Enclosure.script() }, r); }
+        const d = Enclosure.describe(); env.ui('show-enc'); return d;
+      }
+      case 'enclosure_script_help': {
+        const ex = input.example || 'all', ctx = shapeContext();
+        return { api: Shape3D.HELP, pcb: ctx.pcb, examples: ex === 'none' ? {} : ex === 'all' ? Shape3D.EXAMPLES : { [ex]: Shape3D.EXAMPLES[ex] } };
+      }
+      case 'set_enclosure_script': {
+        const code = String(input.code || '');
+        if (!code.trim()) throw new Error('code is empty');
+        Model.mutate(() => Enclosure.setParams({ mode: 'custom', script: code }));
+        const r = await runShape(code); env.ui('show-enc');
+        return r;
+      }
       case 'set_enclosure': { const r = Model.mutate(() => Enclosure.setParams(input)); env.ui('show-enc'); return { outer_mm: r.outer_mm, base_height: r.base_height, cutouts: r.cutouts.length, params: r.params }; }
       case 'add_enclosure_cutout': { const r = Model.mutate(() => Enclosure.addCutout(input)); env.ui('show-enc'); return r; }
       case 'remove_enclosure_cutout': return Model.mutate(() => { const E = Object.assign({}, Model.S.enclosure || {}), c = (E.cutouts || []).slice(); const n = c.length; if (input.index != null) c.splice(+input.index, 1); else c.length = 0; E.cutouts = c; Model.S.enclosure = E; env.ui('show-enc'); return { removed: n - c.length }; });

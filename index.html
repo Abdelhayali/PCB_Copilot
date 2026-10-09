@@ -62,13 +62,15 @@
         <button id="btnFitS" title="F">Fit</button>
       </div>
       <div id="encTools" class="tools hidden">
+        <span class="seg" id="encMode"><button data-m="box" title="Parametric box fitted to the PCB">Box</button><button data-m="custom" title="Free-form 3D model from a script — wristbands, patches, organic cases (AI-editable)">Custom 3D</button></span>
+        <button id="encCodeBtn" class="hidden" title="Show / hide the 3D script editor">&lt;/&gt; Script</button>
         <button id="encRegen" title="Rebuild the 3D model">↻ Rebuild</button>
         <button id="encExplode" title="Lift the lid off">⇕ Explode</button>
         <button id="encLid">Lid</button>
         <button id="encPcb">PCB</button>
         <button id="encXray">X-ray</button>
         <span class="tsep"></span>
-        <button id="encStl" class="primary" title="Base + lid STL (lid oriented for printing)">STL ⤓</button>
+        <button id="encStl" class="primary" title="One STL per printed part (oriented for printing)">STL ⤓</button>
         <button id="encScad" title="Parametric OpenSCAD source">OpenSCAD ⤓</button>
         <button id="encZip" title="STLs + .scad + notes">All (.zip) ⤓</button>
       </div>
@@ -275,6 +277,7 @@
 <script src="js/pcb.js"></script>
 <script src="js/pcbview.js"></script>
 <script src="js/enclosure.js"></script>
+<script src="js/shape3d.js"></script>
 <script src="js/encview.js"></script>
 <script src="js/pcb3d.js"></script>
 <script src="js/engine.js"></script>
