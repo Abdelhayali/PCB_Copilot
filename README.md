@@ -80,7 +80,7 @@ No build step and no dependencies. Start the bundled server (static files + a pr
 python server.py 5173
 ```
 
-Open http://localhost:5173 (or `http://<your-PC-IP>:5173` from another device on your LAN), then open **⚙ Settings** and add an API key.
+On Windows you can simply double-click **`start.bat`** (starts the server, shows the LAN address, optionally opens a public Cloudflare link). Open http://localhost:5173 (or `http://<your-PC-IP>:5173` from another device on your LAN), then open **⚙ Settings** and add an API key.
 
 API keys are stored in your browser's localStorage and sent directly from the page to the provider you choose — fine for personal/local use, but don't host it publicly with keys baked in.
 
