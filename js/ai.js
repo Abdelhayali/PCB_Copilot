@@ -79,11 +79,30 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   const designContext = Engine.designContext;
 
   // ---------- provider adapters (neutral history -> provider format) ----------
+  // Attachments on a user message: {name, kind: 'image'|'pdf'|'text', mime, data (base64, images/PDFs), text (extracted)}
+  const fileText = f => `\n\n[Attached file: ${f.name}${f.pages ? ` (${f.pages} pages)` : ''}]\n` + (f.text ? f.text : f.data ? '' : '(content not available — the file was attached in an earlier session; ask the user to attach it again if needed)');
+  function anthropicUser(m) {
+    const b = [];
+    for (const f of m.files || []) {
+      if (f.kind === 'image' && f.data) b.push({ type: 'image', source: { type: 'base64', media_type: f.mime, data: f.data } });
+      else if (f.kind === 'pdf' && f.data) b.push({ type: 'document', source: { type: 'base64', media_type: 'application/pdf', data: f.data }, title: f.name });
+    }
+    const extra = (m.files || []).filter(f => !((f.kind === 'image' || f.kind === 'pdf') && f.data)).map(fileText).join('');
+    b.push({ type: 'text', text: (m.text || '') + extra || '(see attachment)' });
+    return b;
+  }
+  function openaiUser(m) {
+    const files = m.files || [];
+    const text = (m.text || '') + files.filter(f => !(f.kind === 'image' && f.data)).map(fileText).join('');
+    const imgs = files.filter(f => f.kind === 'image' && f.data);
+    if (!imgs.length) return text;
+    return [{ type: 'text', text: text || '(see image)' }, ...imgs.map(f => ({ type: 'image_url', image_url: { url: `data:${f.mime};base64,${f.data}` } }))];
+  }
   function toAnthropic(hist) {
     const out = [];
     const push = (role, blocks) => { const last = out[out.length - 1]; if (last && last.role === role) last.content.push(...blocks); else out.push({ role, content: blocks }); };
     for (const m of hist) {
-      if (m.role === 'user') push('user', [{ type: 'text', text: m.text }]);
+      if (m.role === 'user') push('user', anthropicUser(m));
       else if (m.role === 'assistant') {
         const b = []; if (m.text) b.push({ type: 'text', text: m.text });
         for (const t of m.toolCalls || []) b.push({ type: 'tool_use', id: t.id, name: t.name, input: t.input || {} });
@@ -95,7 +114,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   function toOpenAI(hist, system) {
     const out = [{ role: 'system', content: system }];
     for (const m of hist) {
-      if (m.role === 'user') out.push({ role: 'user', content: m.text });
+      if (m.role === 'user') out.push({ role: 'user', content: openaiUser(m) });
       else if (m.role === 'assistant') {
         const o = { role: 'assistant', content: m.text || '' };
         // Gemini "thinking" models require each tool call's thought_signature to be sent back unchanged.
@@ -117,7 +136,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', signal,
         headers: { 'content-type': 'application/json', 'x-api-key': settings.anthropicKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify({ model: model.id, max_tokens: +settings.maxTokens || 8192, system, tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })), messages: toAnthropic(hist) })
+        body: JSON.stringify(Object.assign({ model: model.id, max_tokens: +settings.maxTokens || 8192, system, messages: toAnthropic(hist) }, tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })) } : {}))
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${j.error?.message || res.statusText}`);
@@ -132,7 +151,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
     if (settings.oaiKey) headers.authorization = 'Bearer ' + settings.oaiKey;
     const res = await fetch(base + '/chat/completions', {
       method: 'POST', signal, headers,
-      body: JSON.stringify({ model: model.id, messages: toOpenAI(hist, system), tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) })
+      body: JSON.stringify(Object.assign({ model: model.id, messages: toOpenAI(hist, system) }, tools.length ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) } : {}))
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`API ${res.status}: ${j.error?.message || JSON.stringify(j).slice(0, 300) || res.statusText}`);
@@ -150,23 +169,128 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   // ---------- agent loop ----------
   let history = [], controller = null;
   try { history = JSON.parse(localStorage.getItem('cp.chat') || '[]'); } catch (e) { }
-  const persist = () => { try { localStorage.setItem('cp.chat', JSON.stringify(history.slice(-200))); } catch (e) { } };
+  // Attachment bytes are big: browser storage keeps them for the latest messages only (the text is always kept).
+  const persist = () => {
+    const keep = history.slice(-200), withData = keep.map((m, i) => (m.files || []).some(f => f.data) ? i : -1).filter(i => i >= 0);
+    const strip = n => keep.map((m, i) => m.files && withData.indexOf(i) < withData.length - n ? Object.assign({}, m, { files: m.files.map(f => Object.assign({}, f, { data: undefined })) }) : m);
+    for (const n of [3, 1, 0]) { try { localStorage.setItem('cp.chat', JSON.stringify(strip(n))); return; } catch (e) { } }
+    try { localStorage.setItem('cp.chat', JSON.stringify(strip(0).map(m => m.checkpoint ? Object.assign({}, m, { checkpoint: undefined }) : m))); } catch (e) { }
+  };
+  const currentModel = () => allModels().find(m => m.id === settings.model) || MODELS[2];
+
+  // ---------- context window, usage estimate, compression ----------
+  const ctxCache = {};
+  function contextWindow(model = currentModel()) {
+    if (+settings.contextWindow > 0) return +settings.contextWindow;
+    if (ctxCache[model.id]) return ctxCache[model.id];
+    const id = model.id.toLowerCase();
+    if (model.provider === 'anthropic') return 200000;
+    if (/gemini/.test(id)) return 1000000;
+    if (/gpt-4\.1/.test(id)) return 1000000;
+    if (/gpt-5/.test(id)) return 400000;
+    if (/grok/.test(id)) return 256000;
+    if (/gpt-4o|^o\d/.test(id)) return 128000;
+    return 32768;
+  }
+  // Ask the server for its real context size (llama.cpp /props, LM Studio, OpenRouter-style model lists).
+  async function probeContext(model = currentModel()) {
+    if (model.provider === 'anthropic' || ctxCache[model.id]) return contextWindow(model);
+    try {
+      const base = await resolveBase(settings.oaiBase), root = base.replace(/\/v1$/, '');
+      const headers = settings.oaiKey ? { authorization: 'Bearer ' + settings.oaiKey } : {};
+      const get = async u => { const r = await fetch(u, { headers, signal: AbortSignal.timeout(4000) }); return r.ok ? r.json() : null; };
+      const props = await get(root + '/props').catch(() => null);
+      const n = props && (props.default_generation_settings?.n_ctx || props.n_ctx);
+      if (n > 0) return (ctxCache[model.id] = n);
+      const list = await get(base + '/models').catch(() => null);
+      const m = list && (list.data || list.models || []).find(x => (x.id || x.name) === model.id);
+      const c = m && (m.context_length || m.max_context_length || m.context_window || m.loaded_context_length || m.meta?.n_ctx || m.meta?.n_ctx_train);
+      if (c > 0) return (ctxCache[model.id] = c);
+    } catch (e) { }
+    return contextWindow(model);
+  }
+  let systemChars = 16000, lastIn = null; // lastIn = real prompt tokens reported by the provider for history[0..len)
+  const toolChars = JSON.stringify(TOOLS).length;
+  function estimateMsgs(msgs) {
+    let chars = 0, extra = 0;
+    for (const m of msgs) {
+      chars += (m.text || '').length;
+      for (const t of m.toolCalls || []) chars += t.name.length + JSON.stringify(t.input || {}).length + 20;
+      for (const r of m.results || []) chars += (r.content || '').length + 20;
+      for (const f of m.files || []) { if (f.kind === 'image' && f.data) extra += 1600; else if (f.kind === 'pdf' && f.data) extra += (f.pages || 5) * 2000; else chars += (f.text || '').length + 60; }
+    }
+    return Math.round(chars / 3.5) + extra;
+  }
+  function contextInfo() {
+    const win = contextWindow();
+    let used;
+    if (lastIn && lastIn.len <= history.length) used = lastIn.tokens + estimateMsgs(history.slice(lastIn.len));
+    else used = Math.round((systemChars + toolChars) / 3.5) + estimateMsgs(history);
+    return { used, window: win, pct: Math.min(100, Math.round(used / win * 100)), auto: settings.autoCompress !== false };
+  }
+  function transcriptOf(msgs) {
+    const clip = (s, n) => (s = String(s || '')).length > n ? s.slice(0, n) + ' …' : s;
+    return msgs.map(m => {
+      if (m.role === 'user') return 'USER: ' + (m.text || '') + (m.files || []).map(f => `\n[attached ${f.name}]` + (f.text ? '\n' + clip(f.text, 3000) : '')).join('');
+      if (m.role === 'assistant') return 'ASSISTANT: ' + (m.text || '') + (m.toolCalls || []).map(t => `\n→ ${t.name}(${clip(JSON.stringify(t.input || {}), 400)})`).join('');
+      return (m.results || []).map(r => `RESULT ${r.name}${r.error ? ' (error)' : ''}: ${clip(r.content, 700)}`).join('\n');
+    }).join('\n\n');
+  }
+  // Replace history[0..keepFrom) by a model-written summary. Returns true when something was compressed.
+  async function compress(opt = {}) {
+    const keepFrom = Math.min(opt.keepFrom ?? history.length, history.length);
+    const old = history.slice(0, keepFrom);
+    if (old.filter(m => m.role !== 'tool').length < 2) return false;
+    const model = currentModel(), win = contextWindow(model);
+    let t = transcriptOf(old); const cap = Math.max(20000, Math.floor(win * 0.5 * 3.5));
+    if (t.length > cap) t = t.slice(0, 4000) + '\n\n[… middle of the conversation omitted …]\n\n' + t.slice(-(cap - 4000));
+    const sys = 'You compress a conversation between a user and CircuitPilot (an AI electronics design copilot) so the work can continue with less context.';
+    const ask = `Summarise the conversation below so it can replace it. Keep everything needed to continue: the user's goals and requirements; decisions and their reasons; exact values, part numbers (LCSC), refs, net names and calculations; what was changed in the design and the PCB; attached files (names and the key facts taken from them); web sources used; problems found and open tasks / next steps. Drop chit-chat and raw tool output. Use concise markdown bullets.\n\n<conversation>\n${t}\n</conversation>`;
+    const own = !controller; if (own) controller = new AbortController();
+    try {
+      const r = await callModel(model, sys, [{ role: 'user', text: ask }], [], controller.signal);
+      if (!r.text) throw new Error('the model returned an empty summary');
+      const before = estimateMsgs(old);
+      history = [{ role: 'user', text: r.text, summary: true, compressed: old.filter(m => m.role === 'user').length, saved: Math.max(0, before - estimateMsgs([{ text: r.text }])) },
+        { role: 'assistant', text: 'Understood — continuing from this summary.', model: model.label, summaryAck: true }, ...history.slice(keepFrom)];
+      lastIn = null; persist();
+      return true;
+    } finally { if (own) controller = null; }
+  }
+  // Last resort inside one long turn: shorten big tool results that the model has already seen.
+  function trimToolResults(from) {
+    for (let i = from; i < history.length - 1; i++) for (const r of history[i].results || []) if (r.content && r.content.length > 1500) r.content = r.content.slice(0, 1500) + ' …(trimmed to save context)';
+    lastIn = null;
+  }
 
   async function run(text, mode, hooks) {
-    const model = allModels().find(m => m.id === settings.model) || MODELS[2];
+    const model = currentModel();
     const tools = TOOLS.filter(t => (mode === 'agent' || t.ro) && (settings.webAccess || !t.web));
-    history.push({ role: 'user', text, mode, checkpoint: hooks.checkpoint });
+    history.push(Object.assign({ role: 'user', text, mode, checkpoint: hooks.checkpoint }, hooks.files && hooks.files.length ? { files: hooks.files } : {}));
     persist();
     controller = new AbortController();
+    await probeContext(model);
     try {
       for (let step = 0; step < 40; step++) {
+        // auto-compress when the context is 80% full: summarise everything before this turn, then trim this turn's tool output
+        if (settings.autoCompress !== false && contextInfo().pct >= 80) {
+          const turn = history.map(m => m.role === 'user').lastIndexOf(true);
+          hooks.onInfo && hooks.onInfo('Context 80% full — compressing the conversation…');
+          let did = false;
+          try { did = turn > 0 && await compress({ keepFrom: turn }); } catch (e) { if (e.name === 'AbortError') throw e; hooks.onInfo && hooks.onInfo('Auto-compress failed: ' + e.message); }
+          if (contextInfo().pct >= 80) trimToolResults(did ? 2 : turn);
+          hooks.onInfo && hooks.onInfo(null);
+        }
         let know = '';
         try {
           const k = await Engine.knowledgeDigest();
           if (k) know = `\n\nPROJECT KNOWLEDGE FOLDER: ${k.folder} (${k.files} files)\nFiles:\n${k.index}\n` + (k.included ? `\nIncluded documents:\n${k.included}` : '') + '\n(Use knowledge_search / knowledge_read for anything not included.)';
         } catch (e) { know = '\n\nPROJECT KNOWLEDGE FOLDER: unavailable (' + e.message + ')'; }
         const system = BASE + '\n\n' + MODE[mode] + know + (settings.includeContext ? '\n\n' + designContext() : '');
-        const r = await callModel(model, system, history.map(({ role, text, toolCalls, results }) => ({ role, text, toolCalls, results })), tools, controller.signal);
+        systemChars = system.length;
+        const sentLen = history.length;
+        const r = await callModel(model, system, history.map(({ role, text, toolCalls, results, files }) => ({ role, text, toolCalls, results, files })), tools, controller.signal);
+        if (r.usage && r.usage.in > 0) lastIn = { tokens: r.usage.in, len: sentLen };
         const msg = { role: 'assistant', text: r.text, toolCalls: r.toolCalls, model: model.label, mode };
         history.push(msg); persist(); hooks.onAssistant(msg, r.usage);
         if (!r.toolCalls.length) break;
@@ -193,8 +317,8 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   }
   const stop = () => controller && controller.abort();
   const busy = () => !!controller;
-  const reset = () => { history = []; persist(); };
+  const reset = () => { history = []; lastIn = null; persist(); };
 
   const partsApi = Engine.partsApi, loadPart = Engine.loadPart;
-  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS };
+  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
 })();

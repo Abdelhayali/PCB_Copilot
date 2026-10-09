@@ -396,7 +396,10 @@ const App = (() => {
     const results = {};
     for (const m of H) if (m.role === 'tool') for (const r of m.results) results[r.id] = r;
     H.forEach((m, i) => {
-      if (m.role === 'user') out.push(`<div class="msg user"><div class="bub">${esc(m.text).replace(/\n/g, '<br>')}</div><div class="meta">${m.mode ? `<span class="mtag ${m.mode}">${m.mode}</span>` : ''}${m.checkpoint ? `<button class="restore" data-i="${i}" title="Restore the design to how it was before this message">↺ restore checkpoint</button>` : ''}</div></div>`);
+      if (m.summary) { out.push(`<div class="msg summary"><details><summary>🗜 Earlier conversation compressed${m.compressed ? ` (${m.compressed} message${m.compressed > 1 ? 's' : ''})` : ''}${m.saved ? ` — about ${fmtTok(m.saved)} tokens freed` : ''}. Show summary</summary><div class="md">${md(m.text)}</div></details></div>`); return; }
+      if (m.summaryAck) return;
+      const atts = (m.files || []).map(f => f.kind === 'image' && f.data ? `<img src="data:${f.mime};base64,${f.data}" alt="${esc(f.name)}" title="${esc(f.name)} (click to enlarge)" class="thumb">` : `<span class="att">${fileIcon(f)} <span class="an">${esc(f.name)}</span></span>`).join('');
+      if (m.role === 'user') out.push(`<div class="msg user">${m.text ? `<div class="bub">${esc(m.text).replace(/\n/g, '<br>')}</div>` : ''}${atts ? `<div class="atts">${atts}</div>` : ''}<div class="meta">${m.mode ? `<span class="mtag ${m.mode}">${m.mode}</span>` : ''}${m.checkpoint ? `<button class="restore" data-i="${i}" title="Restore the design to how it was before this message">↺ restore checkpoint</button>` : ''}</div></div>`);
       else if (m.role === 'assistant') {
         let h = '';
         if (m.text) h += `<div class="md">${md(m.text)}</div>`;
@@ -409,9 +412,68 @@ const App = (() => {
         out.push(`<div class="msg ai">${h}<div class="meta">${esc(m.model || '')}</div></div>`);
       }
     });
-    if (running) out.push('<div class="msg ai"><div class="typing"><span></span><span></span><span></span></div></div>');
+    if (infoMsg) out.push(`<div class="msg info"><span class="spin"></span> ${esc(infoMsg)}</div>`);
+    else if (running) out.push('<div class="msg ai"><div class="typing"><span></span><span></span><span></span></div></div>');
     if (lastError) out.push(`<div class="msg err">${esc(lastError)}</div>`);
     const chat = $('#chat'); chat.innerHTML = out.join(''); chat.scrollTop = chat.scrollHeight;
+    updateCtx();
+  }
+
+  // ---------- chat extras: attachments, web toggle, folder, context meter ----------
+  let pendingFiles = [], infoMsg = null;
+  const fmtTok = n => n >= 1e6 ? (n / 1e6).toFixed(n >= 1e7 ? 0 : 1) + 'M' : n >= 1000 ? Math.round(n / 1000) + 'k' : String(n);
+  const fileIcon = f => f.kind === 'image' ? '🖼' : f.kind === 'pdf' ? '📄' : '📝';
+  function updateCtx() {
+    const c = AI.contextInfo(), fill = $('#ctxFill'); if (!fill) return;
+    fill.style.width = c.pct + '%'; fill.className = 'ctx-fill' + (c.pct >= 80 ? ' high' : c.pct >= 60 ? ' mid' : '');
+    $('#ctxText').textContent = `${fmtTok(c.used)} / ${fmtTok(c.window)} · ${100 - c.pct}% left`;
+    $('#autoCompress').checked = c.auto;
+    $('#btnCompress').disabled = running || AI.history.filter(m => m.role === 'user' && !m.summary).length < 1 || AI.history.length < 2;
+    $('#btnWeb').classList.toggle('on', AI.settings.webAccess !== false);
+    $('#btnWeb').title = AI.settings.webAccess !== false ? 'Web search is ON — the AI can search the internet and read pages (click to turn off)' : 'Web search is OFF (click to turn on)';
+    const k = Model.S.knowledge, on = !!(k && k.path);
+    $('#btnFolder').classList.toggle('on', on);
+    $('#btnFolder').textContent = on ? '📁 ' + k.path.split(/[\\/]/).filter(Boolean).pop() : '📁 Folder';
+    $('#btnFolder').title = on ? 'AI folder: ' + k.path + ' (click to change)' : 'Point the AI to a folder of docs, guides and datasheets';
+  }
+  function renderAttach() {
+    $('#attachList').innerHTML = pendingFiles.map((f, i) => `<span class="att${f.error ? ' err' : ''}" title="${esc(f.error || f.warn || f.name)}">${f.busy ? '<span class="spin"></span>' : f.kind === 'image' && f.data ? `<img src="data:${f.mime};base64,${f.data}">` : fileIcon(f)}<span class="an">${esc(f.name)}</span>${f.pages ? `<span class="muted">${f.pages}p</span>` : ''}${f.error ? ' ⚠' : f.warn ? ' <span class="muted">⚠</span>' : ''}<button class="x" data-i="${i}" title="Remove">✕</button></span>`).join('');
+  }
+  const toB64 = blob => new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1]); r.onerror = () => rej(r.error); r.readAsDataURL(blob); });
+  async function readImage(f) {
+    const ok = /^image\/(png|jpeg|webp|gif)$/.test(f.type);
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = () => rej(new Error('unsupported image format')); i.src = URL.createObjectURL(f); });
+    const max = 1568, s = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    if (ok && s === 1 && f.size < 1.5e6) return { kind: 'image', mime: f.type, data: await toB64(f) };
+    const c = document.createElement('canvas'); c.width = Math.round(img.naturalWidth * s); c.height = Math.round(img.naturalHeight * s);
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, c.width, c.height); g.drawImage(img, 0, 0, c.width, c.height);
+    URL.revokeObjectURL(img.src);
+    return { kind: 'image', mime: 'image/jpeg', data: c.toDataURL('image/jpeg', 0.85).split(',')[1] };
+  }
+  async function addFiles(list) {
+    for (const f of [...list]) {
+      if (f.size > 40e6) { toast(`${f.name} is too large (max 40 MB)`); continue; }
+      const item = { name: f.name || 'pasted-image.png', size: f.size, busy: true };
+      pendingFiles.push(item); renderAttach();
+      try {
+        if (/^image\//.test(f.type)) Object.assign(item, await readImage(f));
+        else {
+          const pdf = f.type === 'application/pdf' || /\.pdf$/i.test(f.name);
+          let r;
+          if (Projects.online) {
+            const res = await fetch('/api/extract?name=' + encodeURIComponent(f.name), { method: 'POST', body: f });
+            r = await res.json(); if (!res.ok) throw new Error(r.error || res.statusText);
+          } else r = pdf ? { text: '', error: 'PDF text needs the app server' } : { text: await f.text() };
+          if (r.binary) throw new Error('binary file — no readable text (attach a PDF, image, text or Word file)');
+          Object.assign(item, { kind: pdf ? 'pdf' : 'text', text: r.text || '', pages: r.pages || undefined });
+          // Claude reads PDFs natively (text + figures); other models get the extracted text
+          if (pdf && f.size < 20e6 && (r.pages || 0) <= 100) item.data = await toB64(f);
+          if (r.error) item.warn = r.error; else if (r.truncated) item.warn = 'long file: only the first part of the text is included';
+          else if (pdf && !(r.text || '').trim()) item.warn = 'no text layer (scanned PDF?) — only Claude models can read it';
+        }
+      } catch (e) { item.error = e.message; }
+      item.busy = false; renderAttach();
+    }
   }
   function toolHint(t) {
     const i = t.input || {};
@@ -422,17 +484,25 @@ const App = (() => {
     return '';
   }
   async function send(text) {
+    const typed = text === undefined;
     text = (text ?? $('#prompt').value).trim();
-    if (!text || running) return;
+    if (running) return;
+    if (typed && pendingFiles.some(f => f.busy)) { toast('Still reading the attached files…'); return; }
+    const files = typed ? pendingFiles.filter(f => !f.error).map(({ busy, size, warn, error, ...f }) => f) : [];
+    if (!text && !files.length) return;
+    if (!text) text = 'Please look at the attached file' + (files.length > 1 ? 's.' : '.');
+    if (typed) { pendingFiles = []; renderAttach(); }
     $('#prompt').value = ''; lastError = null; running = true; setRunning(true);
     const checkpoint = mode === 'agent' ? Model.snapshot() : null;
     renderChat();
     await AI.run(text, mode, {
-      checkpoint,
+      checkpoint, files,
       onAssistant: () => renderChat(),
       onTool: () => renderChat(),
+      onInfo: msg => { infoMsg = msg; renderChat(); },
       onError: msg => { lastError = msg; }
     });
+    infoMsg = null;
     running = false; setRunning(false); renderChat();
   }
   function setRunning(on) { $('#btnSend').textContent = on ? '■ Stop' : 'Send'; $('#btnSend').classList.toggle('stop', on); }
@@ -450,7 +520,7 @@ const App = (() => {
   function openSettings() {
     const s = AI.settings;
     $('#sAnth').value = s.anthropicKey; $('#sBase').value = s.oaiBase; $('#sOKey').value = s.oaiKey; $('#sOModels').value = s.oaiModels;
-    $('#sMax').value = s.maxTokens; $('#sCtx').checked = !!s.includeContext; $('#sWeb').checked = s.webAccess !== false; $('#sBrave').value = s.braveKey || '';
+    $('#sMax').value = s.maxTokens; $('#sCtxWin').value = +s.contextWindow > 0 ? s.contextWindow : ''; $('#sCtx').checked = !!s.includeContext; $('#sWeb').checked = s.webAccess !== false; $('#sBrave').value = s.braveKey || '';
     $('#presets').innerHTML = Object.entries(AI.PRESETS).map(([n, u]) => `<button data-u="${esc(u)}">${esc(n)}</button>`).join('');
     $('#modal').classList.remove('hidden');
   }
@@ -481,8 +551,8 @@ const App = (() => {
   function saveSettings() {
     const ids = $('#sOModels').value.split(',').map(x => x.trim()).filter(Boolean);
     if (ids.length && !$('#sAnth').value.trim() && !ids.includes(AI.settings.model)) AI.saveSettings({ model: ids[0] });
-    AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || 'https://api.openai.com/v1', oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim() });
-    $('#modal').classList.add('hidden'); renderModels(); toast('Settings saved (stored only in this browser)');
+    AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || 'https://api.openai.com/v1', oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, contextWindow: +$('#sCtxWin').value || 0, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim() });
+    $('#modal').classList.add('hidden'); renderModels(); AI.probeContext().then(updateCtx); toast('Settings saved (stored only in this browser)');
   }
 
   // ---------- exports ----------
@@ -627,8 +697,30 @@ const App = (() => {
     $('#btnSend').onclick = () => running ? AI.stop() : send();
     $('#prompt').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } };
     $('#btnNewChat').onclick = () => { if (running) return; AI.reset(); lastError = null; renderChat(); };
+    // attachments: 📎 button, paste, drag & drop
+    $('#btnAttach').onclick = () => $('#chatFiles').click();
+    $('#chatFiles').onchange = e => { addFiles(e.target.files); e.target.value = ''; };
+    $('#attachList').onclick = e => { const x = e.target.closest('.x'); if (x) { pendingFiles.splice(+x.dataset.i, 1); renderAttach(); } };
+    $('#prompt').addEventListener('paste', e => { const fs = [...(e.clipboardData?.files || [])]; if (fs.length) { e.preventDefault(); addFiles(fs); } });
+    const ci = $('.cp-input');
+    ci.addEventListener('dragover', e => { if ([...e.dataTransfer.types].includes('Files')) { e.preventDefault(); ci.classList.add('drop'); } });
+    ci.addEventListener('dragleave', () => ci.classList.remove('drop'));
+    ci.addEventListener('drop', e => { ci.classList.remove('drop'); if (e.dataTransfer.files.length) { e.preventDefault(); addFiles(e.dataTransfer.files); } });
+    $('#btnWeb').onclick = () => { AI.saveSettings({ webAccess: AI.settings.webAccess === false }); updateCtx(); toast(AI.settings.webAccess ? '🌐 Web search on' : 'Web search off'); };
+    $('#btnFolder').onclick = () => $('#btnKnow').click();
+    $('#autoCompress').onchange = e => { AI.saveSettings({ autoCompress: e.target.checked }); updateCtx(); };
+    $('#btnCompress').onclick = async () => {
+      if (running) return;
+      running = true; setRunning(true); infoMsg = 'Compressing the conversation…'; lastError = null; renderChat();
+      try { toast((await AI.compress()) ? 'Conversation compressed' : 'Nothing to compress yet'); }
+      catch (e) { lastError = 'Compress failed: ' + (e.name === 'AbortError' ? 'stopped' : e.message); }
+      running = false; infoMsg = null; setRunning(false); renderChat();
+    };
+    $('#modelSel').addEventListener('change', () => AI.probeContext().then(updateCtx));
+    Model.subscribe(k => { if (k !== 'move') updateCtx(); });
     $('#chat').onclick = e => {
       const s = e.target.closest('.sugg'); if (s) { send(s.textContent); return; }
+      const im = e.target.closest('img.thumb'); if (im) { im.classList.toggle('big'); return; }
       if (e.target.closest('.exec')) { setMode('agent'); send('Execute the plan above step by step.'); return; }
       const r = e.target.closest('.restore');
       if (r) { const m = AI.history[+r.dataset.i]; if (m && m.checkpoint && confirm('Restore the design to the checkpoint taken before this message? (Undo is available.)')) { Model.load(m.checkpoint, true); Sch.fit(); toast('Checkpoint restored'); } }

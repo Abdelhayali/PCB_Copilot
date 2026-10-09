@@ -140,6 +140,13 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._proxy()
         if path.startswith(("/api/projects", "/api/library")):
             return self._store(path)
+        if path == "/api/extract" and self.command == "POST":  # text of a file attached in the chat
+            n = int(self.headers.get("Content-Length") or 0)
+            if n > 40_000_000:
+                return self._send(413, b'{"error":"file too large (max 40 MB)"}', "application/json")
+            name = urllib.parse.parse_qs(self.path.partition("?")[2]).get("name", ["file"])[0]
+            out = knowledge.extract_bytes(name, self.rfile.read(n) if n else b"")
+            return self._send(200, json.dumps(out).encode(), "application/json")
         self._send(404, b"not found", "text/plain")
 
     do_PUT = do_DELETE = do_POST

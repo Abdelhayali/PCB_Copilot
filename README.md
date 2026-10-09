@@ -57,6 +57,8 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Real component database** — JLCPCB/LCSC search with stock and price; exact pinouts and real footprints for every part, cached locally.
 - **Part editor** — create or modify symbols and footprints (generators for SOIC/TSSOP/QFN/DIP/SOT…, draggable pads); saved to *My Library*.
 - **Projects** — saved on the server with autosave; same projects on PC and phone.
+- **Chat attachments** — 📎 attach photos, PDFs (datasheets), Word or any text file; paste or drag & drop too. Claude reads PDFs natively, other models get the extracted text; images go to vision models.
+- **Chat controls** — 🌐 Web search toggle (on by default), 📁 folder for project docs, a context meter (used / window, % left), 🗜 Compress to summarise the chat, and automatic compression at 80% full.
 - **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.

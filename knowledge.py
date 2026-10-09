@@ -75,6 +75,37 @@ def _extract(full):
     return text
 
 
+def extract_bytes(name, data):
+    """Text of a file attached in the chat (PDF, Word, or any text file)."""
+    ext = os.path.splitext(name or "")[1].lower()
+    try:
+        if ext == ".pdf" or data[:5] == b"%PDF-":
+            import io
+            import pypdf
+            reader = pypdf.PdfReader(io.BytesIO(data))
+            text = "\n\n".join(f"[page {i + 1}]\n" + (p.extract_text() or "") for i, p in enumerate(reader.pages[:300]))
+            pages = len(reader.pages)
+        elif ext == ".docx":
+            import io
+            import docx
+            d = docx.Document(io.BytesIO(data))
+            text = "\n".join(p.text for p in d.paragraphs)
+            for t in d.tables:
+                for row in t.rows:
+                    text += "\n" + " | ".join(c.text.strip() for c in row.cells)
+            pages = None
+        else:
+            if b"\x00" in data[:4096]:
+                return {"name": name, "text": "", "binary": True}
+            text, pages = data[:MAX_BYTES].decode("utf-8", errors="replace"), None
+    except ImportError as e:
+        return {"name": name, "text": "", "error": f"missing Python package ({e.name}) - pip install pypdf python-docx"}
+    except Exception as e:
+        return {"name": name, "text": "", "error": f"could not extract text: {e}"}
+    text = re.sub(r"[ \t]+\n", "\n", text)
+    return {"name": name, "text": text[:MAX_CHARS], "chars": len(text), "truncated": len(text) > MAX_CHARS, "pages": pages}
+
+
 def _safe(root, rel):
     full = os.path.realpath(os.path.join(root, rel or ""))
     if not (full == root or full.startswith(root + os.sep)) or not os.path.isfile(full):

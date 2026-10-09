@@ -153,7 +153,32 @@ details.tool pre.res { color: var(--tool-res); } details.tool.err pre.res { colo
 .cp-input { border-top: 1px solid var(--line); padding: 10px 12px; }
 .cp-input textarea { width: 100%; resize: vertical; min-height: 60px; }
 .cp-input .row { justify-content: space-between; margin-top: 6px; }
-#modeHint { font-size: 11px; }
+#modeHint { font-size: 11px; margin-top: 4px; }
+.cp-chips { display: flex; gap: 6px; flex-wrap: wrap; align-items: center; }
+.chip { padding: 3px 8px; font-size: 12px; border-radius: 999px; }
+.chip.on { border-color: var(--accent); color: var(--strong); background: var(--on-bg); }
+#btnFolder.on { border-color: var(--good); color: var(--good); }
+.attach-list { display: flex; flex-wrap: wrap; gap: 6px; }
+.attach-list:not(:empty) { margin-bottom: 6px; }
+.att { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; padding: 3px 6px; border: 1px solid var(--line); border-radius: 8px; background: var(--panel2); font-size: 12px; }
+.att img { width: 28px; height: 28px; object-fit: cover; border-radius: 4px; }
+.att .an { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 160px; }
+.att .x { border: 0; background: none; padding: 0 2px; color: var(--muted); cursor: pointer; }
+.att.err { border-color: var(--bad); color: var(--bad); }
+.att .spin { width: 12px; height: 12px; }
+.msg .atts { display: flex; flex-wrap: wrap; gap: 6px; justify-content: flex-end; margin-top: 4px; }
+.msg .atts img { max-width: 160px; max-height: 120px; border-radius: 6px; border: 1px solid var(--line); cursor: zoom-in; }
+.cp-input.drop { outline: 2px dashed var(--accent); outline-offset: -4px; }
+.ctx { display: flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 11px; flex-wrap: wrap; }
+.ctx-track { flex: 1; min-width: 60px; height: 6px; border-radius: 3px; background: var(--panel2); overflow: hidden; box-shadow: inset 0 0 0 1px var(--line); }
+.ctx-fill { height: 100%; width: 0; background: var(--good); transition: width .3s; }
+.ctx-fill.mid { background: var(--warn, #e0a030); } .ctx-fill.high { background: var(--bad); }
+.ctx .chip { font-size: 11px; padding: 2px 7px; }
+.msg.summary { align-self: stretch; max-width: 100%; }
+.msg.summary details { border: 1px dashed var(--line); border-radius: 8px; padding: 6px 8px; }
+.msg.summary summary { cursor: pointer; color: var(--muted); }
+.msg .atts img.big { max-width: 100%; max-height: none; cursor: zoom-out; }
+.msg.info { color: var(--muted); font-size: 12px; }
 #btnSend.stop { background: var(--bad); }
 
 /* modal & toast */

@@ -116,8 +116,24 @@
     </div>
     <div id="chat"></div>
     <div class="cp-input">
-      <textarea id="prompt" rows="3" placeholder="Describe a circuit… e.g. “USB-powered 3.3V regulator with power LED”"></textarea>
-      <div class="row"><span id="modeHint" class="muted"></span><button id="btnSend" class="primary">Send</button></div>
+      <div id="attachList" class="attach-list"></div>
+      <textarea id="prompt" rows="3" placeholder="Describe a circuit… e.g. “USB-powered 3.3V regulator with power LED” — attach photos, PDFs or any file with 📎, paste or drop them here"></textarea>
+      <div class="row cp-tools">
+        <div class="cp-chips">
+          <button id="btnAttach" class="chip" title="Attach photos, PDFs, datasheets or any file">📎</button>
+          <button id="btnWeb" class="chip" title="Let the AI search the internet and read web pages">🌐 Web</button>
+          <button id="btnFolder" class="chip" title="Point the AI to a folder of docs, guides and datasheets">📁 Folder</button>
+        </div>
+        <button id="btnSend" class="primary">Send</button>
+      </div>
+      <div id="modeHint" class="muted"></div>
+      <div class="ctx" id="ctxBar" title="How much of the model's context window this chat uses">
+        <div class="ctx-track"><div class="ctx-fill" id="ctxFill"></div></div>
+        <span id="ctxText" class="muted"></span>
+        <button id="btnCompress" class="chip" title="Summarise the conversation so far to free context">🗜 Compress</button>
+        <label class="chk muted" title="Compress automatically when the context is 80% full"><input type="checkbox" id="autoCompress"> auto 80%</label>
+      </div>
+      <input type="file" id="chatFiles" multiple hidden>
     </div>
   </aside>
 </main>
@@ -138,6 +154,7 @@
     </fieldset>
     <fieldset><legend>Behaviour</legend>
       <label>Max output tokens (Claude)<input id="sMax" type="number" min="1024" step="1024"></label>
+      <label>Context window (tokens, empty = auto-detect)<input id="sCtxWin" type="number" min="0" step="1024" placeholder="auto"></label>
       <label class="chk"><input id="sCtx" type="checkbox"> Send current design to the model with every request</label>
       <label class="chk"><input id="sWeb" type="checkbox"> Let the AI search the internet and read web pages / PDF datasheets</label>
       <label>Brave Search API key (optional — DuckDuckGo is used without one)<input id="sBrave" type="password" autocomplete="off" placeholder="BSA…"></label>
