@@ -30,6 +30,10 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 |---|---|
 | ![Layers](docs/media/pcb-layers.png) | ![PCB editor](docs/media/pcb-editor.png) |
 
+**3D board view** — PCB toolbar **◈ 3D / ▦ 2D**: solder mask, copper, ENIG/HASL pads, silkscreen on both sides and 3D part models (Top / Bottom / Iso, mask colour, pad finish)
+
+![3D PCB view](docs/media/pcb-3d.png)
+
 **3D-printable enclosure fitted to the board** — STL + parametric OpenSCAD, editable by hand or by the AI
 
 | Inside (X-ray, lid lifted) | Closed |
@@ -57,6 +61,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
 - **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints.
 - **Copper pours, arcs, bottom-side parts, curved boards** — GND (or any net) pours with clearance cut-outs; arc tracks; footprints on the bottom side (mirrored, bottom copper/silk/paste); rounded, round/elliptical or custom board outlines.
+- **3D board view** — switch the PCB editor between 2D and a 3D render of the manufactured board (both sides, parts, mask colour, pad finish).
 - **Enclosure** — a third tab builds a 3D-printable case around the PCB (follows the board outline, height from the tallest part, screw standoffs on PCB mounting holes, automatic openings for USB/jacks and holes above LEDs/buttons, snap-fit lid with vents); exports STL (base + lid) and parametric OpenSCAD.
 - **Placement optimizer** — moves / rotates / swaps parts and re-routes until every net is connected (also available to the AI).
 - **Gerber export with DRC check** — problems pop up with *Fix on board / Re-route / Optimize / Download anyway*.

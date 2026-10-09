@@ -21,7 +21,8 @@ const App = (() => {
     $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
     $('#schSvg').classList.toggle('hidden', v !== 'sch'); $('#pcbSvg').classList.toggle('hidden', v !== 'pcb'); $('#encView').classList.toggle('hidden', v !== 'enc');
     $('#schTools').classList.toggle('hidden', v !== 'sch'); $('#pcbTools').classList.toggle('hidden', v !== 'pcb'); $('#encTools').classList.toggle('hidden', v !== 'enc');
-    PcbView.setVisible(v === 'pcb');
+    PcbView.setVisible(v === 'pcb' && !Pcb3D.ui.on);
+    $('#pcb3dView').classList.toggle('hidden', !(v === 'pcb' && Pcb3D.ui.on));
     if (v === 'enc') EncView.show(); else EncView.hide();
     renderAll();
     if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else if (v === 'sch') Sch.vp.apply();
@@ -488,7 +489,8 @@ const App = (() => {
     Engine.env.savePart = def => Projects.savePart(def).then(() => renderParts());
     Engine.env.route = runRouter;
     Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } if (what === 'show-enc') { showView('enc'); EncView.rebuild(); } };
-    EncView.init();
+    EncView.init(); Pcb3D.init();
+    $('#btn3d').onclick = () => { const on = !Pcb3D.ui.on; PcbView.setVisible(!on); Pcb3D.setOn(on); };
     initKnowledge();
     Projects.init().then(renderParts);
 

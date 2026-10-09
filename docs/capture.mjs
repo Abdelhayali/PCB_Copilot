@@ -177,6 +177,11 @@ try {
   }, { hold: 2.5 });
   await js(`Pcb.fit(); return 1`); await sleep(400);
   await shot('pcb');
+  // 3D view of the board
+  await js(`document.querySelector('#btn3d').click(); return 1`); await sleep(5000);
+  await shot('pcb-3d');
+  await js(`document.querySelector('#btn3d').click(); return 1`); await sleep(500);
+
   // EasyEDA-style editor: layers panel + hand routing with layer switching
   await js(`if (document.querySelector('#layerPanel').classList.contains('collapsed')) document.querySelector('#layerPanel .ltitle').click(); return 1`);
   await shot('pcb-layers');
