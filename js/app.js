@@ -180,6 +180,23 @@ const App = (() => {
     });
   }
 
+  // ---------- light / dark / system theme ----------
+  const THEMES = { system: ['🖥', 'Theme: follows the system — click for Light'], light: ['☀', 'Theme: Light — click for Dark'], dark: ['🌙', 'Theme: Dark — click to follow the system'] };
+  function applyTheme(mode) {
+    const sys = window.matchMedia && matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+    const d = mode === 'system' ? sys : mode, root = document.documentElement;
+    root.setAttribute('data-theme', d); root.setAttribute('data-theme-mode', mode);
+    try { localStorage.setItem('cp.theme', mode); } catch (e) { }
+    $('#btnTheme').textContent = THEMES[mode][0]; $('#btnTheme').title = THEMES[mode][1];
+    window.dispatchEvent(new Event('themechange'));
+  }
+  function initTheme() {
+    let mode = 'system'; try { mode = localStorage.getItem('cp.theme') || 'system'; } catch (e) { }
+    applyTheme(THEMES[mode] ? mode : 'system');
+    $('#btnTheme').onclick = () => { const order = ['system', 'light', 'dark'], cur = document.documentElement.getAttribute('data-theme-mode') || 'system'; applyTheme(order[(order.indexOf(cur) + 1) % 3]); toast(THEMES[document.documentElement.getAttribute('data-theme-mode')][1].split(' — ')[0]); };
+    if (window.matchMedia) matchMedia('(prefers-color-scheme: light)').addEventListener('change', () => { if ((document.documentElement.getAttribute('data-theme-mode') || 'system') === 'system') applyTheme('system'); });
+  }
+
   // ---------- autorouter in a Web Worker ----------
   let worker = null, routeReject = null;
   function runRouter({ place = null, opt = {}, optimize = null } = {}) {
@@ -500,6 +517,7 @@ const App = (() => {
     let saved = null; try { saved = localStorage.getItem('cp.design'); } catch (e) { }
     if (saved) try { Model.load(saved); } catch (e) { }
     Model.subscribe(kind => { if (kind !== 'move') Pcb.ui.drc = null; if (kind === 'move') { if (view === 'sch') Sch.render(); else if (view === 'pcb') Pcb.render(); } else renderAll(); });
+    initTheme();
     PartEditor.init();
     // tell open tabs (phone, other PCs) when the app has been updated
     (async () => {

@@ -42,7 +42,8 @@ const EncView = (() => {
     const T = window.THREE;
     renderer = new T.WebGLRenderer({ antialias: true });
     renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
-    renderer.setClearColor(0x12161c);
+    const bg = () => renderer.setClearColor(getComputedStyle(document.documentElement).getPropertyValue('--view3d').trim() || '#12161c');
+    bg(); window.addEventListener('themechange', () => { bg(); draw(); });
     wrap.prepend(renderer.domElement);
     scene = new T.Scene();
     camera = new T.PerspectiveCamera(35, 1, 0.5, 5000); camera.up.set(0, 0, 1);

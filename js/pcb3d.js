@@ -40,7 +40,7 @@ const Pcb3D = (() => {
   // ---------- three.js ----------
   function setup() {
     const T = window.THREE;
-    renderer = new T.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); renderer.setClearColor(0x0d1015);
+    renderer = new T.WebGLRenderer({ antialias: true }); renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1)); const bg = () => renderer.setClearColor(getComputedStyle(document.documentElement).getPropertyValue('--view3d-pcb').trim() || '#0d1015'); bg(); window.addEventListener('themechange', () => { bg(); draw(); });
     wrap.prepend(renderer.domElement);
     scene = new T.Scene(); camera = new T.PerspectiveCamera(32, 1, 0.5, 5000); camera.up.set(0, 0, 1);
     scene.add(new T.HemisphereLight(0xffffff, 0x445566, 0.65));
