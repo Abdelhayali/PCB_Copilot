@@ -60,7 +60,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
-- **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints.
+- **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints. Auto-place keeps the board size and fits parts inside without overlaps; routed tracks are straightened into clean 0°/45°/90° runs with a clearance safety margin, so they pass DRC.
 - **Copper pours, arcs, bottom-side parts, curved boards** — GND (or any net) pours with clearance cut-outs; arc tracks; footprints on the bottom side (mirrored, bottom copper/silk/paste); rounded, round/elliptical or custom board outlines.
 - **3D board view** — switch the PCB editor between 2D and a 3D render of the manufactured board (both sides, parts, mask colour, pad finish).
 - **Enclosure** — a third tab builds a 3D-printable case around the PCB (follows the board outline, height from the tallest part, screw standoffs on PCB mounting holes, automatic openings for USB/jacks and holes above LEDs/buttons, snap-fit lid with vents); exports STL (base + lid) and parametric OpenSCAD.
@@ -105,7 +105,7 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 ## Limitations
 
 - Palette parts (resistor, capacitor, LED, diodes, transistors, MOSFETs, regulator, op-amp, crystal, fuse, inductor, potentiometer, buzzer) are backed by real JLCPCB parts — their footprints and pinouts come from the part library and pins are matched by name, so e.g. the AMS1117's IN/OUT/tab and each LED's cathode land on the right pads. Pin headers / generic connectors and the push button keep standard generated footprints (a 4-pin tact switch's internal pairs are not documented in the library); if you pick a generated footprint from the Footprint menu, verify its pin order against your part's datasheet.
-- The router is a basic grid router (0.25 mm trace/clearance, no copper pours or rip-up-and-retry); dense boards may leave nets unrouted.
+- The router is a grid router without rip-up-and-retry; dense boards may leave nets unrouted — enlarge the board or run **Optimize placement**.
 - Touch editing (drag/pinch) on phones is not implemented yet.
 
 ## Local models (llama.cpp, TabbyAPI, LM Studio, Ollama…)
@@ -133,7 +133,7 @@ Everything fetched is cached in a local SQLite database (`parts.db`), so parts y
 
 ## Projects
 
-Projects are stored on the server (`projects.db`, SQLite) and saved automatically — the status next to the project name shows **✓ Saved**. Use **▤ Projects** to open, duplicate, rename, delete or import projects, and **＋ New** to start one. The same projects appear on every device that opens the app. **Export → Project file (.json)** downloads a portable copy.
+Projects are stored on the server (`projects.db`, SQLite) and saved automatically — the status next to the project name shows **✓ Saved**. Use **▤ Projects** to open, duplicate, rename, delete or import projects, **＋ New** to start one, and **Save as…** (`Ctrl+Shift+S`) to save the current design under a new name and continue in the copy. The same projects appear on every device that opens the app. **Export → Project file (.json)** downloads a portable copy.
 
 ## Part editor (custom symbols & footprints)
 
