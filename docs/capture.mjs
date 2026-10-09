@@ -231,6 +231,14 @@ try {
   }, { hold: 2 });
   await js(`PartEditor.close(); return 1`);
 
+  // 4b) Enclosure fitted to the board (mounting holes → screw standoffs), X-ray + exploded
+  await js(`Model.mutate(() => Pcb.addMountingHoles({})); App.showView('enc'); return 1`); await sleep(4000);
+  await js(`document.querySelector('#encXray').click(); document.querySelector('#encExplode').click(); return 1`); await sleep(800);
+  await shot('enclosure');
+  await js(`document.querySelector('#encXray').click(); document.querySelector('#encExplode').click(); return 1`); await sleep(600);
+  await shot('enclosure-closed');
+  await js(`App.showView('sch'); return 1`);
+
   // 5) Projects + knowledge dialogs
   await js(`Projects.show(); return 1`); await sleep(1200); await shot('projects');
   await js(`Projects.close(); return 1`);

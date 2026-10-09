@@ -19,14 +19,15 @@ const App = (() => {
   function showView(v) {
     view = v;
     $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
-    $('#schSvg').classList.toggle('hidden', v !== 'sch'); $('#pcbSvg').classList.toggle('hidden', v !== 'pcb');
-    $('#schTools').classList.toggle('hidden', v !== 'sch'); $('#pcbTools').classList.toggle('hidden', v !== 'pcb');
+    $('#schSvg').classList.toggle('hidden', v !== 'sch'); $('#pcbSvg').classList.toggle('hidden', v !== 'pcb'); $('#encView').classList.toggle('hidden', v !== 'enc');
+    $('#schTools').classList.toggle('hidden', v !== 'sch'); $('#pcbTools').classList.toggle('hidden', v !== 'pcb'); $('#encTools').classList.toggle('hidden', v !== 'enc');
     PcbView.setVisible(v === 'pcb');
+    if (v === 'enc') EncView.show(); else EncView.hide();
     renderAll();
-    if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else Sch.vp.apply();
+    if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else if (v === 'sch') Sch.vp.apply();
   }
   function renderAll() {
-    if (view === 'sch') Sch.render(); else Pcb.render();
+    if (view === 'sch') Sch.render(); else if (view === 'pcb') Pcb.render();
     renderStatus(); renderProps();
     $('#btnUndo').disabled = !Model.canUndo(); $('#btnRedo').disabled = !Model.canRedo();
     if (document.activeElement !== $('#projName')) $('#projName').value = Model.S.name || 'Untitled';
@@ -114,6 +115,7 @@ const App = (() => {
     const el = $('#props');
     if (el.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON') return;
     if (view === 'pcb' && PcbView.props(el)) return;
+    if (view === 'enc' && EncView.props(el)) return;
     const ref = view === 'sch' ? Sch.ui.sel : Pcb.ui.sel, net = view === 'sch' ? Sch.ui.selNet : null;
     const c = ref && Model.comp(ref);
     if (c) {
@@ -469,7 +471,7 @@ const App = (() => {
     Sch.ui.onSelect = () => renderProps(); Pcb.ui.onSelect = () => renderProps();
     let saved = null; try { saved = localStorage.getItem('cp.design'); } catch (e) { }
     if (saved) try { Model.load(saved); } catch (e) { }
-    Model.subscribe(kind => { if (kind !== 'move') Pcb.ui.drc = null; if (kind === 'move') { view === 'sch' ? Sch.render() : Pcb.render(); } else renderAll(); });
+    Model.subscribe(kind => { if (kind !== 'move') Pcb.ui.drc = null; if (kind === 'move') { if (view === 'sch') Sch.render(); else if (view === 'pcb') Pcb.render(); } else renderAll(); });
     PartEditor.init();
     // tell open tabs (phone, other PCs) when the app has been updated
     (async () => {
@@ -485,7 +487,8 @@ const App = (() => {
     Engine.env.myLib = () => Projects.myLib;
     Engine.env.savePart = def => Projects.savePart(def).then(() => renderParts());
     Engine.env.route = runRouter;
-    Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } };
+    Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } if (what === 'show-enc') { showView('enc'); EncView.rebuild(); } };
+    EncView.init();
     initKnowledge();
     Projects.init().then(renderParts);
 
@@ -595,11 +598,12 @@ const App = (() => {
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? Model.redo() : Model.undo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); Model.redo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#btnSave').click(); return; }
+      if (view === 'enc') return;
       if (e.key === 'f' || e.key === 'F') { view === 'sch' ? Sch.fit() : Pcb.fit(); return; }
       if ((view === 'sch' ? Sch : Pcb).key(e)) e.preventDefault();
     });
     $('#schSvg').oncontextmenu = $('#pcbSvg').oncontextmenu = e => e.preventDefault();
   }
-  return { init, toast, showView, renderAll, placeLibPart, refreshParts: () => renderParts() };
+  return { init, toast, showView, renderAll, placeLibPart, refreshParts: () => renderParts(), download };
 })();
 window.addEventListener('DOMContentLoaded', App.init);

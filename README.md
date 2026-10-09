@@ -30,6 +30,12 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 |---|---|
 | ![Layers](docs/media/pcb-layers.png) | ![PCB editor](docs/media/pcb-editor.png) |
 
+**3D-printable enclosure fitted to the board** — STL + parametric OpenSCAD, editable by hand or by the AI
+
+| Inside (X-ray, lid lifted) | Closed |
+|---|---|
+| ![Enclosure X-ray](docs/media/enclosure.png) | ![Enclosure](docs/media/enclosure-closed.png) |
+
 | Design rules (JLCPCB defaults) | Autorouted 2-layer PCB |
 |---|---|
 | ![Design rules](docs/media/design-rules.png) | ![PCB](docs/media/pcb.png) |
@@ -51,6 +57,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
 - **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints.
 - **Copper pours, arcs, bottom-side parts, curved boards** — GND (or any net) pours with clearance cut-outs; arc tracks; footprints on the bottom side (mirrored, bottom copper/silk/paste); rounded, round/elliptical or custom board outlines.
+- **Enclosure** — a third tab builds a 3D-printable case around the PCB (follows the board outline, height from the tallest part, screw standoffs on PCB mounting holes, automatic openings for USB/jacks and holes above LEDs/buttons, snap-fit lid with vents); exports STL (base + lid) and parametric OpenSCAD.
 - **Placement optimizer** — moves / rotates / swaps parts and re-routes until every net is connected (also available to the AI).
 - **Gerber export with DRC check** — problems pop up with *Fix on board / Re-route / Optimize / Download anyway*.
 - **EasyEDA-style PCB editor** — Layers panel (EasyEDA colours, show/hide, colour, active layer, dim inactive), PCB Tools (Select, Track `W`, Via `V`, Measure `M`), interactive 45°/90°/any-angle routing with T/B layer switching and automatic vias, live clearance check, track/via properties, segment delete; the autorouter keeps hand-routed tracks.
@@ -209,3 +216,16 @@ Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when t
 | Board outline | **▭ Board**: rectangle, rounded rectangle, circle/ellipse, or **Draw outline** (custom polygon with rounded corners). Router, DRC, pours and the Edge_Cuts Gerber follow it. |
 | Optimize | **✨ Optimize** moves, rotates and swaps parts (and can grow the board) and re-routes until everything connects, keeping the best result. Connectors on edges stay put. The AI: `optimize_pcb`, or `get_pcb_layout` + `place_footprint` + `route_pcb`. |
 | Gerbers | **Gerbers ⤓** runs DRC first. If anything is wrong a window lists it (click to zoom) with **Fix on board · Re-route · Optimize placement · Download anyway**. Export includes copper, mask, paste, silkscreen (top + bottom), outline and drill. Via MCP, `export_gerbers` refuses on DRC errors unless `force: true`. |
+
+## Enclosure (3D print)
+
+The **Enclosure** tab builds a printable case around the current PCB and previews it in 3D (drag to orbit, right-drag to pan, wheel to zoom; *Explode*, *X-ray*, *Lid*, *PCB* toggles).
+
+- **Fits the board**: the cavity follows the board outline (rectangle, rounded, round or custom) plus a clearance gap; the height comes from the tallest part (estimated per package — override any part height).
+- **Board support**: click **＋ Add M3 mounting holes** (adds non-plated Ø3.2 mm holes to the PCB, kept clear of parts and copper, in the NPTH drill file) to get **screw standoffs**; without holes the board rests on corner supports. Standoffs rise automatically to clear parts on the bottom side.
+- **Openings**: automatic for edge connectors (USB, DC jack…, at the right wall and height) and holes in the lid above LEDs and buttons; add your own rectangle / circle cutouts on any wall, the lid or the floor.
+- **Lid**: snap-fit lip with an adjustable fit tolerance, optional vent slots.
+- **Export**: **STL ⤓** (base + lid; the lid is already oriented for printing), **OpenSCAD ⤓** (parametric source of the same design), or **All (.zip)** with print notes.
+- **AI**: "make the walls 3 mm, add a 6×4 mm cable slot on the right and more room above the board" → `set_enclosure`, `add_enclosure_cutout`, `add_mounting_holes`, `get_enclosure`; Claude Code can also `export_enclosure` straight to a folder.
+
+The geometry engine (CSG with watertight-mesh repair) is self-contained JavaScript, so it runs in the browser and in the MCP server; only the 3D preview loads three.js from cdnjs.

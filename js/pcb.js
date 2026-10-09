@@ -87,6 +87,29 @@ const Pcb = (() => {
   }
   function fpInside(c) { const b = fpBox(c, -0.1), poly = boardPoly(); return [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]].every(q => inPoly(q[0], q[1], poly)); }
 
+  // ---------- mounting holes (NPTH) ----------
+  function addMountingHoles(o = {}) {
+    const S = Model.S; if (!S.board.w) throw new Error('Generate the PCB first');
+    const d = +o.diameter || 3.2, inset = +o.inset || Math.max(3.5, d / 2 + 2), poly = boardPoly(), idx = Model.pinIndex();
+    const pads = placed().flatMap(c => padsOf(c, idx)), boxes = placed().map(c => fpBox(c, 0.5));
+    const keep = o.replace === false ? (S.pcb.holes || []) : [];
+    const clearOf = (x, y) => inPoly(x, y, poly) && edgeDist({ k: 'circ', c: [x, y], r: d / 2 }, poly) >= 1.0 &&
+      !boxes.some(b => x + d / 2 > b[0] && x - d / 2 < b[2] && y + d / 2 > b[1] && y - d / 2 < b[3]) &&
+      !pads.some(p => shapeDist({ k: 'circ', c: [x, y], r: d / 2 }, padShape(p)) < 0.6) &&
+      !keep.some(h => Math.hypot(h.x - x, h.y - y) < (h.d + d) / 2 + 2);
+    const xs = poly.map(q => q[0]), ys = poly.map(q => q[1]), X0 = Math.min(...xs), X1 = Math.max(...xs), Y0 = Math.min(...ys), Y1 = Math.max(...ys);
+    const corners = o.points ? o.points.map(q => [+q[0], +q[1], 0, 0]) : [[X0, Y0, 1, 1], [X1, Y0, -1, 1], [X1, Y1, -1, -1], [X0, Y1, 1, -1]];
+    S.pcb.holes = keep.slice();
+    const placedH = [], skipped = [];
+    for (const [cx, cy, sx, sy] of corners) {
+      let ok = null;
+      if (!sx && !sy) ok = [cx, cy];
+      else for (let k = 0; k <= 24 && !ok; k++) { const t = inset + k * 0.5, x = cx + sx * t, y = cy + sy * t; if (clearOf(x, y)) ok = [x, y]; }
+      if (ok) { const h = { x: +ok[0].toFixed(2), y: +ok[1].toFixed(2), d, auto: !o.points }; S.pcb.holes.push(h); placedH.push(h); } else skipped.push([cx, cy]);
+    }
+    return { holes: placedH, skipped: skipped.length, note: skipped.length ? 'Some corners were too crowded — move parts or give points' : 'Run route_pcb so tracks avoid the holes' };
+  }
+
   // ---------- copper pours ----------
   const pourPoly = pr => pr.whole || !pr.pts ? boardPoly() : pr.pts;
   // Raster of one pour: cells inside the pour and the board, away from other nets' copper. Labels = connected islands.
@@ -109,6 +132,7 @@ const Pcb = (() => {
     for (const c of placed()) for (const q of padsOf(c, idx)) if (q.net !== pr.net && padCu(q, L2).includes(pr.layer)) block(padShape(q), cl);
     for (const t of S.pcb.traces) if (t.net !== pr.net && t.layer === pr.layer) for (let i = 1; i < t.pts.length; i++) block({ k: 'seg', a: t.pts[i - 1], b: t.pts[i], r: t.w / 2 }, cl);
     for (const v of S.pcb.vias) if (v.net !== pr.net) block({ k: 'circ', c: [v.x, v.y], r: v.d / 2 }, cl);
+    for (const h of S.pcb.holes || []) block({ k: 'circ', c: [h.x, h.y], r: h.d / 2 }, cl);
     // board edge clearance
     for (let i = 0; i < bpoly.length; i++) block({ k: 'seg', a: bpoly[i], b: bpoly[(i + 1) % bpoly.length], r: 0 }, R.edgeClearance);
     const label = new Int32Array(N); let n = 0;
@@ -236,7 +260,9 @@ const Pcb = (() => {
     W = Math.ceil(W * 10) / 10; H = Math.ceil(H * 10) / 10;
     for (const c of cs) { c.pcb.x = +(Math.round((c.pcb.x + ox) / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round((c.pcb.y + oy) / 0.05) * 0.05).toFixed(3); }
     S.board = Object.assign({}, S.board, { w: +W.toFixed(1), h: +H.toFixed(1) });
-    S.pcb = { traces: [], vias: [], routed: {}, pours: (S.pcb.pours || []).filter(pr => pr.whole) };
+    const hadHoles = (S.pcb.holes || []).filter(h => h.auto), holeD = hadHoles.length ? hadHoles[0].d : 0;
+    S.pcb = { traces: [], vias: [], routed: {}, pours: (S.pcb.pours || []).filter(pr => pr.whole), holes: [] };
+    if (holeD) addMountingHoles({ diameter: holeD });   // corner holes follow the new board
     return { board: S.board, placed: cs.length, on_edge: edgeParts.map(e => `${e.c.ref}:${e.side}${e.plug ? ' (opening outward)' : ''}`) };
   }
 
@@ -380,7 +406,7 @@ const Pcb = (() => {
     // Existing copper is kept (opt.keep !== false): it becomes an obstacle for other nets and part of its own net.
     const keep = opt.keep !== false;
     const oldTraces = keep ? S.pcb.traces.slice() : [], oldVias = keep ? S.pcb.vias.slice() : [];
-    if (!keep) S.pcb = { traces: [], vias: [], routed: {}, pours: S.pcb.pours || [] };
+    if (!keep) S.pcb = { traces: [], vias: [], routed: {}, pours: S.pcb.pours || [], holes: S.pcb.holes || [] };
     const conn = connectivity();
     const preT = [], preV = [];
     let orphanT = -100000;
@@ -395,6 +421,7 @@ const Pcb = (() => {
       preT.push({ id, l, w: t.w, cells: [...cells], net: t.net });
     }
     for (const v of oldVias) preV.push({ id: v.net && netId[v.net] ? netId[v.net] : orphanT--, x: Math.round(v.x / g), y: Math.round(v.y / g), d: v.d, net: v.net });
+    for (const h of S.pcb.holes || []) preV.push({ id: orphanT--, x: Math.round(h.x / g), y: Math.round(h.y / g), d: h.d + 0.2, net: null, hole: true });
     const jobs = netNames.map(n => {
       const pads = allPads.filter(p => p.net === n);
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -407,7 +434,7 @@ const Pcb = (() => {
     }).filter(j => j.pads.length >= 2);
     const already = jobs.filter(j => j.islands.length <= 1).map(j => j.net);
     const todo = jobs.filter(j => j.islands.length > 1);
-    if (!todo.length) { S.pcb = { traces: oldTraces, vias: oldVias, pours: S.pcb.pours || [], routed: Object.fromEntries(already.map(n => [n, true])) }; return { routed: jobs.length, total: jobs.length, failed: [], necked_down: [], vias: oldVias.length, kept_tracks: oldTraces.length, rules: R.preset }; }
+    if (!todo.length) { S.pcb = { traces: oldTraces, vias: oldVias, pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: Object.fromEntries(already.map(n => [n, true])) }; return { routed: jobs.length, total: jobs.length, failed: [], necked_down: [], vias: oldVias.length, kept_tracks: oldTraces.length, rules: R.preset }; }
 
     const maxW = Math.max(R.traceWidth, ...jobs.map(j => j.w));
     const padReach = Math.max(maxW / 2, R.viaDiameter / 2) + R.clearance + R.viaDrill / 2 + R.minHoleToHole;
@@ -468,8 +495,8 @@ const Pcb = (() => {
         }
         for (const v of gvias) {
           if (v.id === id) { for (let l = 0; l < L; l++) markDisk(own, l * N, v.x, v.y, vr, v.d); continue; }
-          for (let l = 0; l < L; l++) markDisk(blockT, l * N, v.x, v.y, w / 2 + vr + R.clearance);
-          markDisk(blockV, 0, v.x, v.y, Math.max(2 * vr + R.clearance, R.viaDrill + R.minHoleToHole));
+          for (let l = 0; l < L; l++) markDisk(blockT, l * N, v.x, v.y, w / 2 + v.d / 2 + R.clearance);
+          markDisk(blockV, 0, v.x, v.y, Math.max(v.d / 2 + vr + R.clearance, (v.hole ? v.d : R.viaDrill) / 2 + R.viaDrill / 2 + R.minHoleToHole));
         }
       }
       // A* over (layer, cell). own[] = widest trace that fits inside our own copper at that cell.
@@ -615,7 +642,7 @@ const Pcb = (() => {
       order = [...order.filter(j => f.has(j.net)), ...order.filter(j => !f.has(j.net))];
     }
     for (const n of already) best.routed[n] = true;
-    S.pcb = { traces: oldTraces.concat(best.traces), vias: oldVias.concat(best.vias), pours: S.pcb.pours || [], routed: best.routed };
+    S.pcb = { traces: oldTraces.concat(best.traces), vias: oldVias.concat(best.vias), pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: best.routed };
     return { routed: Object.keys(best.routed).length, total: jobs.length, kept_tracks: oldTraces.length, failed: best.failed, necked_down: best.necked, vias: best.vias.length, board: S.board, grid_mm: +g.toFixed(3), search: stats, rules: { preset: R.preset, trace: R.traceWidth, power: R.powerTraceWidth, clearance: R.clearance, via: `${R.viaDiameter}/${R.viaDrill}`, layers: L } };
   }
 
@@ -690,6 +717,7 @@ const Pcb = (() => {
       if (v.drill < R.minViaDrill - 1e-6) add('via', `Via drill ${v.drill} < ${R.minViaDrill} mm`, v.x, v.y);
       if ((v.d - v.drill) / 2 < R.minAnnularRing - 1e-6) add('via', `Via annular ring ${((v.d - v.drill) / 2).toFixed(3)} < ${R.minAnnularRing} mm`, v.x, v.y);
     }
+    (S.pcb.holes || []).forEach((h, i) => objs.push({ s: { k: 'circ', c: [h.x, h.y], r: h.d / 2 }, net: '~hole' + i, layers: ['F', 'B'], what: `mounting hole ${i + 1}`, drill: h.d, x: h.x, y: h.y }));
     const boxes = objs.map(o => bboxOf(o.s));
     // Trace copper that lies inside a pad of the same net adds no copper: measure only the part outside own pads.
     const padsByNet = {};
@@ -840,6 +868,7 @@ const Pcb = (() => {
       for (const t of S.pcb.traces) if (t.layer === layer && (net === undefined || t.net !== net)) { b.push(A(`C,${f6(t.w + grow)}`) + '*'); b.push(X(...t.pts[0]) + 'D02*'); for (const q of t.pts.slice(1)) b.push(X(...q) + 'D01*'); }
       for (const p of pads) if (onLayer(p, layer) && (net === undefined || p.net !== net)) { b.push(A(padAp(p, grow)) + '*'); b.push(X(p.x, p.y) + 'D03*'); }
       for (const v of S.pcb.vias) if (net === undefined || v.net !== net) { b.push(A(`C,${f6(v.d + grow)}`) + '*'); b.push(X(v.x, v.y) + 'D03*'); }
+      if (net !== undefined) for (const h of S.pcb.holes || []) { b.push(A(`C,${f6(h.d + grow)}`) + '*'); b.push(X(h.x, h.y) + 'D03*'); }
     };
     const outline = boardPoly();
     const copper = (layer, func) => file(func, (A, b) => {
@@ -877,6 +906,13 @@ const Pcb = (() => {
     let drl = 'M48\n; CircuitPilot drill file\nMETRIC,TZ\n' + tools.map((d, i) => `T${i + 1}C${d}`).join('\n') + '\n%\nG90\nG05\n';
     tools.forEach((d, i) => { drl += `T${i + 1}\n`; for (const h of holes.filter(h => h.d.toFixed(3) === d)) drl += `X${h.x.toFixed(3)}Y${(Hb - h.y).toFixed(3)}\n`; });
     files['board-PTH.drl'] = drl + 'M30\n';
+    const nh = S.pcb.holes || [];
+    if (nh.length) {
+      const nt = [...new Set(nh.map(h => h.d.toFixed(3)))];
+      let n = 'M48\n; CircuitPilot non-plated (mounting) holes\nMETRIC,TZ\n' + nt.map((d, i) => `T${i + 1}C${d}`).join('\n') + '\n%\nG90\nG05\n';
+      nt.forEach((d, i) => { n += `T${i + 1}\n`; for (const h of nh.filter(h => h.d.toFixed(3) === d)) n += `X${h.x.toFixed(3)}Y${(Hb - h.y).toFixed(3)}\n`; });
+      files['board-NPTH.drl'] = n + 'M30\n';
+    }
     return files;
   }
   function optimize(opt = {}) {
@@ -889,7 +925,7 @@ const Pcb = (() => {
     let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
     let it = 0;
     const evaluate = () => {
-      S.pcb = { traces: manual.traces.slice(), vias: manual.vias.slice(), pours: S.pcb.pours || [], routed: {} };
+      S.pcb = { traces: manual.traces.slice(), vias: manual.vias.slice(), pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: {} };
       route({ tries: 1, onProgress: opt.onProgress ? p => opt.onProgress(Object.assign({ iteration: it, of: maxIt }, p)) : null });
       const st = status(); return { failed: st.unrouted.length, len: st.trace_length_mm, unrouted: st.unrouted };
     };
@@ -947,7 +983,7 @@ const Pcb = (() => {
     return { iterations: it, routed: st.routed, total: st.nets, unrouted: st.unrouted, trace_length_mm: st.trace_length_mm, board: S.board, seconds: +((Date.now() - t0) / 1000).toFixed(1), history };
   }
 
-  return { autoPlace, placeFootprint, optimize, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
+  return { addMountingHoles, autoPlace, placeFootprint, optimize, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
 })();
 
 // Minimal ZIP (store, no compression) writer.
@@ -957,7 +993,7 @@ function makeZip(files) {
   const crc = b => { let c = 0xFFFFFFFF; for (let i = 0; i < b.length; i++) c = table[(c ^ b[i]) & 0xFF] ^ (c >>> 8); return (c ^ 0xFFFFFFFF) >>> 0; };
   const parts = [], cd = []; let off = 0;
   for (const [name, text] of Object.entries(files)) {
-    const nb = enc.encode(name), db = enc.encode(text), cr = crc(db);
+    const nb = enc.encode(name), db = text instanceof Uint8Array ? text : enc.encode(text), cr = crc(db);
     const h = new DataView(new ArrayBuffer(30));
     h.setUint32(0, 0x04034b50, true); h.setUint16(4, 20, true); h.setUint16(10, 0, true); h.setUint16(12, 33, true);
     h.setUint32(14, cr, true); h.setUint32(18, db.length, true); h.setUint32(22, db.length, true); h.setUint16(26, nb.length, true);

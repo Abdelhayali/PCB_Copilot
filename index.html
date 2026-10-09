@@ -48,12 +48,24 @@
       <div id="tabs">
         <button class="tab active" data-view="sch">Schematic</button>
         <button class="tab" data-view="pcb">PCB</button>
+        <button class="tab" data-view="enc">Enclosure</button>
       </div>
       <div id="schTools" class="tools">
         <button id="btnLayout">Auto-layout</button>
         <button id="btnErc">ERC</button>
         <label>Connections <select id="connStyle"><option value="auto">Auto</option><option value="wires">Wires</option><option value="labels">Net labels</option></select></label>
         <button id="btnFitS" title="F">Fit</button>
+      </div>
+      <div id="encTools" class="tools hidden">
+        <button id="encRegen" title="Rebuild the 3D model">↻ Rebuild</button>
+        <button id="encExplode" title="Lift the lid off">⇕ Explode</button>
+        <button id="encLid">Lid</button>
+        <button id="encPcb">PCB</button>
+        <button id="encXray">X-ray</button>
+        <span class="tsep"></span>
+        <button id="encStl" class="primary" title="Base + lid STL (lid oriented for printing)">STL ⤓</button>
+        <button id="encScad" title="Parametric OpenSCAD source">OpenSCAD ⤓</button>
+        <button id="encZip" title="STLs + .scad + notes">All (.zip) ⤓</button>
       </div>
       <div id="pcbTools" class="tools hidden">
         <button id="btnGen" class="primary">Generate PCB</button>
@@ -78,6 +90,7 @@
     <div id="views">
       <svg id="schSvg"></svg>
       <svg id="pcbSvg" class="hidden"></svg>
+      <div id="encView" class="hidden"></div>
       <div id="routeBusy" class="hidden"><span class="spin"></span> <span id="routeMsg">Routing…</span> <button id="routeCancel">Cancel</button></div>
     </div>
     <div id="status"></div>
@@ -235,6 +248,8 @@
 <script src="js/schematic.js"></script>
 <script src="js/pcb.js"></script>
 <script src="js/pcbview.js"></script>
+<script src="js/enclosure.js"></script>
+<script src="js/encview.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ai.js"></script>
 <script src="js/projects.js"></script>

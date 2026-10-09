@@ -238,6 +238,16 @@ input.warnin { border-color: var(--warn); }
 
 .edgebtns button.on { border-color: var(--accent); color: #fff; background: #2f6bff33; }
 #gbList { max-height: 45vh; overflow: auto; }
+/* enclosure */
+#encView { position: absolute; inset: 0; background: #12161c; }
+#encView canvas { display: block; width: 100%; height: 100%; cursor: grab; }
+.encinfo { position: absolute; left: 10px; bottom: 8px; background: #000a; padding: 5px 10px; border-radius: 6px; font-size: 12px; pointer-events: none; }
+.encmsg { position: absolute; top: 40%; left: 50%; transform: translate(-50%, -50%); color: var(--muted); font-size: 14px; display: none; text-align: center; max-width: 80%; }
+.encgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+.encgrid label { margin: 3px 0 !important; }
+ul.cutl { padding-left: 4px; list-style: none; font-size: 12px; margin: 4px 0; }
+ul.cutl li { padding: 2px 0; }
+#encTools button.on { border-color: var(--accent); color: #fff; }
 /* EasyEDA-style PCB editor */
 #pcbSvg { background: #000; }
 .tsep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }

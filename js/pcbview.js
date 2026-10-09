@@ -330,6 +330,7 @@ const PcbView = (() => {
       return;
     }
     if (el && el.dataset.k === 'pour') { ui.sel = null; ui.item = { k: 'pour', i: +el.dataset.i }; ui.hlNet = (Model.S.pcb.pours[+el.dataset.i] || {}).net; ui.onSelect(null); render(); pan = { x: e.clientX, y: e.clientY }; return; }
+    if (el && el.dataset.k === 'h') { const h = Model.S.pcb.holes[+el.dataset.i]; ui.sel = null; ui.item = { k: 'h', i: +el.dataset.i }; ui.hlNet = null; ui.onSelect(null); drag = { kind: 'hole', i: +el.dataset.i, ox: pt.x - h.x, oy: pt.y - h.y, moved: false }; render(); return; }
     if (el && el.dataset.k === 'v') { const v = Model.S.pcb.vias[+el.dataset.i]; selectItem({ k: 'v', i: +el.dataset.i }); drag = { kind: 'via', i: +el.dataset.i, ox: pt.x - v.x, oy: pt.y - v.y, moved: false }; return; }
     const ref = el && (el.dataset.ref || el.dataset.pref);
     if (ref) {
@@ -370,6 +371,9 @@ const PcbView = (() => {
           t.pts = o;
         }
         Model.emit('move');
+      } else if (drag.kind === 'hole') {
+        const h = Model.S.pcb.holes[drag.i], nx = +snapG(pt.x - drag.ox).toFixed(3), ny = +snapG(pt.y - drag.oy).toFixed(3);
+        if (nx !== h.x || ny !== h.y) { if (!drag.moved) { Model.begin(); drag.moved = true; } h.x = nx; h.y = ny; h.auto = false; Model.emit('move'); }
       } else if (drag.kind === 'via') {
         const v = Model.S.pcb.vias[drag.i], nx = +snapG(pt.x - drag.ox).toFixed(4), ny = +snapG(pt.y - drag.oy).toFixed(4);
         if (nx !== v.x || ny !== v.y) { if (!drag.moved) { Model.begin(); drag.moved = true; } v.x = nx; v.y = ny; Model.emit('move'); }
@@ -420,6 +424,7 @@ const PcbView = (() => {
       const S = Model.S;
       if (it.k === 'v') S.pcb.vias.splice(it.i, 1);
       else if (it.k === 'pour') S.pcb.pours.splice(it.i, 1);
+      else if (it.k === 'h') S.pcb.holes.splice(it.i, 1);
       else if (it.k === 'T') S.pcb.traces.splice(it.i, 1);
       else if (it.k === 't') {
         const t = S.pcb.traces[it.i], a = t.pts.slice(0, it.s), b = t.pts.slice(it.s);
@@ -473,6 +478,10 @@ const PcbView = (() => {
       for (const p of cache.pads) if (p.drill) out.push(padEl(p, col('MU'), `class="pad${hl && p.net === hl ? ' hl' : ''}" data-pref="${esc(p.ref)}" data-net="${esc(p.net || '')}"`).replace('/>', `><title>${esc(p.key)}${p.net ? ' · ' + esc(p.net) : ''}</title></${p.shape === 'round' ? 'circle' : 'rect'}>`));
       S.pcb.vias.forEach((v, i) => out.push(`<circle data-k="v" data-i="${i}" class="via${hl && v.net === hl ? ' hl' : ''}" cx="${v.x}" cy="${v.y}" r="${v.d / 2}" fill="${col('MU')}"><title>via ${esc(v.net || '(no net)')} · ${v.d}/${v.drill} mm</title></circle>`));
     }
+    (S.pcb.holes || []).forEach((h, i) => {
+      if (!vis('HO') && !vis('MU')) return;
+      out.push(`<g data-k="h" data-i="${i}" class="mhole"><circle cx="${h.x}" cy="${h.y}" r="${h.d / 2 + R0.clearance}" fill="none" stroke="${col('MU')}" stroke-width="0.08" stroke-dasharray="0.3 0.2"/><circle cx="${h.x}" cy="${h.y}" r="${h.d / 2}" fill="${col('HO')}" stroke="${col('MU')}" stroke-width="0.1"><title>Mounting hole Ø${h.d} mm (non-plated)</title></circle></g>`);
+    });
     if (vis('HO')) {
       for (const p of cache.pads) if (p.drill) out.push(`<circle cx="${p.x}" cy="${p.y}" r="${p.drill / 2}" fill="${col('HO')}" pointer-events="none"/>`);
       for (const v of S.pcb.vias) out.push(`<circle cx="${v.x}" cy="${v.y}" r="${v.drill / 2}" fill="${col('HO')}" pointer-events="none"/>`);
@@ -490,7 +499,8 @@ const PcbView = (() => {
     if (vis('DRC') && ui.drc) for (const v of ui.drc.violations) if (v.x != null) out.push(`<g class="drcmark" transform="translate(${v.x} ${v.y})" stroke="${v.severity === 'error' ? col('DRC') : '#f0b429'}"><circle r="0.9" fill="none" stroke-width="0.12"/><path d="M-0.45 -0.45L0.45 0.45M0.45 -0.45L-0.45 0.45" stroke-width="0.14"/><title>${esc(v.msg)}</title></g>`);
     // selection outlines
     if (ui.sel) { const c = Model.comp(ui.sel); if (c && c.pcb) { const b = Pcb.fpBox(c, 0.2); out.push(`<rect class="selbox" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`); } }
-    if (ui.item && ui.item.k !== 'pour') {
+    if (ui.item && ui.item.k === 'h') { const h = (S.pcb.holes || [])[ui.item.i]; if (h) out.push(`<circle class="selbox" cx="${h.x}" cy="${h.y}" r="${h.d / 2 + 0.4}"/>`); }
+    if (ui.item && ui.item.k !== 'pour' && ui.item.k !== 'h') {
       if (ui.item.k === 'v') { const v = S.pcb.vias[ui.item.i]; if (v) out.push(`<circle class="selbox" cx="${v.x}" cy="${v.y}" r="${v.d / 2 + 0.15}"/>`); }
       else { const t = S.pcb.traces[ui.item.i]; if (t) { const pts = ui.item.k === 'T' ? t.pts : [t.pts[ui.item.s - 1], t.pts[ui.item.s]]; out.push(`<polyline class="selline" points="${pts.map(p => p.join(',')).join(' ')}" stroke-width="${t.w + 0.2}"/>`); } }
     }
@@ -555,6 +565,18 @@ const PcbView = (() => {
     const it = ui.item; if (!it) return false;
     const S = Model.S, nets = Object.keys(S.nets).sort();
     const netSel = cur => `<select id="ppNet"><option value="">(no net)</option>${nets.map(n => `<option ${n === cur ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select>`;
+    if (it.k === 'h') {
+      const h = S.pcb.holes && S.pcb.holes[it.i]; if (!h) return false;
+      el.innerHTML = `<div class="ph">Mounting hole</div>
+        <label>Diameter (mm)<input id="phD" type="number" step="0.1" value="${h.d}"></label>
+        <label>X (mm)<input id="phX" type="number" step="${ui.grid}" value="${h.x}"></label><label>Y (mm)<input id="phY" type="number" step="${ui.grid}" value="${h.y}"></label>
+        <div class="muted small">Non-plated hole (NPTH drill file). Copper keeps the clearance rule from it; the enclosure puts a screw standoff here.</div>
+        <div class="row"><button id="ppDel" class="danger">Delete hole (Del)</button></div>`;
+      const upd = f => Model.mutate(() => { const q = Model.S.pcb.holes[it.i]; f(q); q.auto = false; });
+      $('#phD').onchange = e => upd(q => q.d = Math.max(0.5, +e.target.value)); $('#phX').onchange = e => upd(q => q.x = +e.target.value); $('#phY').onchange = e => upd(q => q.y = +e.target.value);
+      $('#ppDel').onclick = deleteItem;
+      return true;
+    }
     if (it.k === 'pour') {
       const pr = S.pcb.pours && S.pcb.pours[it.i]; if (!pr) return false;
       el.innerHTML = `<div class="ph">Copper area</div><label>Net${netSel(pr.net)}</label>
@@ -605,7 +627,7 @@ const PcbView = (() => {
   // keep the item selection valid after undo/redo or external edits
   function validate() {
     const S = Model.S;
-    if (ui.item && ((ui.item.k === 'v' && !S.pcb.vias[ui.item.i]) || (ui.item.k === 'pour' && !(S.pcb.pours || [])[ui.item.i]) || (!['v', 'pour'].includes(ui.item.k) && !S.pcb.traces[ui.item.i]))) ui.item = null;
+    if (ui.item && ((ui.item.k === 'v' && !S.pcb.vias[ui.item.i]) || (ui.item.k === 'pour' && !(S.pcb.pours || [])[ui.item.i]) || (ui.item.k === 'h' && !(S.pcb.holes || [])[ui.item.i]) || (!['v', 'pour', 'h'].includes(ui.item.k) && !S.pcb.traces[ui.item.i]))) ui.item = null;
     if (ui.sel && !Model.comp(ui.sel)) ui.sel = null;
   }
   return { init, render: () => { validate(); render(); coord(); }, fit, key, ui, exportSVG, setVisible, bindBar, props, setTool, LAYERS, drawOutline: r => { ui.outlineR = +r || 0; setTool('outline'); App.toast('Click the outline corners; click the first corner to close'); }, get vp() { return vp; } };
