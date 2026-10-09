@@ -252,23 +252,58 @@ const Pcb = (() => {
       edgeParts.push({ c, side, plug }); lock.set(c, side === 'left' || side === 'right' ? 'x' : 'y');
     }
     const free = cs.filter(c => !lock.has(c));
-    // 3) push overlapping parts apart while keeping everything inside the outline
-    const settle = gap => {
-      for (let round = 0; round < 40; round++) {
-        separate(cs, gap, lock, 60);
-        for (const c of free) clampInside(c, poly, margin, W, H);
-        for (const e of edgeParts) clampAlong(e, W, H);
-        if (!overlaps(cs, gap * 0.5).length) return true;
+    // 3) legalise: place parts one by one (connectors first, then biggest first) at the nearest free spot
+    //    to where the schematic wants them — spiral search, inside the outline, no overlaps.
+    const want = new Map(cs.map(c => [c, { x: c.pcb.x, y: c.pcb.y, rot: c.pcb.rot }]));
+    const areaOf = c => { const q = fpBox(c); return (q[2] - q[0]) * (q[3] - q[1]); };
+    const hit = (c, placed, gap) => { const q = fpBox(c, gap / 2); return placed.some(o => { const r = fpBox(o, gap / 2); return q[0] < r[2] && r[0] < q[2] && q[1] < r[3] && r[1] < q[3]; }); };
+    const okAt = (c, placed, gap, inset) => boxInside(c, poly, inset) && !hit(c, placed, gap);
+    function legalise(gap) {
+      const placed = [], failed = [];
+      // connectors: keep their edge, slide along it to the nearest free spot
+      for (const e of edgeParts) {
+        const c = e.c, w = want.get(c), base = { x: c.pcb.x, y: c.pcb.y }, along = e.side === 'left' || e.side === 'right' ? [0, 1] : [1, 0];
+        let done = false;
+        for (let k = 0; k <= 400 && !done; k++) for (const sgn of k ? [1, -1] : [1]) {
+          c.pcb.x = base.x + along[0] * sgn * k * 0.25; c.pcb.y = base.y + along[1] * sgn * k * 0.25;
+          if (okAt(c, placed, gap, e.plug ? -0.05 : margin)) { done = true; break; }
+        }
+        if (!done) { c.pcb.x = base.x; c.pcb.y = base.y; failed.push(c.ref); }
+        placed.push(c);
       }
-      return false;
-    };
-    // parts that clearly cannot fit: don't grind — report it
-    const need = cs.reduce((a, c) => { const b = fpBox(c); return a + (b[2] - b[0]) * (b[3] - b[1]); }, 0);
-    let ok = need < W * H * 0.9 ? settle(1.0) : false;
-    // 4) still crowded: turn long parts to fit, then tighten the spacing
-    if (!ok && need < W * H * 0.9) {
-      for (const [a] of overlaps(cs, 0.3)) { if (lock.has(a)) continue; const b = fpBox(a), wide = (b[2] - b[0]) > (b[3] - b[1]) * 1.3; if (wide || (b[3] - b[1]) > (b[2] - b[0]) * 1.3) a.pcb.rot = ((a.pcb.rot || 0) + 90) % 360; }
-      ok = settle(0.6) || settle(0.3);
+      // everything else: biggest first, nearest free position (both orientations), spiral outward
+      const rest = free.slice().sort((p, q) => areaOf(q) - areaOf(p));
+      const step = 0.5, maxR = Math.hypot(W, H);
+      for (const c of rest) {
+        const w = want.get(c); let best = null;
+        for (const rot of [w.rot, (w.rot + 90) % 360]) {
+          c.pcb.rot = rot;
+          for (let r = 0; r <= maxR && !best; r += step) {
+            const n = r === 0 ? 1 : Math.max(8, Math.ceil(2 * Math.PI * r / step));
+            for (let i = 0; i < n; i++) {
+              const t = i / n * 2 * Math.PI;
+              c.pcb.x = w.x + r * Math.cos(t); c.pcb.y = w.y + r * Math.sin(t);
+              if (okAt(c, placed, gap, margin)) { best = { x: c.pcb.x, y: c.pcb.y, rot, r }; break; }
+            }
+          }
+          if (best && rot === w.rot && best.r < 2) break;   // close to its spot already: keep its orientation
+          if (best && rot !== w.rot) break;
+        }
+        if (best) { c.pcb.x = best.x; c.pcb.y = best.y; c.pcb.rot = best.rot; }
+        else { c.pcb.x = w.x; c.pcb.y = w.y; c.pcb.rot = w.rot; failed.push(c.ref); }
+        placed.push(c);
+      }
+      return failed;
+    }
+    let failed = [];
+    for (const gap of [1.0, 0.6, 0.3]) { failed = legalise(gap); if (!failed.length) break; }
+    // nudge plug connectors back flush with their edge after the search
+    for (const e of edgeParts) if (e.plug) {
+      const q = fpBox(e.c);
+      if (e.side === 'left') e.c.pcb.x -= q[0]; if (e.side === 'right') e.c.pcb.x += W - q[2];
+      if (e.side === 'top') e.c.pcb.y -= q[1]; if (e.side === 'bottom') e.c.pcb.y += H - q[3];
+      const n = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[e.side];
+      for (let t = 0; t < 80 && !boxInside(e.c, poly, -0.05); t++) { e.c.pcb.x += n[0] * 0.25; e.c.pcb.y += n[1] * 0.25; }
     }
     for (const c of cs) { c.pcb.x = +(Math.round(c.pcb.x / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round(c.pcb.y / 0.05) * 0.05).toFixed(3); }
     const area = cs.reduce((a, c) => { const b = fpBox(c); return a + (b[2] - b[0]) * (b[3] - b[1]); }, 0);
