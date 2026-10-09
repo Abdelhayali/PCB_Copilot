@@ -261,14 +261,58 @@ const App = (() => {
     } catch (e) { toast(e.message); }
   }
   // AI placement: the copilot plans the floor plan with place_footprints, then routes and fixes what is left
-  function aiPlace() {
+  // AI place: ONE model request (compact parts + nets list → JSON floor plan), then legalise + short polish + route.
+  // Much faster than a tool-calling conversation, and works with small / local models.
+  let aiPlacing = false;
+  // pull {"placements":[…]} out of a model reply (reasoning text, code fences or braces before it are ignored)
+  function parsePlan(text) {
+    const t = String(text || '').replace(/<think>[\s\S]*?<\/think>/g, '');
+    for (let i = t.lastIndexOf('"placements"'); i >= 0; i = t.lastIndexOf('"placements"', i - 1)) {
+      const s = t.lastIndexOf('{', i); if (s < 0) break;
+      let depth = 0, end = -1, str = false;
+      for (let k = s; k < t.length; k++) { const ch = t[k]; if (ch === '"' && t[k - 1] !== '\\') str = !str; if (str) continue; if (ch === '{') depth++; else if (ch === '}' && !--depth) { end = k; break; } }
+      if (end > s) { try { return JSON.parse(t.slice(s, end + 1)); } catch (e) { } }
+      if (i === 0) break;
+    }
+    const a = t.match(/\[\s*\{[\s\S]*?\}\s*\]/g);
+    if (a) for (const x of a.reverse()) { try { const v = JSON.parse(x); if (Array.isArray(v) && v.length && v[0].ref) return { placements: v }; } catch (e) { } }
+    return null;
+  }
+  async function aiPlace() {
     const S = Model.S;
     if (!S.components.length) { toast('Add parts first'); return; }
-    if (!AI.settings.anthropicKey && !AI.settings.oaiModels) { toast('AI place needs a model (⚙ Settings) — using quick place instead'); runPcb(boardWH(), false); return; }
-    showView('pcb'); setMode('agent');
-    const hasBoard = S.board.w > 0 && Pcb.placed().length;
-    send((hasBoard ? '' : 'First call generate_pcb with route: false to create the board and footprints. ') +
-      'Then auto-place the PCB for the easiest routing and a compact layout: read get_pcb_layout, plan the floor plan (follow the PCB PLACEMENT guidance: connectors on edges, decoupling caps next to the power pins they serve, crystal at the MCU, USB pair short and straight, room around fine-pitch ICs, functional groups along the signal flow), apply it with ONE place_footprints call for all parts, then route_pcb. If nets stay unrouted, move the parts around them and route again, or call optimize_pcb. Finish with run_drc and a two-line summary.');
+    const quick = () => runRouter({ place: S.board.w > 0 ? { w: S.board.w, h: S.board.h } : { fit: true }, opt: { noRoute: true } }).then(() => { Pcb.fit(); toast('Placed (quick place) — press Route'); });
+    if (!AI.settings.anthropicKey && !AI.settings.oaiModels) { toast('AI place needs a model (⚙ Settings) — using quick place instead'); return quick(); }
+    if (aiPlacing) return;
+    aiPlacing = true; showView('pcb');
+    try {
+      if (!(S.board.w > 0) || !Pcb.placed().length) await runRouter({ place: { fit: true }, opt: { noRoute: true } });   // board + footprints first
+      const lay = await Engine.exec('get_pcb_layout', { pins: false });
+      const idx = Model.pinIndex(), nets = {};
+      for (const [n, keys] of Object.entries(Model.S.nets)) { const refs = [...new Set(keys.map(k => k.split('.')[0]))]; if (refs.length >= 2) nets[n] = refs; }
+      const parts = lay.footprints.map(f => `${f.ref} | ${f.value} | ${f.type} | ${f.size[0]}x${f.size[1]} mm | ${Pcb.padsOf(Model.comp(f.ref), idx).length} pins${f.edge ? ' | CONNECTOR: must sit on a board edge' : ''}`).join('\n');
+      const prompt = `Board: ${lay.board.w} x ${lay.board.h} mm, origin top-left, x right, y down. Keep every part fully inside, 1 mm from the edges, 0.5 mm apart.\n\nParts (ref | value | type | size | pins):\n${parts}\n\nNets (which parts connect):\n${Object.entries(nets).map(([n, r]) => `${n}: ${r.join(' ')}`).join('\n')}\n\n` +
+        `Plan the placement like an experienced PCB layout engineer so routing is short and easy:\n- connectors on a board edge (give "edge": left|right|top|bottom), USB / power input together with the regulator\n- the biggest IC / module near the centre\n- each decoupling capacitor right next to the IC it serves (within ~2 mm)\n- crystals next to the MCU clock pins, LEDs with their resistors, buttons with their pull-ups\n- parts that share nets close together, grouped by function along the signal flow\n` +
+        `Reply with JSON only, no explanation: {"placements":[{"ref":"U1","x":20,"y":15,"rot":0},{"ref":"J1","x":2,"y":15,"rot":90,"edge":"left"}]} — x, y = part centre in mm, rot 0|90|180|270. Include every part.`;
+      toast('✦ AI is planning the layout…', 120000);
+      // Qwen-style models: skip the long hidden reasoning for this structured job
+      const noThink = /qwen|deepseek-r|qwq/i.test(AI.settings.model) ? '\n/no_think' : '';
+      const text = await AI.complete('You are an expert PCB layout engineer. You answer with JSON only.', prompt + noThink, { json: true, maxTokens: 8192 });
+      window.__lastAiPlace = text;
+      const plan = parsePlan(text);
+      const list = plan && Array.isArray(plan.placements) ? plan.placements.filter(p => p && Model.comp(p.ref) && isFinite(+p.x) && isFinite(+p.y)) : [];
+      if (list.length < Math.max(1, lay.footprints.length * 0.6)) throw new Error('the model did not return a usable placement — using quick place instead');
+      for (const p of list) { p.x = +p.x; p.y = +p.y; p.rot = [0, 90, 180, 270].includes(+p.rot) ? +p.rot : 0; if (!['left', 'right', 'top', 'bottom'].includes(p.edge)) delete p.edge; }
+      const r = await Engine.exec('place_footprints', { placements: list, refine: true });
+      toast(`✦ AI placed ${r.placed} parts${r.overlaps.length ? ` (${r.overlaps.length} overlaps resolved)` : ''} — routing…`, 5000);
+      const rr = await runRouter({ opt: {} }); Pcb.fit();
+      const ro = rr && rr.routing;
+      toast(ro ? `✦ AI place + route: ${ro.routed}/${ro.total} nets${ro.failed && ro.failed.length ? ' — unrouted: ' + ro.failed.join(', ') + ' (try ✨ Optimize)' : ''}` : 'AI place done', 8000);
+      showDrc();
+    } catch (e) {
+      toast('AI place: ' + e.message, 6000);
+      if (/usable placement/.test(e.message)) await quick().catch(() => { });
+    } finally { aiPlacing = false; }
   }
 
   // ---------- Gerber export: DRC first, then download or fix ----------

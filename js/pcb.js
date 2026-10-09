@@ -167,7 +167,10 @@ const Pcb = (() => {
   function edgeInfo(c) {
     const lib = c.lcsc && Model.S.lib && Model.S.lib[c.lcsc];
     const text = [c.value, c.footprint, lib && lib.name, lib && lib.package, lib && lib.footprint && lib.footprint.name].filter(Boolean).join(' ');
-    const plug = PLUG_RE.test(text);
+    // chips whose names mention USB etc. (USBLC6 ESD arrays, CH340 USB-UART, …) are not connectors
+    const chip = /\b(SOT|SOD|SOIC|SOP|SSOP|TSSOP|MSOP|QFN|DFN|QFP|LQFP|TQFP|BGA|WLCSP|SC-?70|SC-?88|UDFN)[-_\d]|USBLC|CH3[34]\d|CP210|FT232|ESD|TVS/i.test(text);
+    const plug = !chip && PLUG_RE.test(text);
+    if (chip && c.type !== 'connector' && !/^(J|CN|P)\d+$/i.test(c.ref)) return null;
     if (!plug && !(c.type === 'connector' || CONN_RE.test(text) || /^(J|CN|USB|P)\d+$/i.test(c.ref))) return null;
     let front = null;
     if (plug) {
@@ -216,7 +219,7 @@ const Pcb = (() => {
   function autoPlace(opt = {}) {
     const S = Model.S;
     const given = +opt.w > 0 && +opt.h > 0;
-    if (opt.fit || (!given && !(S.board.w > 0))) return autoSize(opt);
+    if (opt.fit || (!given && !(S.board.w > 0))) return opt.compact === false ? autoSize(opt) : compactPlace(opt);
     if (given && (Math.abs(+opt.w - S.board.w) > 1e-6 || Math.abs(+opt.h - S.board.h) > 1e-6)) {
       // the user typed a new size: scale a custom outline with it, keep the shape type
       const sx = S.board.w ? +opt.w / S.board.w : 1, sy = S.board.h ? +opt.h / S.board.h : 1;
@@ -253,7 +256,18 @@ const Pcb = (() => {
     }
     const free = cs.filter(c => !lock.has(c));
     // 2b) arrange for routability: anneal on wire length with fan-out room around each part, then legalise around it
-    if (opt.anneal !== false) anneal({ time_s: opt.anneal_s ?? 4, seed: opt.seed, fixed: new Set(edgeParts.map(e => e.c.ref)) });
+    // several annealing runs from the same start (different seeds); the lowest-cost arrangement wins
+    if (opt.anneal !== false) {
+      const fx = new Set(edgeParts.map(e => e.c.ref)), tries = Math.max(1, opt.tries ?? 3), base = cs.map(c => JSON.parse(JSON.stringify(c.pcb)));
+      let bestS = null, bestC = Infinity;
+      for (let k = 0; k < tries; k++) {
+        cs.forEach((c, i) => { c.pcb = JSON.parse(JSON.stringify(base[i])); });
+        const r = anneal({ time_s: opt.anneal_s ?? 2, seed: (opt.seed ?? 7) + k * 7919, fixed: fx, compact: opt.compact || 0 });
+        const cst = r.cost_after ?? r.cost ?? 0;
+        if (cst < bestC) { bestC = cst; bestS = cs.map(c => JSON.parse(JSON.stringify(c.pcb))); }
+      }
+      if (bestS) cs.forEach((c, i) => { c.pcb = bestS[i]; });
+    }
     // 3) legalise: place parts one by one (connectors first, then biggest first) at the nearest free spot
     //    to where the schematic wants them — spiral search, inside the outline, no overlaps.
     const want = new Map(cs.map(c => [c, { x: c.pcb.x, y: c.pcb.y, rot: c.pcb.rot }]));
@@ -342,6 +356,58 @@ const Pcb = (() => {
   }
 
   // board sized to the parts (first placement, or auto-size requested)
+  // Board sized to the parts, minimum area: start roomy, arrange (several annealing runs pulling connected parts together,
+  // big ICs to the centre, connectors on edges), then shrink width and height step by step while the placement stays
+  // legal (no overlaps, fan-out room kept, everything on the board).
+  function compactPlace(opt = {}) {
+    const S = Model.S, t0 = Date.now(), clone = o => JSON.parse(JSON.stringify(o)), limit = (opt.time_s ?? 30) * 1000;
+    autoSize(opt);
+    const rect = !S.board.shape || !S.board.shape.type || S.board.shape.type === 'rect' || S.board.shape.type === 'rounded';
+    const scaleXY = (fx, fy) => {
+      const cx = S.board.w / 2, cy = S.board.h / 2;
+      for (const c of placed()) { c.pcb.x = cx * fx + (c.pcb.x - cx) * fx; c.pcb.y = cy * fy + (c.pcb.y - cy) * fy; }
+      S.board.w = +(S.board.w * fx).toFixed(2); S.board.h = +(S.board.h * fy).toFixed(2);
+      if (S.board.shape && S.board.shape.pts) S.board.shape.pts = S.board.shape.pts.map(q => [+(q[0] * fx).toFixed(3), +(q[1] * fy).toFixed(3)]);
+    };
+    const legal = () => !overlaps(placed(), 0.35).length && placed().every(c => boxInside(c, boardPoly(), -0.05));
+    const snap = () => ({ board: clone(S.board), place: placed().map(c => [c.ref, clone(c.pcb)]) });
+    const restore = s => { S.board = clone(s.board); for (const [ref, q] of s.place) { const c = Model.comp(ref); if (c) c.pcb = clone(q); } };
+    // board aspect decides which edges the connectors land on: try the natural one, square and turned 90°
+    const W0 = S.board.w, H0 = S.board.h, A0 = W0 * H0, sq = Math.sqrt(A0);
+    const aspects = rect ? [[W0, H0], [sq, sq], [H0, W0]] : [[W0, H0]];
+    let winner = null, steps = 0;
+    aspects.forEach(([aw, ah], vi) => {
+      const tEnd = t0 + limit * (vi + 1) / aspects.length;
+      S.board.w = +(aw * 1.3).toFixed(1); S.board.h = +(ah * 1.3).toFixed(1); if (S.board.shape && S.board.shape.pts) scaleXY(1, 1);
+      fitInside(Object.assign({}, opt, { tries: opt.tries ?? 3, compact: 0.6, anneal_s: opt.anneal_s ?? 0.9, seed: 11 + vi * 101 }));
+      legalisePlacement(0.4);
+      let best = legal() ? snap() : null, n = 0;
+      const fails = { x: 0, y: 0 };
+      for (let k = 0; k < 40 && best && (fails.x < 2 || fails.y < 2) && Date.now() < tEnd; k++) {
+        const ax = fails.x >= 2 ? 'y' : fails.y >= 2 ? 'x' : (k % 2 ? 'y' : 'x'), f = fails[ax] ? 0.97 : 0.92;
+        scaleXY(ax === 'x' ? f : 1, ax === 'y' ? f : 1);
+        anneal({ time_s: 0.6, hot: 0.2, seed: 500 + k * 31 + vi, compact: 0.6 });
+        legalisePlacement(0.4);
+        if (legal()) { best = snap(); n++; } else { restore(best); fails[ax]++; }
+      }
+      if (best) { const b = unionBox(placed()), area = (b[2] - b[0]) * (b[3] - b[1]); if (!winner || area < winner.area) { winner = { area, s: best }; steps = n; } }
+    });
+    if (winner) restore(winner.s);
+    // trim a rectangular board to the parts (+ edge margin), keeping connectors flush with their edges
+    if (rect && winner) {
+      const R = rules(), m = Math.max(1, R.edgeClearance + 0.7), b = unionBox(placed()), pre = snap();
+      const x0 = Math.max(0, b[0] - m), y0 = Math.max(0, b[1] - m), x1 = Math.min(S.board.w, b[2] + m), y1 = Math.min(S.board.h, b[3] + m);
+      for (const c of placed()) { c.pcb.x -= x0; c.pcb.y -= y0; }
+      S.board.w = +(x1 - x0).toFixed(1); S.board.h = +(y1 - y0).toFixed(1);
+      legalisePlacement(0.4);
+      if (!legal()) restore(pre);   // trimming must never break the placement
+    }
+    const hadHoles = (S.pcb.holes || []).filter(h => h.auto), holeD = hadHoles.length ? hadHoles[0].d : 0;
+    S.pcb = { traces: [], vias: [], routed: {}, pours: (S.pcb.pours || []).filter(pr => pr.whole), holes: [] };
+    if (holeD) addMountingHoles({ diameter: holeD });
+    const cs = placed(), still = overlaps(cs, 0).map(([a, b]) => `${a.ref}/${b.ref}`), outside = cs.filter(c => !boxInside(c, boardPoly(), 0)).map(c => c.ref);
+    return { board: S.board, placed: cs.length, compacted: steps, fits: !still.length && !outside.length, overlapping: still.length ? still : undefined, outside: outside.length ? outside : undefined, seconds: +((Date.now() - t0) / 1000).toFixed(1) };
+  }
   function autoSize(opt = {}) {
     const S = Model.S, cs = S.components.filter(c => Lib.footprint(c.footprint));
     if (!cs.length) throw new Error('No components with footprints to place');
@@ -496,10 +562,11 @@ const Pcb = (() => {
     let r = routeOnce(opt);
     // Copper pours: pads joined through a pour before routing can be cut off once tracks split the pour into
     // islands. Re-check the poured nets and connect the pieces (tracks, or vias down to the other layer's pour).
-    if ((S.pcb.pours || []).length && !opt.onlyNets) {
-      const poured = new Set(S.pcb.pours.map(p => p.net));
+    // Also a safety net for every net: the exact geometry decides what is connected, so anything the grid router
+    // believed connected but is not gets routed again here.
+    if (!opt.onlyNets) {
       for (let k = 0; k < 2; k++) {
-        const conn = connectivity(), broken = Object.keys(conn).filter(n => poured.has(n) && !conn[n].complete);
+        const conn = connectivity(), broken = Object.keys(conn).filter(n => !conn[n].complete && !(r.failed || []).includes(n) || ((S.pcb.pours || []).some(p => p.net === n) && !conn[n].complete));
         if (!broken.length) break;
         const left = (opt.time_limit_s ?? rules().routeTime ?? 90) - (Date.now() - t0) / 1000;
         routeOnce(Object.assign({}, opt, { keep: true, keepAll: true, onlyNets: broken, onBest: null, time_limit_s: Math.max(8, Math.min(40, left)) }));
@@ -1358,12 +1425,12 @@ const Pcb = (() => {
       let o = orients.findIndex(q => q.rot === (c.pcb.rot || 0) && q.side === (c.pcb.side === 'B' ? 'B' : 'F')); if (o < 0) o = 0;
       const nb = new Set(orients[0].pads.map(q => q[0]));
       const margin = Math.min(3, 0.4 + pitch * Math.sqrt(pins) * 0.6 + (boost[c.ref] || 0));
-      return { c, x: c.pcb.x, y: c.pcb.y, o, orients, fixed: fixed(c), nets: [...nb], margin };
+      return { c, x: c.pcb.x, y: c.pcb.y, o, orients, fixed: fixed(c), nets: [...nb], margin, pins };
     });
     // net → [(part index, pad index list)] ; power nets weigh less (wide / poured), large nets get the usual HPWL correction
     const netPins = netNames.map(() => []);
     P.forEach((p, i) => { const by = {}; p.orients[0].pads.forEach((q, k) => (by[q[0]] = by[q[0]] || []).push(k)); for (const n in by) netPins[n].push([i, by[n]]); });
-    const netW = netNames.map((n, i) => { const k = netPins[i].reduce((a, q) => a + q[1].length, 0); if (k < 2) return 0; return (Model.isGround(n) ? 0.25 : Model.isPower(n) ? 0.45 : 1) * (1 + 0.05 * Math.max(0, k - 3)) * (1 + (opt.netBoost && opt.netBoost[n] || 0)); });
+    const netW = netNames.map((n, i) => { const k = netPins[i].reduce((a, q) => a + q[1].length, 0); if (k < 2) return 0; return (Model.isGround(n) ? 0.25 : Model.isPower(n) ? 0.45 : 1) * (k === 2 ? 1.6 : 1 + 0.05 * Math.max(0, k - 3)) * (1 + (opt.netBoost && opt.netBoost[n] || 0)); });
     const hp = new Float64Array(netNames.length);
     const netHP = n => {
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
@@ -1383,11 +1450,17 @@ const Pcb = (() => {
     };
     const ovI = (i, j) => { const w = Math.min(BX[i * 4 + 2], BX[j * 4 + 2]) - Math.max(BX[i * 4], BX[j * 4]); if (w <= 0) return 0; const h = Math.min(BX[i * 4 + 3], BX[j * 4 + 3]) - Math.max(BX[i * 4 + 1], BX[j * 4 + 1]); return h > 0 ? w * h : 0; };
     let OV = 4; const OUT = 60;
-    const partCost = i => { let s = OUT * outside(P[i]); for (let j = 0; j < P.length; j++) if (j !== i) s += OV * ovI(i, j); return s; };
+    // big ICs are pulled to the board centre (the rest gathers around them)
+    const cx0 = W / 2, cy0 = H / 2, CW = P.map(p => opt.center !== false && p.pins >= 8 ? 0.12 * Math.sqrt(p.pins / 8) : 0);
+    const ctr = i => CW[i] ? CW[i] * Math.hypot((BX[i * 4] + BX[i * 4 + 2]) / 2 - cx0, (BX[i * 4 + 1] + BX[i * 4 + 3]) / 2 - cy0) : 0;
+    const partCost = i => { let s = OUT * outside(P[i]) + ctr(i); for (let j = 0; j < P.length; j++) if (j !== i) s += OV * ovI(i, j); return s; };
+    // compactness: perimeter of the box around all parts (used when the board is sized to the parts)
+    const CP = opt.compact || 0;
+    const bbPer = () => { if (!CP) return 0; let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity; for (let i = 0; i < P.length; i++) { x0 = Math.min(x0, BX[i * 4]); y0 = Math.min(y0, BX[i * 4 + 1]); x1 = Math.max(x1, BX[i * 4 + 2]); y1 = Math.max(y1, BX[i * 4 + 3]); } return CP * ((x1 - x0) + (y1 - y0)); };
     let wire = 0; for (let n = 0; n < netNames.length; n++) { hp[n] = netHP(n); wire += netW[n] * hp[n]; }
-    const penAll = () => { let s = 0; for (let i = 0; i < P.length; i++) s += OUT * outside(P[i]); for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) s += OV * ovI(i, j); return s; };
-    let pen = penAll();
-    const startCost = wire + pen;
+    const penAll = () => { let s = 0; for (let i = 0; i < P.length; i++) s += OUT * outside(P[i]) + ctr(i); for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) s += OV * ovI(i, j); return s; };
+    let pen = penAll(), comp = bbPer();
+    const startCost = wire + pen + comp;
     const mov = P.map((p, i) => i).filter(i => !P[i].fixed);
     if (!mov.length) return { moved: 0, cost: startCost };
     // one move: change parts, recompute the touched nets and their penalties
@@ -1399,7 +1472,8 @@ const Pcb = (() => {
       for (const i of list) upd(i);
       const nh = new Map(); let after = 0; for (const n of nets) { const v = netHP(n); nh.set(n, v); after += netW[n] * v; }
       let pa = 0; for (const i of list) pa += partCost(i); if (list.length === 2) pa -= OV * ovI(list[0], list[1]);
-      return { d: (after - before) + (pa - pb), commit: () => { for (const [n, v] of nh) hp[n] = v; wire += after - before; pen += pa - pb; }, undo };
+      const nc = CP ? bbPer() : 0;
+      return { d: (after - before) + (pa - pb) + (nc - comp), commit: () => { for (const [n, v] of nh) hp[n] = v; wire += after - before; pen += pa - pb; comp = nc; }, undo };
     };
     const diag = Math.hypot(W, H);
     const propose = T01 => {
@@ -1420,18 +1494,18 @@ const Pcb = (() => {
     let sum = 0, cnt = 0;
     for (let k = 0; k < 60; k++) { const m = propose(1); if (!m) continue; if (m.d > 0) { sum += m.d; cnt++; } m.undo(); }
     const T0 = Math.max(0.05, (cnt ? sum / cnt : 1) * (opt.hot ?? 1.0));
-    let T = T0, moves = 0, best = { cost: wire + pen, s: P.map(p => [p.x, p.y, p.o]) };
+    let T = T0, moves = 0, best = { cost: wire + pen + comp, s: P.map(p => [p.x, p.y, p.o]) };
     const perT = Math.max(150, 30 * mov.length);
     while (Date.now() - t0 < limit && T > T0 * 2e-4) {
       for (let k = 0; k < perT; k++) {
         const m = propose(Math.min(1, T / T0)); if (!m) continue; moves++;
-        if (m.d <= 0 || rnd() < Math.exp(-m.d / T)) { m.commit(); if (wire + pen < best.cost - 1e-9) best = { cost: wire + pen, s: P.map(p => [p.x, p.y, p.o]) }; }
+        if (m.d <= 0 || rnd() < Math.exp(-m.d / T)) { m.commit(); if (wire + pen + comp < best.cost - 1e-9) best = { cost: wire + pen + comp, s: P.map(p => [p.x, p.y, p.o]) }; }
         else m.undo();
       }
       T *= 0.9;
       // overlaps become more expensive as it cools, so the result needs little legalising
       OV = Math.min(40, OV * 1.06); pen = penAll();
-      if (wire + pen < best.cost - 1e-9 || best.pen > 0) { best = { cost: wire + pen, pen: pen, s: P.map(p => [p.x, p.y, p.o]) }; }
+      if (wire + pen + comp < best.cost - 1e-9 || best.pen > 0) { best = { cost: wire + pen + comp, pen: pen, s: P.map(p => [p.x, p.y, p.o]) }; }
     }
     // write back the best state
     best.s.forEach(([x, y, o], i) => { const p = P[i]; if (p.fixed) return; const q = p.orients[o]; p.c.pcb.x = +(Math.round(x / 0.05) * 0.05).toFixed(3); p.c.pcb.y = +(Math.round(y / 0.05) * 0.05).toFixed(3); p.c.pcb.rot = q.rot; if (q.side === 'B') p.c.pcb.side = 'B'; else delete p.c.pcb.side; });
@@ -1501,7 +1575,7 @@ const Pcb = (() => {
         if (grow && stuck >= 4) { scaleBoard(1.08); stuck = 0; desc = `enlarge board to ${S.board.w}×${S.board.h} mm, re-arrange`; }
         if (!desc && it % 2 === 0) {
           // a fresh global arrangement (different seed) inside the same outline
-          fitInside({ anneal_s: Math.min(5, left() / 4000), seed: 3000 + it * 104729 });
+          fitInside({ anneal_s: Math.min(5, left() / 4000), seed: 3000 + it * 104729, tries: 1 });
           applyPressure(boost, netBoost);
           desc = 'new arrangement of all parts';
         } else {

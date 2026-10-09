@@ -135,13 +135,13 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
     }
     return out;
   }
-  async function callModel(model, system, hist, tools, signal) {
+  async function callModel(model, system, hist, tools, signal, extra = {}) {
     if (model.provider === 'anthropic') {
       if (!settings.anthropicKey) throw new Error('No Anthropic API key — open ⚙ Settings to add one.');
       const res = await fetch('https://api.anthropic.com/v1/messages', {
         method: 'POST', signal,
         headers: { 'content-type': 'application/json', 'x-api-key': settings.anthropicKey, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' },
-        body: JSON.stringify(Object.assign({ model: model.id, max_tokens: +settings.maxTokens || 8192, system, messages: toAnthropic(hist) }, tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })) } : {}))
+        body: JSON.stringify(Object.assign({ model: model.id, max_tokens: extra.maxTokens || +settings.maxTokens || 8192, system, messages: toAnthropic(hist) }, tools.length ? { tools: tools.map(t => ({ name: t.name, description: t.description, input_schema: t.input_schema })) } : {}))
       });
       const j = await res.json().catch(() => ({}));
       if (!res.ok) throw new Error(`Anthropic API ${res.status}: ${j.error?.message || res.statusText}`);
@@ -156,7 +156,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
     if (settings.oaiKey) headers.authorization = 'Bearer ' + settings.oaiKey;
     const res = await fetch(base + '/chat/completions', {
       method: 'POST', signal, headers,
-      body: JSON.stringify(Object.assign({ model: model.id, messages: toOpenAI(hist, system) }, tools.length ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) } : {}))
+      body: JSON.stringify(Object.assign({ model: model.id, messages: toOpenAI(hist, system) }, extra.body || {}, tools.length ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) } : {}))
     });
     const j = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(`API ${res.status}: ${j.error?.message || JSON.stringify(j).slice(0, 300) || res.statusText}`);
@@ -331,10 +331,21 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
       else hooks.onError(e.message);
     } finally { controller = null; }
   }
+  // one plain request (no tools, no chat history) — used for quick structured jobs like AI placement
+  async function complete(system, text, opts = {}) {
+    const own = new AbortController(), t = setTimeout(() => own.abort(), 180000);
+    // JSON mode + a generous output limit (some servers stop at a small default); retried without JSON mode if refused
+    const json = opts.json && currentModel().provider !== 'anthropic';
+    try {
+      try { const r = await callModel(currentModel(), system, [{ role: 'user', text }], [], own.signal, { maxTokens: opts.maxTokens, body: Object.assign({ max_tokens: opts.maxTokens || 8192 }, json ? { response_format: { type: 'json_object' } } : {}) }); return r.text || ''; }
+      catch (e) { if (!json || own.signal.aborted) throw e; const r = await callModel(currentModel(), system, [{ role: 'user', text }], [], own.signal, { body: { max_tokens: opts.maxTokens || 8192 } }); return r.text || ''; }
+    }
+    finally { clearTimeout(t); }
+  }
   const stop = () => controller && controller.abort();
   const busy = () => !!controller;
   const reset = () => { history = []; lastIn = null; persist(); };
 
   const partsApi = Engine.partsApi, loadPart = Engine.loadPart;
-  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
+  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, complete, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
 })();
