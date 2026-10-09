@@ -248,7 +248,7 @@ input.warnin { border-color: var(--warn); }
 ul.cutl { padding-left: 4px; list-style: none; font-size: 12px; margin: 4px 0; }
 ul.cutl li { padding: 2px 0; }
 #encTools button.on { border-color: var(--accent); color: #fff; }
-/* EasyEDA-style PCB editor */
+/* PCB editor */
 #pcbSvg { background: #000; }
 .tsep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
 #pcbOverlay { position: absolute; inset: 0; pointer-events: none; }

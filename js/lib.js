@@ -147,7 +147,7 @@ const Lib = (() => {
     draw: () => '<path d="M-30 0H-14M14 0H30M-22 -8V-2M-25 -5H-19"/><circle class="body" cx="0" cy="0" r="14"/><path d="M-6 -6V6M0 -9V9M6 -6V6"/>'
   });
 
-  // ---------- database parts (JLCPCB/LCSC + EasyEDA), definitions live in the design's lib ----------
+  // ---------- database parts (JLCPCB/LCSC catalogue), definitions live in the design's lib ----------
   const partDef = c => (typeof Model !== 'undefined' && Model.S.lib && Model.S.lib[c.lcsc]) || null;
   const partGeo = c => partGeoDef(partDef(c));
   function partGeoDef(d) {

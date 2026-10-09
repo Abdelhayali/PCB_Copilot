@@ -9,6 +9,7 @@ const Engine = (() => {
     myLib: () => [],           // user's saved parts
     savePart: async () => { }, // persist a part to My Library
     ui: () => { },             // ui('fit-sch') | ui('show-pcb')
+    searchKey: null,           // optional Brave Search API key (else DuckDuckGo)
     route: null,               // optional async router (browser: Web Worker): ({ place, opt }) => { placement, routing }
   };
 
@@ -61,6 +62,8 @@ const Engine = (() => {
     { name: 'run_erc', ro: true, description: 'Run the electrical rule check: unconnected pins, single-pin nets, missing ground, overlapping symbols.', input_schema: { type: 'object', properties: {} } },
     { name: 'clear_design', description: 'Delete everything in the current project and start an empty design.', input_schema: { type: 'object', properties: {} } },
     { name: 'generate_pcb', description: 'Create the PCB: place all footprints on a board (based on schematic positions) and autoroute with a 2-layer router. Returns routing statistics.', input_schema: { type: 'object', properties: { board_width: { type: 'number', description: 'mm, optional (auto-sized if omitted)' }, board_height: { type: 'number', description: 'mm, optional' }, route: { type: 'boolean', description: 'default true' } } } },
+    { name: 'web_search', ro: true, web: true, description: 'Search the internet (datasheets, application notes, reference designs, prices, availability, how-tos, anything else you need). Returns titles, URLs and snippets; read pages with web_fetch.', input_schema: { type: 'object', required: ['query'], properties: { query: { type: 'string' }, max_results: { type: 'number', description: 'default 8, max 20' } } } },
+    { name: 'web_fetch', ro: true, web: true, description: 'Read a web page or PDF (e.g. a datasheet) as text. Long documents are paged: call again with offset = previous offset + returned length while "more" is true.', input_schema: { type: 'object', required: ['url'], properties: { url: { type: 'string' }, offset: { type: 'number' }, max_chars: { type: 'number', description: 'default 12000, max 40000' } } } },
     { name: 'use_database_parts', description: 'Give built-in schematic symbols (resistor, LED, transistor, regulator, ...) the footprint and pinout of a real JLCPCB part (Basic parts where possible). Without refs: every built-in part that still uses a generated footprint.', input_schema: { type: 'object', properties: { refs: { type: 'array', items: { type: 'string' } } } } },
     { name: 'match_jlcpcb_parts', description: 'Find JLCPCB/LCSC part numbers for every component value (e.g. 4.7k 0603, 22uF 0805) for an assembly BOM; prefers in-stock Basic parts with the same package.', input_schema: { type: 'object', properties: { overwrite: { type: 'boolean' } } } },
     { name: 'get_enclosure', ro: true, description: 'The 3D-printable enclosure fitted to the PCB: outer size, heights, standoffs, every cutout (automatic ones for edge connectors / LEDs / buttons and custom ones), estimated part heights and all parameters.', input_schema: { type: 'object', properties: {} } },
@@ -191,6 +194,8 @@ const Engine = (() => {
       case 'rename_net': return Model.mutate(() => { Model.renameNet(input.from, input.to); return { ok: true }; });
       case 'auto_layout': Model.mutate(() => Model.autoLayout()); env.ui('fit-sch'); return { ok: true };
       case 'clear_design': Model.mutate(() => Model.clear()); return { ok: true };
+      case 'web_search': return api('/api/web/search?' + new URLSearchParams({ q: input.query || '', n: input.max_results || 8 }), { headers: env.searchKey && env.searchKey() ? { 'X-Brave-Key': env.searchKey() } : {} });
+      case 'web_fetch': { const r = await api('/api/web/fetch?' + new URLSearchParams({ url: input.url || '', offset: input.offset || 0, length: input.max_chars || 12000 })); return r; }
       case 'use_database_parts': return useDatabaseParts(input.refs);
       case 'match_jlcpcb_parts': return matchJlcpcb(!!input.overwrite);
       case 'get_enclosure': { const d = Enclosure.describe(); env.ui('show-enc'); return d; }

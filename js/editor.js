@@ -28,7 +28,7 @@ const PartEditor = (() => {
     def.pins = def.pins || []; def.footprint = def.footprint || { name: 'custom', pads: [], body: null };
     if (!def.key) def.key = opts.key || newKey(def.name);
     $('#edTitle').textContent = isNew ? 'New part' : 'Edit part';
-    $('#edKey').textContent = def.key + (/^C\d+$/.test(def.key) ? ' · database part (JLCPCB/LCSC, EasyEDA library)' : '');
+    $('#edKey').textContent = def.key + (/^C\d+$/.test(def.key) ? ' · database part (JLCPCB/LCSC)' : '');
     $('#edName').value = def.name || ''; $('#edPrefix').value = def.prefix || 'U'; $('#edValue').value = def.value || '';
     $('#edSaveLib').checked = opts.saveLib !== false;
     $('#edPlace').classList.toggle('hidden', !opts.allowPlace);

@@ -1,8 +1,8 @@
 'use strict';
-// EasyEDA-style PCB editor: Layers panel, PCB Tools (select / track / via / measure),
+// PCB editor: Layers panel, PCB Tools (select / track / via / measure),
 // interactive routing with layer switching, live clearance check, track & via editing.
 const PcbView = (() => {
-  // EasyEDA default layer colours
+  // default layer colours
   const LAYERS = [
     { id: 'F', name: 'TopLayer', color: '#FF0000', copper: true },
     { id: 'B', name: 'BottomLayer', color: '#0000FF', copper: true },
@@ -48,7 +48,7 @@ const PcbView = (() => {
     svg.addEventListener('mousedown', down); svg.addEventListener('dblclick', dbl);
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
     svg.addEventListener('contextmenu', e => e.preventDefault());
-    // floating palettes (EasyEDA "PCB Tools" and "Layers")
+    // floating palettes ("PCB Tools" and "Layers")
     overlay = document.createElement('div'); overlay.id = 'pcbOverlay'; overlay.className = 'hidden';
     overlay.innerHTML = `
       <div id="pcbPalette" class="fpanel"><div class="fph">PCB Tools</div>
@@ -141,7 +141,7 @@ const PcbView = (() => {
     if (o) return { x: +o.x.toFixed(4), y: +o.y.toFixed(4), obj: o };
     return { x: +snapG(pt.x).toFixed(4), y: +snapG(pt.y).toFixed(4), obj: null };
   }
-  // EasyEDA-like bend: straight + 45° (or 90°, or any angle); '/' flips the order
+  // bend: straight + 45° (or 90°, or any angle); '/' flips the order
   function bend(a, b) {
     if (ui.angle === 'any') return [b];
     const dx = b[0] - a[0], dy = b[1] - a[1];
@@ -194,7 +194,7 @@ const PcbView = (() => {
     if (o && o.k === 'pad' && !o.p.drill && R.layer !== o.layer) { App.toast(`That SMD pad is on ${LNAME[o.layer]} — press ${o.layer === 'F' ? 'T' : 'B'} to switch layer (adds a via)`); return false; }
     for (const q of bend(last, [sp.x, sp.y])) R.pts.push(q);
     const same = Math.hypot(sp.x - last[0], sp.y - last[1]) < 1e-6;
-    // ending on copper (pad / via / track) finishes the track, like EasyEDA
+    // ending on copper (pad / via / track) finishes the track
     if (o && !(R.startObj && o.k === R.startObj.k && (o.p ? o.p === R.startObj.p : o.i === R.startObj.i) && R.pts.length <= 2)) return finishRoute();
     if (same && R.pts.length > 2) { R.pts.pop(); return finishRoute(); }
     return true;
@@ -323,7 +323,7 @@ const PcbView = (() => {
     const el = e.target.closest('[data-k],[data-ref]');
     if (el && el.dataset.k === 't') {
       const i = +el.dataset.i, sg = +el.dataset.s, t = Model.S.pcb.traces[i];
-      // grab a corner if the click is on one, otherwise the whole segment (EasyEDA-style drag)
+      // grab a corner if the click is on one, otherwise the whole segment
       const near = [sg - 1, sg].find(k => Math.hypot(t.pts[k][0] - pt.x, t.pts[k][1] - pt.y) <= Math.max(t.w * 0.7, 6 / vp.s));
       selectItem({ k: 't', i, s: sg });
       drag = { kind: near != null ? 'vertex' : 'seg', i, s: sg, v: near, orig: t.pts.map(q => q.slice()), x0: pt.x, y0: pt.y, moved: false };

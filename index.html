@@ -136,6 +136,8 @@
     <fieldset><legend>Behaviour</legend>
       <label>Max output tokens (Claude)<input id="sMax" type="number" min="1024" step="1024"></label>
       <label class="chk"><input id="sCtx" type="checkbox"> Send current design to the model with every request</label>
+      <label class="chk"><input id="sWeb" type="checkbox"> Let the AI search the internet and read web pages / PDF datasheets</label>
+      <label>Brave Search API key (optional — DuckDuckGo is used without one)<input id="sBrave" type="password" autocomplete="off" placeholder="BSA…"></label>
     </fieldset>
     <div class="row end"><button id="sCancel">Cancel</button><button id="sSave" class="primary">Save</button></div>
   </div>

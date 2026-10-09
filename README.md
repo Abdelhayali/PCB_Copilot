@@ -22,7 +22,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 |---|---|
 | ![Part editor](docs/media/part-editor.gif) | ![Edit a database part](docs/media/part-editor.png) |
 
-**EasyEDA-style PCB editor** — layers panel, PCB tools, hand routing with T/B layer switching (vias are added automatically)
+**PCB editor** — layers panel, PCB tools, hand routing with T/B layer switching (vias are added automatically)
 
 ![Hand routing with layer switching](docs/media/pcb-routing.gif)
 
@@ -54,7 +54,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Model picker** — Claude (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5) or any OpenAI-compatible endpoint (OpenAI, Gemini, Grok, OpenRouter, Ollama, LM Studio, llama.cpp, local servers).
 - **Three copilot modes** — **Agent** edits the design with tools, **Ask** is read-only review and Q&A, **Plan** writes a BOM + netlist plan you approve with **Execute plan**.
 - **Every palette part is a real JLCPCB part** — the schematic keeps clean symbols while the footprint and pinout come from a specific LCSC part (Basic parts where possible, LEDs by colour); **⇄ JLCPCB parts** converts older designs and **Export → BOM for JLCPCB assembly** matches part numbers for every value.
-- **Real component database** — JLCPCB/LCSC search with stock and price; exact pinouts and footprints from the EasyEDA library, cached locally.
+- **Real component database** — JLCPCB/LCSC search with stock and price; exact pinouts and real footprints for every part, cached locally.
 - **Part editor** — create or modify symbols and footprints (generators for SOIC/TSSOP/QFN/DIP/SOT…, draggable pads); saved to *My Library*.
 - **Projects** — saved on the server with autosave; same projects on PC and phone.
 - **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
@@ -66,9 +66,10 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Enclosure** — a third tab builds a 3D-printable case around the PCB (follows the board outline, height from the tallest part, screw standoffs on PCB mounting holes, automatic openings for USB/jacks and holes above LEDs/buttons, snap-fit lid with vents); exports STL (base + lid) and parametric OpenSCAD.
 - **Placement optimizer** — moves / rotates / swaps parts and re-routes until every net is connected (also available to the AI).
 - **Gerber export with DRC check** — problems pop up with *Fix on board / Re-route / Optimize / Download anyway*.
-- **EasyEDA-style PCB editor** — Layers panel (EasyEDA colours, show/hide, colour, active layer, dim inactive), PCB Tools (Select, Track `W`, Via `V`, Measure `M`), interactive 45°/90°/any-angle routing with T/B layer switching and automatic vias, live clearance check, track/via properties, segment delete; the autorouter keeps hand-routed tracks.
+- **PCB editor** — Layers panel (show/hide, colour, active layer, dim inactive), PCB Tools (Select, Track `W`, Via `V`, Measure `M`), interactive 45°/90°/any-angle routing with T/B layer switching and automatic vias, live clearance check, track/via properties, segment delete; the autorouter keeps hand-routed tracks.
 - **Design rules & DRC** — JLCPCB 2-layer defaults, editable per project (trace/power widths, per-net widths, clearance, vias, edge clearance, layers); exact-geometry DRC with markers on the board.
 - **Exports** — Gerber + Excellon drill (.zip), BOM (.csv), netlist (.net), schematic and PCB SVG, project JSON.
+- **Internet access for the AI** — `web_search` and `web_fetch` let any model (Claude, Gemini, local Qwen …) look up datasheets, application notes, prices and anything else, reading web pages and PDF datasheets; private / local addresses are blocked. Toggle in ⚙ Settings (DuckDuckGo by default, optional Brave Search key).
 - **Automation** — MCP server for Claude Code / Claude Desktop / Cursor, plus a REST + OpenAPI interface.
 
 ## Run
@@ -102,7 +103,7 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 
 ## Limitations
 
-- Palette parts (resistor, capacitor, LED, diodes, transistors, MOSFETs, regulator, op-amp, crystal, fuse, inductor, potentiometer, buzzer) are backed by real JLCPCB parts — their footprints and pinouts come from the JLCEDA/EasyEDA library and pins are matched by name, so e.g. the AMS1117's IN/OUT/tab and each LED's cathode land on the right pads. Pin headers / generic connectors and the push button keep standard generated footprints (a 4-pin tact switch's internal pairs are not documented in the library); if you pick a generated footprint from the Footprint menu, verify its pin order against your part's datasheet.
+- Palette parts (resistor, capacitor, LED, diodes, transistors, MOSFETs, regulator, op-amp, crystal, fuse, inductor, potentiometer, buzzer) are backed by real JLCPCB parts — their footprints and pinouts come from the part library and pins are matched by name, so e.g. the AMS1117's IN/OUT/tab and each LED's cathode land on the right pads. Pin headers / generic connectors and the push button keep standard generated footprints (a 4-pin tact switch's internal pairs are not documented in the library); if you pick a generated footprint from the Footprint menu, verify its pin order against your part's datasheet.
 - The router is a basic grid router (0.25 mm trace/clearance, no copper pours or rip-up-and-retry); dense boards may leave nets unrouted.
 - Touch editing (drag/pinch) on phones is not implemented yet.
 
@@ -121,9 +122,9 @@ cloudflared tunnel --url http://localhost:5173
 
 Always set a password when exposing the app: the LLM proxy gives access to your local model. The proxy only forwards to ports listed in `--allow-ports` (default `8080`).
 
-## Component database (JLCPCB / LCSC + EasyEDA)
+## Component database (JLCPCB / LCSC)
 
-Type a part number in the Parts search box (e.g. `ESP32-C3`, `AMS1117`, `CH340C`, `USB-C`) to search the JLCPCB/LCSC catalogue (stock, price, Basic/Extended). Click a result to place it: the exact pinout and real PCB footprint are loaded from the JLCEDA/EasyEDA official library (https://easyeda.com, https://lceda.cn).
+Type a part number in the Parts search box (e.g. `ESP32-C3`, `AMS1117`, `CH340C`, `USB-C`) to search the JLCPCB/LCSC catalogue (stock, price, Basic/Extended). Click a result to place it: the exact pinout and real PCB footprint are loaded from the part library (see *Data sources* below).
 
 The AI copilot has the same database through the `search_parts` and `get_part` tools, so you can ask for e.g. *"ESP32-C3 board with USB-C, AMS1117 regulator and a status LED"* and it will pick real in-stock parts.
 
@@ -192,7 +193,7 @@ curl -H "Authorization: Bearer <password>" -X POST http://127.0.0.1:5174/tools/s
 
 Values follow JLCPCB's published capabilities; check [jlcpcb.com/capabilities](https://jlcpcb.com/capabilities/pcb-capabilities) for the latest before ordering.
 
-## PCB editor (EasyEDA-style)
+## PCB editor
 
 | Action | How |
 |---|---|
@@ -235,3 +236,12 @@ The **Enclosure** tab builds a printable case around the current PCB and preview
 - **AI**: "make the walls 3 mm, add a 6×4 mm cable slot on the right and more room above the board" → `set_enclosure`, `add_enclosure_cutout`, `add_mounting_holes`, `get_enclosure`; Claude Code can also `export_enclosure` straight to a folder.
 
 The geometry engine (CSG with watertight-mesh repair) is self-contained JavaScript, so it runs in the browser and in the MCP server; only the 3D preview loads three.js from cdnjs.
+
+## Data sources & licenses
+
+CircuitPilot's design, code and UI are original work. It uses third-party **data and libraries**, credited here as their terms require:
+
+- **Component catalogue** (search, stock, price, LCSC numbers): JLCPCB / LCSC.
+- **Part symbols & footprints** for database parts: the **JLCEDA/EasyEDA official library** — https://easyeda.com · https://lceda.cn. Its terms require this source to be declared; parts are used here only to design boards to be made with these parts.
+- **three.js** (MIT) for the 3D previews; the CSG algorithm in `js/enclosure.js` follows csg.js by Evan Wallace (MIT).
+- Web search results come from DuckDuckGo (or Brave Search with your own key).

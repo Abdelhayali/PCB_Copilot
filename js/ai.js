@@ -16,7 +16,7 @@ const AI = (() => {
     'Ollama (local)': 'http://localhost:11434/v1',
     'LM Studio (local)': 'http://localhost:1234/v1',
   };
-  const defaults = { anthropicKey: '', oaiBase: 'https://api.openai.com/v1', oaiKey: '', oaiModels: '', model: 'claude-sonnet-5-5', maxTokens: 8192, includeContext: true };
+  const defaults = { anthropicKey: '', oaiBase: 'https://api.openai.com/v1', oaiKey: '', oaiModels: '', model: 'claude-sonnet-5-5', maxTokens: 8192, includeContext: true, webAccess: true, braveKey: '' };
   let settings = Object.assign({}, defaults);
   try { Object.assign(settings, JSON.parse(localStorage.getItem('cp.settings') || '{}')); } catch (e) { }
   const saveSettings = s => { settings = Object.assign(settings, s); try { localStorage.setItem('cp.settings', JSON.stringify(settings)); } catch (e) { } };
@@ -62,6 +62,7 @@ DESIGN MODEL
 - PROJECT KNOWLEDGE: when the project has a knowledge folder, follow its requirements, conventions and guides. Use knowledge_search / knowledge_read for details not included below.
 - PCB WORKFLOW: generate_pcb (connectors go on the board edge automatically) → if anything is unrouted, call optimize_pcb, or inspect get_pcb_layout and move parts with place_footprint (closer to their connections, rotate, side: "bottom" for small parts when the top is crowded), then route_pcb; repeat until all nets are routed → optionally add_copper_pour GND on both layers → run_drc and fix errors. Use set_board_shape for rounded / round / custom outlines.
 - ENCLOSURE: the Enclosure tab builds a 3D-printable case fitted to the PCB (STL + OpenSCAD). Use add_mounting_holes for screw standoffs (then route_pcb), set_enclosure for wall/lid/heights/vents, add_enclosure_cutout for extra openings (switches, cables, displays), get_enclosure to check sizes. Connector openings and LED/button lid holes are automatic.
+- INTERNET: you can use web_search and web_fetch for anything you need — datasheets (pinouts, absolute maximum ratings, reference/application circuits, recommended layouts), application notes, part availability and prices, calculations or standards. Read the relevant datasheet before choosing values for unfamiliar chips. Cite the URLs you relied on.
 - If the database is unavailable, use type "ic" with "pins" = the exact datasheet pin names in pin-number order (e.g. NE555: ["GND","TRIG","OUT","RESET","CTRL","THR","DIS","VCC"]) and an appropriate footprint (DIP-8, SOIC-8, ...). Use "connector" for headers/terminals with descriptive pin names.
 
 Use real, purchasable part values and show key calculations briefly (e.g. LED resistor = (Vs - Vf)/I). Keep replies concise and well formatted (markdown).`;
@@ -153,7 +154,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
 
   async function run(text, mode, hooks) {
     const model = allModels().find(m => m.id === settings.model) || MODELS[2];
-    const tools = TOOLS.filter(t => mode === 'agent' || t.ro);
+    const tools = TOOLS.filter(t => (mode === 'agent' || t.ro) && (settings.webAccess || !t.web));
     history.push({ role: 'user', text, mode, checkpoint: hooks.checkpoint });
     persist();
     controller = new AbortController();

@@ -25,6 +25,7 @@ import urllib.request
 import partsdb
 import store
 import knowledge
+import webtools
 
 PROXY_RE = re.compile(r"^/llm-proxy/(\d{1,5})(/.*)?$")
 STATIC_RE = re.compile(r"^/(|index\.html|styles\.css|favicon\.ico|js/[\w.-]+\.js)$")
@@ -108,6 +109,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._store(path)
         if path.startswith("/api/knowledge/"):
             return self._knowledge(path)
+        if path.startswith("/api/web/"):
+            return self._web(path)
         if not STATIC_RE.match(path):  # never serve parts.db, *.py, password file, .git ...
             return self._send(404, b"not found", "text/plain")
         super().do_GET()
@@ -140,6 +143,21 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self._send(404, b"not found", "text/plain")
 
     do_PUT = do_DELETE = do_POST
+
+    def _web(self, path):
+        q = urllib.parse.parse_qs(self.path.partition("?")[2])
+        arg = lambda k, d="": (q.get(k) or [d])[0]
+        try:
+            op = path.rsplit("/", 1)[1]
+            if op == "search":
+                out = webtools.search(arg("q"), arg("n", "8"), self.headers.get("X-Brave-Key") or None)
+            elif op == "fetch":
+                out = webtools.fetch(arg("url"), arg("offset", "0"), arg("length", "12000"))
+            else:
+                return self._send(404, b'{"error":"unknown endpoint"}', "application/json")
+            self._send(200, json.dumps(out).encode(), "application/json")
+        except Exception as e:
+            self._send(400, json.dumps({"error": str(e)}).encode(), "application/json")
 
     def _knowledge(self, path):
         q = urllib.parse.parse_qs(self.path.partition("?")[2])

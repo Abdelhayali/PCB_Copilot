@@ -1,4 +1,4 @@
-"""Component database: JLCPCB/LCSC catalogue search + EasyEDA symbols/footprints, cached in SQLite.
+"""Component database: JLCPCB/LCSC catalogue search + part symbols/footprints, cached in SQLite.
 
 Search results and every part model that is fetched are stored in parts.db, so the local
 database grows as you use it and keeps working offline for parts seen before.
@@ -16,7 +16,7 @@ import urllib.request
 
 DB_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "parts.db")
 UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) CircuitPilot"
-U = 0.254  # EasyEDA unit (10 mil) in mm
+U = 0.254  # library unit (10 mil) in mm
 SOURCE = "JLCPCB/LCSC catalogue · symbols & footprints: JLCEDA/EasyEDA official library (easyeda.com, lceda.cn)"
 _lock = threading.Lock()
 
@@ -177,7 +177,7 @@ def get_part(lcsc):
     j = _http(f"https://easyeda.com/api/products/{lcsc}/components")
     r = j.get("result") if j.get("success") else None
     if not r:
-        raise LookupError(f"No EasyEDA symbol/footprint found for {lcsc}")
+        raise LookupError(f"No symbol/footprint found for {lcsc}")
     ds = r.get("dataStr") or {}
     head = ds.get("head") or {}
     para = head.get("c_para") or {}

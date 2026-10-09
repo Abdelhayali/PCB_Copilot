@@ -182,7 +182,7 @@ try {
   await shot('pcb-3d');
   await js(`document.querySelector('#btn3d').click(); return 1`); await sleep(500);
 
-  // EasyEDA-style editor: layers panel + hand routing with layer switching
+  // PCB editor: layers panel + hand routing with layer switching
   await js(`if (document.querySelector('#layerPanel').classList.contains('collapsed')) document.querySelector('#layerPanel .ltitle').click(); return 1`);
   await shot('pcb-layers');
   await js(`document.querySelector('#layerPanel .ltitle').click(); Model.mutate(() => { Model.S.pcb.traces = Model.S.pcb.traces.filter(t => t.net !== 'LED_A' && t.net !== 'LED_STATUS'); }); Pcb.ui.drc = null; Pcb.render(); return 1`);
