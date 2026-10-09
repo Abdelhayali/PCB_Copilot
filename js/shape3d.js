@@ -23,6 +23,17 @@ const Shape3D = (() => {
     while (out.length > 1 && Math.abs(out[0].x - out[out.length - 1].x) + Math.abs(out[0].y - out[out.length - 1].y) + Math.abs(out[0].z - out[out.length - 1].z) <= 1e-9) out.pop();
     return out.length >= 3 ? Poly.make(out) : null;
   }
+  // merge vertices closer than tol (µm-scale leftovers of the booleans) and drop polygons that collapse
+  function weld(polys, tol = 0.002) {
+    const map = new Map(), cell = tol, kk = (i, j, k) => i + ',' + j + ',' + k;
+    const rep = v => {
+      const i = Math.floor(v.x / cell), j = Math.floor(v.y / cell), k = Math.floor(v.z / cell);
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) for (let c = -1; c <= 1; c++) { const L = map.get(kk(i + a, j + b, k + c)); if (L) for (const u of L) if (Math.abs(u.x - v.x) < tol && Math.abs(u.y - v.y) < tol && Math.abs(u.z - v.z) < tol) return u; }
+      const key = kk(i, j, k); let L = map.get(key); if (!L) map.set(key, L = []); L.push(v); return v;
+    };
+    for (const p of polys) p.v = p.v.map(rep).filter((v, i, a) => v !== a[(i + 1) % a.length]);
+    return polys.filter(p => p.v.length >= 3 && new Set(p.v).size >= 3);
+  }
   function volumeOf(polys) {
     let v = 0;
     for (const p of polys) for (let i = 1; i < p.v.length - 1; i++) { const a = p.v[0], b = p.v[i], c = p.v[i + 1]; v += a.dot(b.cross(c)) / 6; }
@@ -288,6 +299,7 @@ const Shape3D = (() => {
         P = hull3(pts); break;
       }
       case 'hull': P = hull3(n.c.flatMap(c => evalNode(c).flatMap(p => p.v))); break;
+      case 'rings': P = hull3(n.rings.flatMap(r => r.pts.map(q => new C.V(q[0], q[1], r.z)))); break;
       case 'union': P = n.c.map(evalNode).reduce((a, b) => { tick(); return C.union(a, b); }); break;
       case 'difference': { P = evalNode(n.c[0]); const rest = n.c.slice(1).map(evalNode); const ba = bboxOf(P); for (const b of rest) { tick(); if (b.length && overlap(ba, bboxOf(b))) P = C.subtract(P, b); } break; }
       case 'intersection': P = n.c.map(evalNode).reduce((a, b) => { tick(); return C.intersect(a, b); }); break;
@@ -311,6 +323,7 @@ const Shape3D = (() => {
       case 'revolve': return `${ind}rotate_extrude(angle=${f(n.angle)}, $fn=${fnFor(Math.max(...n.shape.pts.map(q => q[0])), n.fn)}) ${n.shape.scad()};`;
       case 'roundedBox': { const [x, y, z] = n.size, r = n.r, o = n.center ? [0, 0, 0] : [x / 2, y / 2, z / 2]; return `${ind}hull() for (sx = [-1, 1], sy = [-1, 1], sz = [-1, 1]) translate([${f(o[0])} + sx * ${f(x / 2 - r)}, ${f(o[1])} + sy * ${f(y / 2 - r)}, ${f(o[2])} + sz * ${f(z / 2 - r)}]) sphere(r=${f(r)}, $fn=${fnFor(r, n.fn)});`; }
       case 'hull': case 'union': case 'difference': case 'intersection': return `${ind}${n.op}() {\n${kids()}\n${ind}}`;
+      case 'rings': return `${ind}hull() {\n${n.rings.map(r => `${i2}translate([0, 0, ${f(r.z)}]) linear_extrude(height=0.01) polygon(${'[' + r.pts.map(q => `[${f(q[0])}, ${f(q[1])}]`).join(', ') + ']'});`).join('\n')}\n${ind}}`;
       case 'color': return `${ind}color("${n.col.replace(/"/g, '')}")\n${kids()}`;
       case 'translate': return `${ind}translate(${fv(n.v)})\n${kids()}`;
       case 'scale': return `${ind}scale(${fv(n.v)})\n${kids()}`;
@@ -362,9 +375,21 @@ CONTEXT: pcb = {w, h, thickness, outline:[[x,y],…], holes:[{x,y,d}], parts:[{r
     methods: .translate([x,y,z]) .rotate([ax,ay,az]) (degrees, X then Y then Z) or .rotate(deg, [axis]) .scale(s|[x,y,z]) .mirror([x,y,z]) .color('name') .union() .subtract() .intersect() .bounds {min,max,size}
 HELPERS: board(extra=0) → PCB slab (outline offset by extra, z 0…thickness); partBoxes({clearance=0.5, side}) → union of component boxes (for cavities);
     resolution(fn) sets segments per circle (default adaptive 12–48; lower = faster); range(a,b,step); log(...); Math.*, PI.
+ENCLOSURE KIT (use these — the board then always fits):
+    e = envelope({gap=0.5, headroom=0.8, standoff=1.2}) → space the board needs: {w, l, cx, cy (cavity size/centre, covers PCB + every part), zFloor, zTop, top, under, plugs, leds, buttons}
+    outlineAround(style, e, margin, cornerR) → 2D outline that contains the cavity + margin; style rect | oval | circle | pill | hex | octagon | squircle
+    softSolid(outline2d, z0, z1, roundTop, roundBottom) → solid with rounded top/bottom edges;  cavity(e) → the board pocket
+    boardPosts(e) → posts under the PCB (screw pilots at PCB holes);  connectorCuts(e) → openings for edge connectors;  topWindows(e, zTop) → holes above LEDs / buttons
+    splitLid(shell, e, e.zTop, {fit, lipW, lipH}) → [base, lid] with a press-fit lip that avoids tall parts
+    wristCurve(span, zLow, R) → {sag, cutter}: subtract cutter for a concave underside (cylinder along X; rotate 90° for X straps)
+    strapLugs({W, L, z, strap, style: 'slot'|'pins'|'bar', t, cx, cy}) → {add, cut};  snapStuds? use cylinders d 4.2 through the floor for ECG snap electrodes
+    beltClip(W, L, zLow, cx, cy);  loop(L, z, cx, cy, R, r) (lanyard / key ring);  ventSlots(e, zTop, n);  mountEars(W, zLow, cx, cy) → {add, cut}
+    Pattern: shell = difference(union(softSolid(out, zLow, zTop+t), extras), cavity(e), cuts, connectorCuts(e), topWindows(e, zt)); shell = union(shell, boardPosts(e)); [base, lid] = splitLid(shell, e, e.zTop).
+    TEMPLATES: 35 ready scripts (10 wrist, 10 chest / ECG, 7 other body-worn, 8 boxes) — get them with enclosure_script_help({template: id}) and adapt.
 OUTPUT: part(name, shape, {color, explode:[x,y,z] (offset in the exploded preview), print:{rotate:[ax,ay,az]} (orientation for the STL, dropped onto the bed)}).
     Each part is one STL. If no part() is called, the returned shape becomes part "model".
 TIPS: hollow shells = difference(outer, inner) where inner is the same shape smaller by the wall; split into a "bottom" and a "top"/"lid" part along a Z plane with intersection(shell, cube) — add a lip so they snap/press-fit (0.15–0.25 mm clearance);
+    always size from envelope() (it includes every part, also overhanging ones) — the fit report lists collisions and anything not inside the enclosure; fix both;
     leave 0.3–0.5 mm clearance around the PCB and 0.5 mm above the tallest part; minimum printable wall 1.2 mm (1.6–2 mm recommended); avoid overhangs > 45° or add print rotation.
     Wearables: wrist pods are curved underneath (intersect with a big cylinder of radius 30–40 mm along X), with strap slots/lugs (e.g. 22 mm strap → 23 × 2.5 mm slots); ECG/biopotential patches: snap-electrode studs are 3.9–4 mm, use holes of 4.2 mm on 30–60 mm spacing, keep electrodes on the skin side; leave charging/USB openings.`;
 
@@ -450,6 +475,99 @@ part('base', intersection(shell, cube([400, 400, 200]).translate([-200, -200, sp
 part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -200, split])), lip), { color: 'yellowgreen', explode: [0, 0, 12], print: { rotate: [180, 0, 0] } });`,
   };
 
+  // ---------- template library (generated from one recipe; each result is a plain, editable script) ----------
+  function recipe(o) {
+    const L = [];
+    L.push(`// ${o.name}`, `// ${o.desc}`, `// Sized from the board: envelope() = PCB + all parts + gap. Change the constants below to adapt it.`);
+    L.push(`resolution(${o.res || 32});`);
+    L.push(`const shape = '${o.shape}';          // rect | oval | circle | pill | hex | octagon | squircle`);
+    L.push(`const t = ${o.wall ?? 1.8};              // wall thickness (mm)`);
+    L.push(`const corner = ${o.r ?? 4};          // corner radius for rect`);
+    L.push(`const roundTop = ${o.rTop ?? 2.5}, roundBottom = ${o.rBot ?? 1.2};   // edge rounding`);
+    L.push(`const wrist = ${o.curve || 0};             // concave underside radius (0 = flat)`);
+    L.push(`const minW = ${o.minW || 0}, minL = ${o.minL || 0};   // minimum outer size (e.g. electrode spacing)`);
+    L.push(`const strapAxis = '${o.axis || 'y'}';         // direction the strap / body curve runs (x | y)`);
+    if (o.lugs) L.push(`const strap = ${o.strap || 22}, lugStyle = '${o.lugs}';   // strap width, slot | pins | bar`);
+    L.push(`const e = envelope({ gap: 0.5, headroom: ${o.headroom ?? 0.8} });`);
+    L.push(`const extra = Math.max(t + ${o.margin ?? 1}, (minW - e.w) / 2, (minL - e.l) / 2);`);
+    L.push(`const out = outlineAround(shape, e, extra, corner);`);
+    L.push(`const B = out.bounds, BW = B[2] - B[0], BL = B[3] - B[1];`);
+    L.push(`let sag = 0, cutter = null, zLow = e.zFloor - t;`);
+    L.push(`if (wrist) {   // floor keeps thickness t at the centre, the ends lift by the sag`);
+    L.push(`  const span = strapAxis === 'x' ? BW : BL; sag = wristCurve(span, 0, wrist).sag; zLow = e.zFloor - t - sag;`);
+    L.push(`  cutter = wristCurve(span, zLow, wrist).cutter; if (strapAxis === 'x') cutter = cutter.rotate([0, 0, 90]); cutter = cutter.translate([e.cx, e.cy, 0]);`);
+    L.push(`}`);
+    L.push(`const zt = e.zTop + t;`);
+    L.push(`const adds = [], cuts = [];`);
+    L.push(`let body = softSolid(out, zLow, zt, roundTop, roundBottom);`);
+    if (o.flange) L.push(`adds.push(extrude(out.offset(${o.flange}), 1.5).translate([0, 0, zLow - 0.3]));   // adhesive flange (0.3 below the body: no coplanar faces)`);
+    if (o.lugs) L.push(`{ const g = strapLugs({ W: strapAxis === 'x' ? BL : BW, L: strapAxis === 'x' ? BW : BL, z: zLow + ${o.lugs === 'pins' ? '3' : '2.4'}, strap, style: lugStyle, t: ${o.lugT || 4.5}, cx: 0, cy: 0 });`,
+      `  const place = s => strapAxis === 'x' ? s.rotate([0, 0, 90]).translate([e.cx, e.cy, 0]) : s.translate([e.cx, e.cy, 0]); adds.push(place(g.add)); cuts.push(place(g.cut)); }`);
+    if (o.electrodes) {
+      L.push(`// snap-electrode studs (Ø3.9–4 mm studs → Ø4.2 holes) on the ${o.studsTop ? 'top (lead wires snap on)' : 'skin side'}`);
+      const lay = { '3lead': `[[B[0] + 9, e.cy], [B[2] - 9, e.cy], [e.cx, B[1] + 8]]`, '2bar': `[[B[0] + 9, e.cy], [B[2] - 9, e.cy]]`, '5lead': `[[B[0] + 9, B[1] + 9], [B[2] - 9, B[1] + 9], [B[0] + 9, B[3] - 9], [B[2] - 9, B[3] - 9], [e.cx, B[1] + 8]]`, '4square': `[[B[0] + 9, B[1] + 9], [B[2] - 9, B[1] + 9], [B[0] + 9, B[3] - 9], [B[2] - 9, B[3] - 9]]`, 'tri': `[90, 210, 330].map(a => [e.cx + (Math.min(BW, BL) / 2 - 9) * Math.cos(a * PI / 180), e.cy + (Math.min(BW, BL) / 2 - 9) * Math.sin(a * PI / 180)])` }[o.electrodes];
+      L.push(`const studs = ${lay};`);
+      if (o.studsTop) L.push(`for (const [x, y] of studs) { adds.push(cylinder({ d: 9, h: 1.5 }).translate([x, y, zt - 0.01])); cuts.push(cylinder({ d: 4.2, h: t + 2 }).translate([x, y, zt - t - 0.5])); }`);
+      else L.push(`for (const [x, y] of studs) { adds.push(cylinder({ d: 9, h: 1.5 }).translate([x, y, zLow - 1.5])); cuts.push(cylinder({ d: 4.2, h: e.zFloor - zLow + 2.5 }).translate([x, y, zLow - 2])); }`);
+    }
+    if (o.clip) L.push(`adds.push(beltClip(BW, BL, zLow, e.cx, e.cy));   // spring clip on the back`);
+    if (o.loop) L.push(`adds.push(loop(BL, (zLow + zt) / 2, e.cx, e.cy, ${o.loopR || 4}, ${o.loopr || 1.6}));   // lanyard / key-ring loop`);
+    if (o.ears) L.push(`{ const m = mountEars(BW, zLow, e.cx, e.cy); adds.push(m.add); cuts.push(m.cut); }   // screw ears`);
+    if (o.vents) L.push(`cuts.push(ventSlots(e, zt, ${o.vents}));`);
+    L.push(`const inner = out.offset(-t);                    // hollow inside, following the outer shape`);
+    L.push(`let shell = difference(union(body, ...adds), hollow(out, e, t), ...cuts, cutter, connectorCuts(e), topWindows(e, zt));`);
+    L.push(`shell = union(shell, boardPosts(e));`);
+    L.push(`const [base, lid] = splitLid(shell, e, e.zTop, { fit: 0.2, lipH: ${o.lipH ?? 1.6}, inner });`);
+    L.push(`part('${o.baseName || 'base'}', base, { color: '${o.c1 || 'dimgray'}' });`);
+    L.push(`part('${o.lidName || 'lid'}', lid, { color: '${o.c2 || 'gainsboro'}', explode: [0, 0, 14], print: { rotate: [180, 0, 0] } });`);
+    return L.join('\n');
+  }
+  const TEMPLATES = [
+    // wrist
+    { id: 'wrist-whoop', cat: 'Wrist', name: 'Whoop-style pod', desc: 'rounded rectangle pod, concave underside, strap loops through end slots', shape: 'rect', r: 5, curve: 34, lugs: 'slot', strap: 22, rTop: 3 },
+    { id: 'wrist-round', cat: 'Wrist', name: 'Round watch', desc: 'round case with watch lugs and Ø1.3 spring-bar holes (20 mm strap)', shape: 'circle', lugs: 'pins', strap: 20, rTop: 2.5, rBot: 1.5 },
+    { id: 'wrist-square', cat: 'Wrist', name: 'Square smartwatch', desc: 'rounded square case, curved back, 22 mm spring-bar lugs', shape: 'rect', r: 7, curve: 40, lugs: 'pins', strap: 22, rTop: 2 },
+    { id: 'wrist-capsule', cat: 'Wrist', name: 'Fitness capsule', desc: 'pill-shaped tracker capsule, curved back, 18 mm strap slots', shape: 'pill', curve: 32, lugs: 'slot', strap: 18, rTop: 3 },
+    { id: 'wrist-rugged', cat: 'Wrist', name: 'Rugged outdoor watch', desc: 'octagon case, thick 2.5 mm walls, 24 mm lugs', shape: 'octagon', wall: 2.5, curve: 36, lugs: 'pins', strap: 24, rTop: 1.5, c1: '#3b4a3a', c2: '#7b8b6a' },
+    { id: 'wrist-oval', cat: 'Wrist', name: 'Oval tracker', desc: 'oval body, curved back, closed strap bars (20 mm)', shape: 'oval', curve: 33, lugs: 'bar', strap: 20, rTop: 3 },
+    { id: 'wrist-hex', cat: 'Wrist', name: 'Hexagon watch', desc: 'hexagonal case, flat back, 20 mm spring-bar lugs', shape: 'hex', lugs: 'pins', strap: 20, rTop: 1.5 },
+    { id: 'wrist-squircle', cat: 'Wrist', name: 'Squircle band pod', desc: 'super-ellipse body, curved back, 22 mm strap slots', shape: 'squircle', curve: 35, lugs: 'slot', strap: 22, rTop: 3 },
+    { id: 'wrist-slim', cat: 'Wrist', name: 'Slim band', desc: 'thin 1.4 mm walls, low profile, 16 mm strap bars', shape: 'rect', r: 3, wall: 1.4, headroom: 0.5, curve: 30, lugs: 'bar', strap: 16, rTop: 2, lugT: 3.6 },
+    { id: 'wrist-cuff', cat: 'Wrist', name: 'Wide cuff', desc: 'long rounded body for a 30 mm cuff strap, curved back', shape: 'rect', r: 4, curve: 30, lugs: 'slot', strap: 30, minL: 30, rTop: 3 },
+    // chest
+    { id: 'chest-ecg3', cat: 'Chest', name: 'ECG 3-lead oval patch', desc: 'oval pod, 3 snap electrodes (RA, LA, RL) on the skin side, ≥70 mm span', shape: 'oval', electrodes: '3lead', minW: 72, minL: 42, rTop: 3, c1: 'white', c2: 'lightskyblue' },
+    { id: 'chest-hr-strap', cat: 'Chest', name: 'Heart-rate strap pod', desc: 'pill pod on a horizontal 30 mm chest strap, 2 electrodes', shape: 'pill', electrodes: '2bar', minW: 62, lugs: 'slot', strap: 30, axis: 'x', rTop: 3 },
+    { id: 'chest-holter5', cat: 'Chest', name: 'Holter 5-lead monitor', desc: 'rounded box, 5 snap electrodes, belt clip on the back', shape: 'rect', r: 5, electrodes: '5lead', minW: 80, minL: 56, clip: true, rTop: 2.5 },
+    { id: 'chest-disc3', cat: 'Chest', name: 'Round 3-electrode disc', desc: 'round disc patch, 3 electrodes at 120°', shape: 'circle', electrodes: 'tri', minW: 62, minL: 62, rTop: 3 },
+    { id: 'chest-adhesive', cat: 'Chest', name: 'Adhesive patch with flange', desc: 'low squircle body with a 6 mm flange for medical adhesive, 2 electrodes', shape: 'squircle', electrodes: '2bar', minW: 64, flange: 6, rTop: 2.5, headroom: 0.6 },
+    { id: 'chest-hex3', cat: 'Chest', name: 'Hex 3-electrode patch', desc: 'hexagonal patch, 3 electrodes at 120°', shape: 'hex', electrodes: 'tri', minW: 60, minL: 52, rTop: 2 },
+    { id: 'chest-clip', cat: 'Chest', name: 'Harness clip-on pod', desc: 'rounded pod with a spring clip to wear on a harness or bra strap', shape: 'rect', r: 6, clip: true, rTop: 3 },
+    { id: 'chest-leadwire', cat: 'Chest', name: 'Lead-wire ECG box', desc: '5 snap studs on top for lead wires, belt clip on the back', shape: 'rect', r: 4, electrodes: '5lead', studsTop: true, minW: 80, minL: 56, clip: true, rTop: 2 },
+    { id: 'chest-4square', cat: 'Chest', name: 'Squircle 4-electrode patch', desc: 'four electrodes in a square (impedance / EMG / multi-lead)', shape: 'squircle', electrodes: '4square', minW: 64, minL: 64, rTop: 3 },
+    { id: 'chest-slim', cat: 'Chest', name: 'Slim adhesive strip', desc: 'thin pill patch, 2 electrodes, adhesive flange', shape: 'pill', wall: 1.4, headroom: 0.5, electrodes: '2bar', minW: 70, flange: 5, rTop: 2 },
+    // other body-worn
+    { id: 'body-ankle', cat: 'Body', name: 'Ankle band pod', desc: 'wider curved back (Ø90 mm leg), 30 mm strap slots', shape: 'rect', r: 5, curve: 45, lugs: 'slot', strap: 30, rTop: 3 },
+    { id: 'body-armband', cat: 'Body', name: 'Upper-arm band', desc: 'oval pod for an arm strap (38 mm), gentle curve', shape: 'oval', curve: 50, lugs: 'slot', strap: 38, rTop: 3 },
+    { id: 'body-headband', cat: 'Body', name: 'Headband / forehead pod', desc: 'low pod, slight curve, strap along the band', shape: 'pill', curve: 80, lugs: 'slot', strap: 25, axis: 'x', rTop: 3 },
+    { id: 'body-pendant', cat: 'Body', name: 'Pendant / necklace', desc: 'round body with a lanyard loop', shape: 'circle', loop: true, rTop: 3, rBot: 2 },
+    { id: 'body-keyfob', cat: 'Body', name: 'Key fob', desc: 'pill body with a key-ring loop', shape: 'pill', loop: true, loopR: 4.5, rTop: 3, rBot: 2 },
+    { id: 'body-beltclip', cat: 'Body', name: 'Belt-clip pod', desc: 'rounded box with a spring belt clip', shape: 'rect', r: 4, clip: true, rTop: 2.5 },
+    { id: 'body-badge', cat: 'Body', name: 'Clip-on badge', desc: 'thin rounded card with clip and lanyard loop', shape: 'rect', r: 3, wall: 1.5, clip: true, loop: true, rTop: 1.5 },
+    // general boxes
+    { id: 'box-rounded', cat: 'Box', name: 'Rounded box', desc: 'rounded box with press-fit lid', shape: 'rect', r: 3, wall: 2, rTop: 2, rBot: 1, c1: 'steelblue', c2: 'yellowgreen' },
+    { id: 'box-vented', cat: 'Box', name: 'Vented box', desc: 'rounded box with lid vent slots', shape: 'rect', r: 3, wall: 2, vents: 5, rTop: 2, headroom: 2, c1: 'steelblue', c2: 'silver' },
+    { id: 'box-wallmount', cat: 'Box', name: 'Wall-mount box', desc: 'box with two screw ears', shape: 'rect', r: 2, wall: 2, ears: true, rTop: 1.5, c1: '#505860', c2: '#c8ccd0' },
+    { id: 'box-puck', cat: 'Box', name: 'Round sensor puck', desc: 'round puck, soft edges', shape: 'circle', wall: 2, rTop: 4, rBot: 2, c1: 'white', c2: '#9ad' },
+    { id: 'box-handheld', cat: 'Box', name: 'Handheld remote', desc: 'pill body with a strongly rounded top (comfortable in hand)', shape: 'pill', wall: 2, rTop: 6, rBot: 2, headroom: 1.5 },
+    { id: 'box-hex', cat: 'Box', name: 'Hex box', desc: 'hexagonal enclosure', shape: 'hex', wall: 2, rTop: 1.5 },
+    { id: 'box-octagon', cat: 'Box', name: 'Octagon box', desc: 'octagonal enclosure', shape: 'octagon', wall: 2, rTop: 1.5 },
+    { id: 'box-slim', cat: 'Box', name: 'Slim card', desc: 'thin low-profile case', shape: 'rect', r: 2, wall: 1.4, headroom: 0.5, rTop: 1, rBot: 0.6 },
+  ];
+  for (const t of TEMPLATES) t.code = recipe(t);
+
+  // legacy names
+  Object.assign(EXAMPLES, { wristband: TEMPLATES.find(t => t.id === 'wrist-whoop').code, ecg: TEMPLATES.find(t => t.id === 'chest-ecg3').code, box: TEMPLATES.find(t => t.id === 'box-rounded').code });
+
   // context: board data in script coordinates (origin = outline centre, y up, z = 0 at the board bottom)
   function context(L) {
     if (!L) return { pcb: null };
@@ -486,6 +604,136 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
       log: (...a) => { logs.push(a.map(x => typeof x === 'string' ? x : JSON.stringify(x)).join(' ')); },
       PI: Math.PI, pcb,
     };
+    // ---------- enclosure kit: building blocks shared by the templates (and available to the AI) ----------
+    const K2 = lib;
+    // Space the board needs: PCB outline + every part box (connectors that open outward excepted), plus a gap.
+    K2.envelope = (o = {}) => {
+      const gap = o.gap ?? 0.5, head = o.headroom ?? 0.8, standoff = o.standoff ?? 1.2;
+      if (!pcb) { const w = o.w ?? 32, l = o.l ?? 24; return { w, l, cx: 0, cy: 0, x0: -w / 2, y0: -l / 2, x1: w / 2, y1: l / 2, top: 6, under: 0, zFloor: -standoff, zTop: 6 + head, plugs: [], leds: [], buttons: [], gap }; }
+      const xs = pcb.outline.map(q => q[0]), ys = pcb.outline.map(q => q[1]);
+      let x0 = Math.min(...xs), x1 = Math.max(...xs), y0 = Math.min(...ys), y1 = Math.max(...ys);
+      for (const p of pcb.parts) if (!(p.plug && p.edge)) { x0 = Math.min(x0, p.x0); x1 = Math.max(x1, p.x1); y0 = Math.min(y0, p.y0); y1 = Math.max(y1, p.y1); }
+      x0 -= gap; y0 -= gap; x1 += gap; y1 += gap;
+      const top = Math.max(pcb.thickness, ...pcb.parts.filter(p => p.side === 'top').map(p => pcb.thickness + p.h));
+      const under = Math.max(0, ...pcb.parts.filter(p => p.side === 'bottom').map(p => p.h));
+      return { w: x1 - x0, l: y1 - y0, cx: (x0 + x1) / 2, cy: (y0 + y1) / 2, x0, y0, x1, y1, top, under, zFloor: -(under + standoff), zTop: top + head, gap,
+        plugs: pcb.parts.filter(p => p.plug && p.edge), leds: pcb.parts.filter(p => p.side === 'top' && (/led/i.test(p.type) || /\bled\b/i.test(String(p.value || '')))),
+        buttons: pcb.parts.filter(p => p.side === 'top' && /switch|button|tact/i.test(p.type)) };
+    };
+    // 2D outline of a given style that contains the envelope rectangle plus a margin (centred on the envelope)
+    K2.outlineAround = (style, e, m = 2, r = 3) => {
+      const X = e.w / 2 + m, Y = e.l / 2 + m; let s;
+      switch (style) {
+        case 'oval': s = api2.ellipse(X * Math.SQRT2, Y * Math.SQRT2, { fn: 96 }); break;
+        case 'circle': { const R = Math.hypot(X, Y); s = api2.circle(R, { fn: 96 }); break; }
+        case 'pill': { const long = X >= Y, A = long ? X : Y, B = long ? Y : X, R = B * 1.18, c = Math.max(0, A - Math.sqrt(R * R - B * B)); s = api2.roundedRect(long ? 2 * (c + R) : 2 * R, long ? 2 * R : 2 * (c + R), R * 0.9, { fn: 64 }); break; }   // r < R: no µm-short straight edge at the ends
+        case 'hex': { const Rc = Math.max(X + Y / Math.sqrt(3), 2 * Y / Math.sqrt(3)) + 0.01; s = api2.polygon([0, 60, 120, 180, 240, 300].map(a => [Rc * Math.cos(a * Math.PI / 180), Rc * Math.sin(a * Math.PI / 180)])); break; }
+        case 'octagon': { const k = Math.min(X, Y) * 0.32, ax = X + k, ay = Y + k, c = 2 * k + 0.01; s = api2.polygon([[ax, ay - c], [ax - c, ay], [-ax + c, ay], [-ax, ay - c], [-ax, -ay + c], [-ax + c, -ay], [ax - c, -ay], [ax, -ay + c]]); break; }
+        case 'squircle': { const a = X * Math.pow(2, 0.25), b = Y * Math.pow(2, 0.25), n = 96, pts = []; for (let k = 0; k < n; k++) { const t = k / n * 2 * Math.PI, c = Math.cos(t), si = Math.sin(t); pts.push([a * Math.sign(c) * Math.sqrt(Math.abs(c)), b * Math.sign(si) * Math.sqrt(Math.abs(si))]); } s = api2.polygon(pts); break; }
+        default: s = api2.roundedRect(2 * X, 2 * Y, Math.min(r, X - 0.01, Y - 0.01), { fn: 48 });
+      }
+      return s.translate([e.cx, e.cy]);
+    };
+    // solid with rounded top and bottom edges from a convex outline (hull of offset rings)
+    K2.softSolid = (out, z0, z1, rTop = 2, rBot = 1) => {
+      const H = z1 - z0; rTop = Math.max(0, Math.min(rTop, H / 2 - 0.02)); rBot = Math.max(0, Math.min(rBot, H / 2 - 0.02));
+      if (rTop < 0.05 && rBot < 0.05) return extrude(out, H).translate([0, 0, z0]);
+      const ring = (inset, z) => ({ z, pts: (inset > 0.01 ? out.offset(-inset) : out).pts });
+      const rings = [], steps = 3;
+      for (let k = 0; k <= steps; k++) { const a = (Math.PI / 2) * k / steps; if (rBot >= 0.05) rings.push(ring(rBot * (1 - Math.sin(a)), z0 + rBot * (1 - Math.cos(a)))); }
+      if (rBot < 0.05) rings.push(ring(0, z0));
+      for (let k = 0; k <= steps; k++) { const a = (Math.PI / 2) * k / steps; if (rTop >= 0.05) rings.push(ring(rTop * (1 - Math.cos(a)), z1 - rTop * (1 - Math.sin(a)))); }
+      if (rTop < 0.05) rings.push(ring(0, z1));
+      return new Shape({ op: 'rings', rings });
+    };
+    // the cavity the board lives in
+    // (its ceiling sits 0.25 mm above zTop, so it is never coplanar with the base / lid split at zTop)
+    // hollow interior that follows the outer outline at wall thickness t (always includes the board pocket)
+    K2.hollow = (out, e, t, r = 1) => union(K2.cavity(e, r), extrude(out.offset(-t), e.zTop + 0.25 - e.zFloor).translate([0, 0, e.zFloor]));
+    K2.cavity = (e, r = 1) => extrude(api2.roundedRect(e.w, e.l, Math.min(r, e.w / 2 - 0.01, e.l / 2 - 0.01)).translate([e.cx, e.cy]), e.zTop + 0.25 - e.zFloor).translate([0, 0, e.zFloor]);
+    // posts under the board corners (clear of bottom-side parts); pilot holes at PCB mounting holes
+    K2.boardPosts = (e, d = 3) => {
+      if (!pcb) return null;
+      const xs = pcb.outline.map(q => q[0]), ys = pcb.outline.map(q => q[1]), i = d / 2 + 0.8, list = [];
+      const spots = pcb.holes.length ? pcb.holes.map(h => [h.x, h.y]) : [[Math.min(...xs) + i, Math.min(...ys) + i], [Math.max(...xs) - i, Math.min(...ys) + i], [Math.max(...xs) - i, Math.max(...ys) - i], [Math.min(...xs) + i, Math.max(...ys) - i]];
+      const inPoly = (x, y) => { let c = false; const P = pcb.outline; for (let a = 0, b = P.length - 1; a < P.length; b = a++) { const [xa, ya] = P[a], [xb, yb] = P[b]; if ((ya > y) !== (yb > y) && x < (xb - xa) * (y - ya) / (yb - ya) + xa) c = !c; } return c; };
+      for (const [x, y] of spots) {
+        if (!inPoly(x, y)) continue;
+        if (pcb.parts.some(p => p.side === 'bottom' && x > p.x0 - d / 2 - 0.3 && x < p.x1 + d / 2 + 0.3 && y > p.y0 - d / 2 - 0.3 && y < p.y1 + d / 2 + 0.3)) continue;
+        let post = cylinder({ d: pcb.holes.length ? Math.max(d, 4.5) : d, h: -e.zFloor + 0.01 }).translate([x, y, e.zFloor - 0.01]);
+        if (pcb.holes.length) post = difference(post, cylinder({ d: 2.5, h: 20, center: true }).translate([x, y, e.zFloor]));
+        list.push(post);
+      }
+      return list.length ? union(list) : null;
+    };
+    // openings for edge connectors (USB, jacks…) through the walls
+    K2.connectorCuts = (e, m = 0.6) => {
+      const cuts = [];
+      for (const p of e.plugs) {
+        const zc = p.side === 'top' ? pcb.thickness + p.h / 2 : -p.h / 2, hz = p.h + 2 * m;
+        const sx = p.x1 - p.x0 + 2 * m, sy = p.y1 - p.y0 + 2 * m, D = 120, r = Math.min(0.8, Math.min(sx, sy, hz) / 2 - 0.05);
+        if (p.edge === 'left') cuts.push(roundedBox([D, sy, hz], r).translate([(p.x0 + p.x1) / 2 - D / 2, p.cy, zc]));
+        else if (p.edge === 'right') cuts.push(roundedBox([D, sy, hz], r).translate([(p.x0 + p.x1) / 2 + D / 2, p.cy, zc]));
+        else if (p.edge === 'front') cuts.push(roundedBox([sx, D, hz], r).translate([p.cx, (p.y0 + p.y1) / 2 - D / 2, zc]));
+        else cuts.push(roundedBox([sx, D, hz], r).translate([p.cx, (p.y0 + p.y1) / 2 + D / 2, zc]));
+      }
+      return cuts.length ? union(cuts) : null;
+    };
+    // light / button windows above LEDs and switches
+    K2.topWindows = (e, zt, o = {}) => {
+      const list = [];
+      for (const p of e.leds) list.push(cylinder({ d: o.led ?? 2.6, h: zt - p.h + 20 }).translate([p.cx, p.cy, pcb.thickness + p.h - 0.2]));
+      for (const p of e.buttons) list.push(cylinder({ d: o.button ?? Math.min(6, Math.max(3, Math.min(p.x1 - p.x0, p.y1 - p.y0) * 0.7)), h: zt + 20 }).translate([p.cx, p.cy, pcb.thickness + p.h - 0.2]));
+      return list.length ? union(list) : null;
+    };
+    // split into base and lid at zSplit; the lid gets a press-fit lip that steers around tall parts
+    K2.splitLid = (shell, e, zSplit, o = {}) => {
+      const fit = o.fit ?? 0.2, lw = o.lipW ?? 1.2, lh = o.lipH ?? 1.6, b = shell.bounds, m = 1.37;   // cutting boxes just larger than the part (precision)
+      const sx = b.size[0] + 2 * m, sy = b.size[1] + 2 * m;
+      const below = intersection(shell, cube([sx, sy, zSplit - b.min[2] + m]).translate([b.min[0] - m, b.min[1] - m, b.min[2] - m]));
+      let above = intersection(shell, cube([sx, sy, b.max[2] - zSplit + m]).translate([b.min[0] - m, b.min[1] - m, zSplit]));
+      if (lh > 0 && e.w > 2 * (lw + fit) + 2 && e.l > 2 * (lw + fit) + 2) {
+        // lip along the inside wall: o.inner (the hollow outline) when given, else the board pocket; corners rounder than
+        // the pocket's so the two never run nearly tangent (clean booleans)
+        const o1 = o.inner ? o.inner.offset(-fit) : api2.roundedRect(e.w - 2 * fit, e.l - 2 * fit, 2.2).translate([e.cx, e.cy]);
+        const o2 = o.inner ? o.inner.offset(-fit - lw) : api2.roundedRect(e.w - 2 * fit - 2 * lw, e.l - 2 * fit - 2 * lw, 1.0).translate([e.cx, e.cy]);
+        let lip = difference(extrude(o1, lh + 0.4).translate([0, 0, zSplit - lh]), extrude(o2, lh + 2).translate([0, 0, zSplit - lh - 1]));
+        if (pcb) { const tall = pcb.parts.filter(p => p.side === 'top' && pcb.thickness + p.h > zSplit - lh - 0.3); if (tall.length) lip = difference(lip, ...tall.map(p => cube([p.x1 - p.x0 + 0.8, p.y1 - p.y0 + 0.8, 40]).translate([p.x0 - 0.4, p.y0 - 0.4, -10]))); }
+        above = union(above, lip);
+      }
+      return [below, above];
+    };
+    // concave underside following the wrist (cylinder along X); returns the cutter and the lift at the ends
+    K2.wristCurve = (L, zLow, R = 34) => { const sag = R - Math.sqrt(Math.max(0, R * R - (L / 2) * (L / 2))); return { sag, cutter: cylinder({ r: R, h: 400, center: true, fn: 160 }).rotate([0, 90, 0]).translate([0, 0, zLow + sag - R]) }; };
+    // strap attachments on the ±Y ends: 'slot' (strap loops through), 'pins' (watch lugs with spring-bar holes), 'bar' (closed loop bar)
+    K2.strapLugs = (o) => {
+      const { W, L, z, strap = 22, style = 'slot', t = 4.5, cx = 0, cy = 0 } = o, add = [], cut = [];
+      for (const s of [-1, 1]) {
+        const yE = cy + s * L / 2;
+        if (style === 'pins') {
+          for (const sx of [-1, 1]) add.push(roundedBox([3.2, 8, t], 1.2).translate([cx + sx * (strap / 2 + 1.6), yE + s * 3, z]));
+          cut.push(cylinder({ d: 1.3, h: strap + 12, center: true, fn: 16 }).rotate([0, 90, 0]).translate([cx, yE + s * 5, z]));
+        } else {
+          const depth = style === 'bar' ? 5 : 7;
+          add.push(roundedBox([strap + 6, depth, t], Math.min(1.5, t / 2 - 0.05)).translate([cx, yE + s * (depth / 2 - 1), z]));
+          cut.push(cube([strap + 1, style === 'bar' ? 2 : 2.6, t + 2], { center: true }).translate([cx, yE + s * (depth - 2.8), z]));
+        }
+      }
+      return { add: union(add), cut: union(cut) };
+    };
+    // snap-electrode studs: through holes with a thicker boss around each (skin side = bottom)
+    K2.snapStuds = (pts, zb, zTopBoss, d = 4.2, boss = 10) => ({ add: union(pts.map(([x, y]) => cylinder({ d: boss, h: zTopBoss - zb + 0.01 }).translate([x, y, zb]))), cut: union(pts.map(([x, y]) => cylinder({ d, h: 40, center: true }).translate([x, y, zb]))) });
+    // spring belt / harness clip on the back
+    K2.beltClip = (W, L, zb, cx = 0, cy = 0) => {
+      const w = Math.min(W * 0.7, 30), gap = 2.2, th = 2;
+      return union(cube([w, L * 0.85, th]).translate([cx - w / 2, cy - L * 0.85 / 2, zb - gap - th]), cube([w, 4, gap + 0.5]).translate([cx - w / 2, cy + L * 0.85 / 2 - 4, zb - gap - 0.2]));
+    };
+    // lanyard / key-ring loop on the +Y end
+    K2.loop = (L, z, cx = 0, cy = 0, R = 4, r = 1.6) => torus({ R, r, fn: 48, fn2: 16 }).translate([cx, cy + L / 2 + R - r * 0.5, z]);   // flat ring tab (prints without support)
+    // ventilation slots through the lid
+    K2.ventSlots = (e, zt, n = 5) => { const w = Math.min(e.w * 0.5, 30), list = []; for (let k = 0; k < n; k++) list.push(roundedBox([w, 1.4, 30], 0.6).translate([e.cx, e.cy - (n - 1) * 1.8 + k * 3.6, zt])); return union(list); };
+    // mounting ears with screw holes on ±X
+    K2.mountEars = (W, zb, cx = 0, cy = 0, th = 3) => { const add = [], cut = []; for (const s of [-1, 1]) { add.push(roundedBox([12, 14, th], 1.2).translate([cx + s * (W / 2 + 5), cy, zb + th / 2])); cut.push(cylinder({ d: 3.4, h: 20, center: true }).translate([cx + s * (W / 2 + 6), cy, zb])); } return { add: union(add), cut: union(cut) }; };
     const names = Object.keys(lib);
     let ret;
     try {
@@ -543,6 +791,47 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
         if (Date.now() > budget) { report.warnings.push('fit check stopped early (time limit)'); break; }
       }
     }
+    // containment: the board and every part must sit inside the enclosure. A point is outside when it can see out
+    // along 2 or more of the 6 axis directions (1 is allowed: the way out through an LED / button window).
+    if (pcb && opts.check !== false && Date.now() < budget) {
+      const T = []; for (const p of parts) for (const [a, b, c] of K().triangles(p.polys)) T.push([a.x, a.y, a.z, b.x, b.y, b.z, c.x, c.y, c.z]);
+      const bb = [Infinity, Infinity, Infinity, -Infinity, -Infinity, -Infinity];
+      for (const t of T) for (let k = 0; k < 9; k++) { const ax = k % 3; bb[ax] = Math.min(bb[ax], t[k]); bb[ax + 3] = Math.max(bb[ax + 3], t[k]); }
+      const grids = [0, 1, 2].map(ax => {
+        const [u, v] = [[1, 2], [0, 2], [0, 1]][ax], cs = Math.max(0.5, Math.max(bb[u + 3] - bb[u], bb[v + 3] - bb[v]) / 80), g = new Map();
+        T.forEach(t => { const u0 = Math.floor((Math.min(t[u], t[u + 3], t[u + 6]) - bb[u]) / cs), u1 = Math.floor((Math.max(t[u], t[u + 3], t[u + 6]) - bb[u]) / cs), v0 = Math.floor((Math.min(t[v], t[v + 3], t[v + 6]) - bb[v]) / cs), v1 = Math.floor((Math.max(t[v], t[v + 3], t[v + 6]) - bb[v]) / cs); for (let a = u0; a <= u1; a++) for (let b = v0; b <= v1; b++) { const k = a * 4096 + b; let L = g.get(k); if (!L) g.set(k, L = []); L.push(t); } });
+        return { u, v, cs, g };
+      });
+      const hits = (P, ax, sgn) => {
+        const G = grids[ax], L = G.g.get(Math.floor((P[G.u] - bb[G.u]) / G.cs) * 4096 + Math.floor((P[G.v] - bb[G.v]) / G.cs)); if (!L) return false;
+        const d = [0, 0, 0]; d[ax] = sgn; d[(ax + 1) % 3] = 1.3e-4; d[(ax + 2) % 3] = 2.1e-4;
+        for (const t of L) {
+          const e1 = [t[3] - t[0], t[4] - t[1], t[5] - t[2]], e2 = [t[6] - t[0], t[7] - t[1], t[8] - t[2]];
+          const px = d[1] * e2[2] - d[2] * e2[1], py = d[2] * e2[0] - d[0] * e2[2], pz = d[0] * e2[1] - d[1] * e2[0], det = e1[0] * px + e1[1] * py + e1[2] * pz;
+          if (Math.abs(det) < 1e-12) continue;
+          const inv = 1 / det, sx = P[0] - t[0], sy = P[1] - t[1], sz = P[2] - t[2], uu = (sx * px + sy * py + sz * pz) * inv; if (uu < 0 || uu > 1) continue;
+          const qx = sy * e1[2] - sz * e1[1], qy = sz * e1[0] - sx * e1[2], qz = sx * e1[1] - sy * e1[0], vv = (d[0] * qx + d[1] * qy + d[2] * qz) * inv; if (vv < 0 || uu + vv > 1) continue;
+          if ((e2[0] * qx + e2[1] * qy + e2[2] * qz) * inv > 1e-6) return true;
+        }
+        return false;
+      };
+      // outside = sees out in 3+ directions, or straight through along one axis (both ways); seeing out through
+      // one or two openings (a window above, a connector opening beside) is normal for an enclosed part
+      const escapes = P => { let n = 0, through = false; for (let ax = 0; ax < 3; ax++) { let k = 0; for (const s of [-1, 1]) if (!hits(P, ax, s)) { n++; k++; } if (k === 2) through = true; } return through ? 9 : n >= 3 ? 9 : n; };
+      const out = [];
+      const pc = [pcb.outline.reduce((a, q) => a + q[0], 0) / pcb.outline.length, pcb.outline.reduce((a, q) => a + q[1], 0) / pcb.outline.length];
+      const boardPts = pcb.outline.map(q => [q[0] + (pc[0] - q[0]) * 0.03, q[1] + (pc[1] - q[1]) * 0.03, pcb.thickness / 2]).concat([[pc[0], pc[1], pcb.thickness / 2]]);
+      if (boardPts.some(P => escapes(P) >= 3)) out.push('PCB');
+      for (const p of pcb.parts) {
+        if (p.plug && p.edge) continue;
+        const z0 = p.side === 'top' ? pcb.thickness : -p.h, z1 = z0 + p.h, m = 0.15;
+        const pts = [[p.cx, p.cy, (z0 + z1) / 2]];
+        for (const x of [p.x0 + m, p.x1 - m]) for (const y of [p.y0 + m, p.y1 - m]) for (const z of [z0 + m, z1 - m]) pts.push([x, y, z]);
+        if (pts.some(P => escapes(P) >= 3)) out.push(p.ref);
+        if (Date.now() > budget) { report.warnings.push('containment check stopped early (time limit)'); break; }
+      }
+      report.outside = out;
+    }
     budget = null; K().guard.deadline = 0;
     // outputs
     const { V } = K();
@@ -550,7 +839,7 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
       const b = bboxOf(p.polys), tris = K().triangles(p.polys);
       const edges = new Map(), q = v => `${Math.round(v.x * 1e4)},${Math.round(v.y * 1e4)},${Math.round(v.z * 1e4)}`;
       for (const [a, bb, c] of tris) for (const [u, w] of [[a, bb], [bb, c], [c, a]]) { const ku = q(u), kw = q(w); if (ku === kw) continue; const k = ku < kw ? ku + '|' + kw : kw + '|' + ku; edges.set(k, (edges.get(k) || 0) + 1); }
-      let open = 0; for (const n of edges.values()) if (n !== 2) open++;
+      let open = 0; for (const n of edges.values()) if (n % 2) open++;   // odd = a real hole; 4 = closed (non-manifold) seam
       // print orientation: rotate, then sit on the bed (z min = 0), centred on x/y
       let tf = null;
       if (p.print && p.print.rotate) {
@@ -571,6 +860,6 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
       .concat(parts.map(p => `${p.color ? `color("${p.color}") ` : ''}${p.explode ? `translate(${fv(p.explode)}) ` : ''}${p.name.replace(/[^\w]/g, '_')}();`)).join('\n') + '\n';
     return { parts: out, scad, logs, report, ms: Date.now() - t0 };
   }
-  return { run, context, HELP, EXAMPLES, Shape, Shape2D };
+  return { run, context, HELP, EXAMPLES, TEMPLATES, Shape, Shape2D };
 })();
 if (typeof module !== 'undefined') module.exports = Shape3D;

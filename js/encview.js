@@ -21,7 +21,7 @@ const EncView = (() => {
     wrap.innerHTML = `<div id="encMsg" class="encmsg"></div><div id="encInfo" class="encinfo"></div>
       <div id="encCodePanel" class="enc-code hidden">
         <div class="ecp-head"><b>3D script</b>
-          <select id="encTpl" title="Start from a template"><option value="">Templates…</option><option value="wristband">Wristband pod (Whoop-style)</option><option value="ecg">ECG chest patch (3 electrodes)</option><option value="box">Rounded box + lid</option></select>
+          <select id="encTpl" title="Start from a template (all are sized from your board)"><option value="">Templates…</option>${['Wrist', 'Chest', 'Body', 'Box'].map(cat => `<optgroup label="${{ Wrist: 'Wrist wearables', Chest: 'Chest / ECG', Body: 'Other body-worn', Box: 'Boxes' }[cat]}">${Shape3D.TEMPLATES.filter(t => t.cat === cat).map(t => `<option value="${t.id}" title="${esc(t.desc)}">${esc(t.name)}</option>`).join('')}</optgroup>`).join('')}</select>
           <button id="encHelp" title="Script API reference">?</button>
           <button id="encRun" class="primary" title="Build the model (Ctrl+Enter)">▶ Run</button>
           <button id="encCodeClose" title="Hide the editor">✕</button></div>
@@ -37,7 +37,7 @@ const EncView = (() => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') { e.preventDefault(); runEditor(); }
       else if (e.key === 'Tab') { e.preventDefault(); const t = e.target, s = t.selectionStart; t.setRangeText('  ', s, t.selectionEnd, 'end'); codeDirty = true; }
     });
-    $('#encTpl').onchange = e => { const k = e.target.value; e.target.value = ''; if (!k) return; if (codeDirty && !confirm('Replace the script in the editor with the template?')) return; $('#encCode').value = Shape3D.EXAMPLES[k]; codeDirty = true; runEditor(); };
+    $('#encTpl').onchange = e => { const k = e.target.value; e.target.value = ''; if (!k) return; if (codeDirty && !confirm('Replace the script in the editor with the template?')) return; $('#encCode').value = (Shape3D.TEMPLATES.find(t => t.id === k) || {}).code || Shape3D.EXAMPLES[k]; codeDirty = true; runEditor(); };
     $('#encHelp').onclick = () => { $('#encOut').innerHTML = `<pre class="ecp-help">${esc(Shape3D.HELP)}</pre>`; };
     $('#encRegen').onclick = () => { dirty = true; rebuild(true); };
     $('#encExplode').onclick = () => { ui.explode = !ui.explode; $('#encExplode').classList.toggle('on', ui.explode); place(); };
@@ -212,7 +212,9 @@ const EncView = (() => {
     else if (r) {
       h = `<div class="good">✓ ${r.parts.length} part${r.parts.length > 1 ? 's' : ''} in ${(r.ms / 1000).toFixed(1)} s</div>` +
         `<table class="pins">${r.parts.map(p => `<tr><td>${esc(p.name)}</td><td>${p.size_mm.map(v => v.toFixed(1)).join(' × ')} mm</td><td>${p.volume_cm3} cm³</td><td>${p.open_edges ? '<span class="muted" title="small mesh gaps — slicers repair them">≈ closed</span>' : 'watertight'}</td></tr>`).join('')}</table>` +
-        (r.report.collisions.length ? `<div class="bad">⚠ Collides with the board: ${r.report.collisions.map(x => `${esc(x.part)} ↔ ${esc(x.with)} (${x.overlap_mm3} mm³)`).join(', ')}</div>` : (c.ctx.pcb ? '<div class="muted">Fit check: no collisions with the PCB or components.</div>' : '')) +
+        (r.report.collisions.length ? `<div class="bad">⚠ Collides with the board: ${r.report.collisions.map(x => `${esc(x.part)} ↔ ${esc(x.with)} (${x.overlap_mm3} mm³)`).join(', ')}</div>` : '') +
+        ((r.report.outside || []).length ? `<div class="bad">⚠ Not inside the enclosure: ${r.report.outside.map(esc).join(', ')}</div>` : '') +
+        (c.ctx.pcb && !r.report.collisions.length && !(r.report.outside || []).length ? '<div class="good">✓ Fit check: the board and every part are inside, no collisions.</div>' : '') +
         (r.logs.length ? `<pre>${esc(r.logs.join('\n'))}</pre>` : '');
     }
     el.innerHTML = h;
