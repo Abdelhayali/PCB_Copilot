@@ -78,9 +78,18 @@
       <div id="pcbTools" class="tools hidden">
         <button id="btn3d" title="Switch between the 2D editor and a 3D view of the board">◈ 3D</button>
         <button id="btnGen" class="primary">Generate PCB</button>
-        <button id="btnPlace">Auto-place</button>
-        <button id="btnRoute">Route</button>
-        <button id="btnOptimize" title="Move / rotate parts and re-route until everything is connected">✨ Optimize</button>
+        <div class="dd"><button id="btnPlace" title="Place the parts on the board">Auto-place ▾</button>
+          <div class="ddm">
+            <button data-place="ai" title="The AI copilot plans the floor plan (decoupling next to pins, crystal at the MCU, connectors on edges…), then it is polished and routed">✦ AI place (copilot plans the layout)</button>
+            <button data-place="quick" title="Annealing on wire length with room for fan-out — no AI needed">Quick place (algorithm)</button>
+          </div></div>
+        <button id="btnRoute" title="Autoroute with rip-up and reroute (effort: Rules → Autorouter effort)">Route</button>
+        <div class="dd"><button id="btnOptimize" title="Move parts and re-route until everything is connected">✨ Optimize ▾</button>
+          <div class="ddm">
+            <button data-opt="route">Move parts until every net routes</button>
+            <button data-opt="shrink">…and make the board as small as possible</button>
+            <button data-opt="bottom">…also allowed to use the bottom side</button>
+          </div></div>
         <button id="btnUnroute">Clear routes</button>
         <button id="btnShape" title="Board outline: rectangle, rounded, circle / ellipse, custom">▭ Board</button>
         <button id="btnPourGnd" title="Copper pour (GND) on both layers">⬛ Pour GND</button>
@@ -101,7 +110,7 @@
       <svg id="pcbSvg" class="hidden"></svg>
       <div id="encView" class="hidden"></div>
       <div id="pcb3dView" class="hidden"></div>
-      <div id="routeBusy" class="hidden"><span class="spin"></span> <span id="routeMsg">Routing…</span> <button id="routeCancel">Cancel</button></div>
+      <div id="routeBusy" class="hidden"><span class="spin"></span> <span id="routeMsg">Routing…</span> <button id="routeCancel" title="Stop now and keep the best result found so far">Stop</button></div>
     </div>
     <div id="status"></div>
   </section>
@@ -227,6 +236,7 @@
       <label>Copper to board edge<input data-r="edgeClearance" type="number" step="0.05" min="0"><span>mm</span></label>
       <label>Copper layers<select data-r="layers"><option value="2">2 (top + bottom, vias)</option><option value="1">1 (top only)</option></select></label>
       <label class="chk"><input data-r="neckDown" type="checkbox"> Neck down when the full width does not fit</label>
+      <label>Autorouter effort (max time)<input data-r="routeTime" type="number" step="5" min="5" max="1800"><span>s</span></label>
       <label class="chk"><input data-r="viaInPad" type="checkbox"> Allow vias on SMD pins (via-in-pad — needs filled vias, extra cost). Off: vias only beside pins, or inside large exposed pads</label>
       <div class="rh">Fab minimums (DRC)</div>
       <label>Min trace width<input data-r="minTraceWidth" type="number" step="0.001"><span>mm</span></label>

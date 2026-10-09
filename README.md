@@ -62,7 +62,10 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
-- **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints. Auto-place keeps the board size and fits parts inside without overlaps; routed tracks are straightened into clean 0°/45°/90° runs with a clearance safety margin, so they pass DRC.
+- **PCB** — rule-driven 2-layer autorouter (Web Worker) with vias and neck-down, ratsnest, draggable footprints; routed tracks are straightened into clean 0°/45°/90° runs with a clearance safety margin, so they pass DRC.
+- **Routing that keeps trying** — negotiated rip-up and reroute: when a net is stuck, the router finds the nets in its way, rips them up, routes the stuck net and re-routes the others, learning which corridors are contested (history cost), with restarts — for up to the *Autorouter effort* time (Rules, default 90 s), stopping as soon as everything is routed. Progress shows the nets still unrouted; **Stop** keeps the best result so far. No vias on SMD pins (via-in-pad only as a flagged last resort).
+- **Placement** — **Auto-place ▾ → ✦ AI place**: the copilot plans the floor plan like a layout engineer (connectors on edges, decoupling caps at the pins they serve, crystal at the MCU, short USB pairs, room around fine-pitch ICs) and places everything with `place_footprints`; **Quick place** uses simulated annealing on wire length with fan-out room. Both keep the board size and avoid overlaps.
+- **✨ Optimize ▾** — moves parts (local re-arrangement around stuck nets and fresh global arrangements) and re-routes until every net is connected; **…and make the board as small as possible** then shrinks the outline step by step while everything still routes (e.g. 45×26 → 20.5×11.8 mm on the 555 example).
 - **Copper pours, arcs, bottom-side parts, curved boards** — GND (or any net) pours with clearance cut-outs; arc tracks; footprints on the bottom side (mirrored, bottom copper/silk/paste); rounded, round/elliptical or custom board outlines.
 - **3D board view** — switch the PCB editor between 2D and a 3D render of the manufactured board (both sides, parts, mask colour, pad finish).
 - **Enclosure** — a third tab builds a 3D-printable case around the PCB (follows the board outline, height from the tallest part, screw standoffs on PCB mounting holes, automatic openings for USB/jacks and holes above LEDs/buttons, snap-fit lid with vents); exports STL (base + lid) and parametric OpenSCAD.
@@ -109,7 +112,7 @@ API keys are stored in your browser's localStorage and sent directly from the pa
 ## Limitations
 
 - Palette parts (resistor, capacitor, LED, diodes, transistors, MOSFETs, regulator, op-amp, crystal, fuse, inductor, potentiometer, buzzer) are backed by real JLCPCB parts — their footprints and pinouts come from the part library and pins are matched by name, so e.g. the AMS1117's IN/OUT/tab and each LED's cathode land on the right pads. Pin headers / generic connectors and the push button keep standard generated footprints (a 4-pin tact switch's internal pairs are not documented in the library); if you pick a generated footprint from the Footprint menu, verify its pin order against your part's datasheet.
-- The router is a grid router without rip-up-and-retry; dense boards may leave nets unrouted — enlarge the board or run **Optimize placement**.
+- The router works on a grid; very dense boards can still leave a net unrouted within the time budget — run **✨ Optimize**, add a GND pour, or give it a bigger board.
 - Touch editing (drag/pinch) on phones is not implemented yet.
 
 ## Local models (llama.cpp, TabbyAPI, LM Studio, Ollama…)
@@ -211,7 +214,7 @@ Values follow JLCPCB's published capabilities; check [jlcpcb.com/capabilities](h
 | Delete | select, then `Del` (a segment splits its track) |
 | Edit | select a track or via → change net, layer, width / diameter, drill, position in **Properties** |
 
-Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when the track being drawn violates the clearance rule; vias placed while routing are checked too. **Route** (autorouter) keeps every existing track and only routes what is still unconnected; the ratsnest and the “routed” count follow the real copper.
+Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when the track being drawn violates the clearance rule; vias placed while routing are checked too. **Route** (autorouter) keeps every hand-drawn track and re-routes the rest with rip-up; the ratsnest and the “routed” count follow the real copper.
 
 ### Connectors on the board edge
 

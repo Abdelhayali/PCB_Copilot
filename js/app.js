@@ -198,16 +198,24 @@ const App = (() => {
   }
 
   // ---------- autorouter in a Web Worker ----------
-  let worker = null, routeReject = null;
+  let worker = null, routeReject = null, routeBest = null, routeResolve = null;
   function runRouter({ place = null, opt = {}, optimize = null } = {}) {
     if (worker) worker.terminate();
     return new Promise((resolve, reject) => {
-      routeReject = reject;
+      routeReject = reject; routeResolve = resolve; routeBest = null;
       worker = new Worker('js/route-worker.js');
       $('#routeBusy').classList.remove('hidden'); $('#routeMsg').textContent = place ? 'Placing…' : 'Routing…';
       worker.onmessage = e => {
         const m = e.data;
-        if (m.type === 'progress') { $('#routeMsg').textContent = `${m.iteration != null ? `Optimizing ${m.iteration}/${m.of} · ` : ''}Routing ${m.net} (${m.done + 1}/${m.total})${m.attempt > 1 ? ' · pass ' + m.attempt : ''}`; return; }
+        if (m.type === 'best') { routeBest = m; return; }
+        if (m.type === 'progress') {
+          const opt = m.optimizing ? `Optimizing placement ${m.iteration}/${m.of} · ` : '';
+          const time = m.budget ? ` · ${Math.round(m.elapsed)}/${Math.round(m.budget)} s` : '';
+          $('#routeMsg').textContent = m.phase === 'ripup'
+            ? `${opt}Rip-up & reroute · ${m.unrouted} unrouted · try ${m.iteration}${m.attempt > 1 ? ' · pass ' + m.attempt : ''}${time}`
+            : `${opt}Routing ${m.net} (${(m.done ?? 0) + 1}/${m.total ?? '?'})${m.attempt > 1 ? ' · pass ' + m.attempt : ''}${time}`;
+          return;
+        }
         worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden');
         if (m.type === 'error') { reject(new Error(m.message)); return; }
         Model.mutate(() => {
@@ -240,14 +248,27 @@ const App = (() => {
   }
 
   // ---------- placement optimiser ----------
-  async function runOptimize() {
+  async function runOptimize(o = {}) {
     try {
       showView('pcb');
-      const r = await runRouter({ optimize: { time_limit_s: 60, iterations: 14, allow_grow: true, allow_bottom: false } });
-      const o = r.optimized; Pcb.fit();
-      toast(o.unrouted.length ? `Optimized ${o.iterations} moves — ${o.routed}/${o.total} routed, still unrouted: ${o.unrouted.join(', ')}` : `✓ All ${o.total} nets routed after ${o.iterations} placement moves (${o.seconds}s)`, 7000);
-      showDrc(); return o;
+      const before = `${Model.S.board.w}×${Model.S.board.h}`;
+      const r = await runRouter({ optimize: Object.assign({ time_limit_s: o.shrink ? 180 : 150, allow_grow: false, allow_bottom: false }, o) });
+      const p = r.optimized; Pcb.fit();
+      if (!p) { showDrc(); return; }   // stopped: best kept
+      const size = `${p.board.w}×${p.board.h}`;
+      toast(p.unrouted.length ? `Optimized (${p.iterations} rounds) — ${p.routed}/${p.total} routed, still unrouted: ${p.unrouted.join(', ')}. Try a GND pour, a bigger board or AI place.` : `✓ All ${p.total} nets routed${size !== before ? ` · board ${before} → ${size} mm` : ''} (${p.seconds}s)`, 9000);
+      showDrc(); return p;
     } catch (e) { toast(e.message); }
+  }
+  // AI placement: the copilot plans the floor plan with place_footprints, then routes and fixes what is left
+  function aiPlace() {
+    const S = Model.S;
+    if (!S.components.length) { toast('Add parts first'); return; }
+    if (!AI.settings.anthropicKey && !AI.settings.oaiModels) { toast('AI place needs a model (⚙ Settings) — using quick place instead'); runPcb(boardWH(), false); return; }
+    showView('pcb'); setMode('agent');
+    const hasBoard = S.board.w > 0 && Pcb.placed().length;
+    send((hasBoard ? '' : 'First call generate_pcb with route: false to create the board and footprints. ') +
+      'Then auto-place the PCB for the easiest routing and a compact layout: read get_pcb_layout, plan the floor plan (follow the PCB PLACEMENT guidance: connectors on edges, decoupling caps next to the power pins they serve, crystal at the MCU, USB pair short and straight, room around fine-pitch ICs, functional groups along the signal flow), apply it with ONE place_footprints call for all parts, then route_pcb. If nets stay unrouted, move the parts around them and route again, or call optimize_pcb. Finish with run_drc and a two-line summary.');
   }
 
   // ---------- Gerber export: DRC first, then download or fix ----------
@@ -635,15 +656,17 @@ const App = (() => {
     $('#connStyle').value = Model.S.connStyle || 'auto';
     $('#connStyle').onchange = e => Model.mutate(() => { Model.S.connStyle = e.target.value; });
     $('#btnErc').onclick = () => { renderStatus(); $('#ercLink').click(); };
-    const routeMsg = r => r && r.routing ? `Routed ${r.routing.routed}/${r.routing.total} nets${r.routing.failed.length ? ' — unrouted: ' + r.routing.failed.join(', ') : ''}${r.routing.necked_down && r.routing.necked_down.length ? ' · necked down: ' + r.routing.necked_down.join(', ') : ''}` : 'Placed — press Route';
+    const routeMsg = r => r && r.routing && r.routing.stopped ? `Stopped — kept the best routing found (${r.routing.unrouted ? r.routing.unrouted + ' nets unrouted' : 'all nets routed'})` : r && r.routing ? `Routed ${r.routing.routed}/${r.routing.total} nets${r.routing.failed.length ? ' — unrouted: ' + r.routing.failed.join(', ') : ''}${r.routing.necked_down && r.routing.necked_down.length ? ' · necked down: ' + r.routing.necked_down.join(', ') : ''}${r.routing.seconds ? ` · ${r.routing.seconds}s` : ''}${r.routing.failed.length ? ' — try ✨ Optimize (moves parts) or ⬛ Pour GND' : ''}` : 'Placed — press Route';
     const runPcb = async (place, noRoute) => { try { const r = await runRouter({ place, opt: { noRoute } }); Pcb.fit(); const pl = r && r.placement, bad = pl && pl.fits === false; toast(routeMsg(r) + (bad ? ' · ⚠ ' + pl.hint : ''), bad ? 12000 : 6000); if (!noRoute) showDrc(); } catch (e) { toast(e.message); } };
     // empty Board W×H boxes = size the board to the parts; otherwise the outline is kept and the parts are fitted inside
     const boardWH = () => { const w = +$('#boardW').value || 0, h = +$('#boardH').value || 0; return w > 0 && h > 0 ? { w, h } : { fit: true }; };
     $('#btnGen').onclick = () => runPcb(boardWH(), false);
-    $('#btnPlace').onclick = () => runPcb(boardWH(), true);
+    $('#btnPlace').onclick = () => {};   // menu: AI place / quick place
+    $$('[data-place]').forEach(b => b.onclick = () => { document.activeElement && document.activeElement.blur(); if (b.dataset.place === 'ai') aiPlace(); else runPcb(boardWH(), true); });
     $('#btnRoute').onclick = () => runPcb(null, false);
     $('#btnRules').onclick = openRules; $('#btnDrc').onclick = () => showDrc(true);
-    $('#btnOptimize').onclick = runOptimize;
+    $('#btnOptimize').onclick = () => {};
+    $$('[data-opt]').forEach(b => b.onclick = () => { document.activeElement && document.activeElement.blur(); runOptimize({ shrink: b.dataset.opt !== 'route', allow_bottom: b.dataset.opt === 'bottom' }); });
     $('#btnPourGnd').onclick = () => {
       const S = Model.S, net = S.nets.GND ? 'GND' : prompt('Net for the copper pour', Object.keys(S.nets)[0] || 'GND');
       if (!net) return;
@@ -662,7 +685,21 @@ const App = (() => {
     };
     $('#shDraw').onclick = () => { $('#shapeModal').classList.add('hidden'); showView('pcb'); PcbView.drawOutline(+$('#shR').value); };
     initGerberCheck();
-    $('#routeCancel').onclick = () => { if (worker) { worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden'); if (routeReject) routeReject(new Error('Routing cancelled')); } };
+    $('#routeCancel').onclick = () => {
+      if (!worker) return;
+      worker.terminate(); worker = null; $('#routeBusy').classList.add('hidden');
+      if (routeBest) {   // stop = keep the best routing found so far
+        const b = routeBest; routeBest = null;
+        Model.mutate(() => {
+          if (b.positions) for (const [ref, pcb] of b.positions) { const c = Model.comp(ref); if (c) c.pcb = pcb; }
+          if (b.board) Model.S.board = b.board;
+          Model.S.pcb = b.pcb;
+        });
+        Pcb.ui.drc = null;
+        toast(`Stopped — kept the best result so far (${b.unrouted ? b.unrouted + ' nets unrouted' : 'all nets routed'})`, 5000);
+        if (routeResolve) routeResolve({ routing: { stopped: true, unrouted: b.unrouted } });
+      } else if (routeReject) routeReject(new Error('Routing cancelled'));
+    };
     initRules();
     $('#btnUnroute').onclick = () => Model.mutate(() => { Model.S.pcb = { traces: [], vias: [], routed: {} }; });
     const setBoard = () => Model.mutate(() => { const w = +$('#boardW').value, h = +$('#boardH').value; if (w > 0 && h > 0) { Model.S.board = { w, h }; Model.S.pcb = { traces: [], vias: [], routed: {} }; } });

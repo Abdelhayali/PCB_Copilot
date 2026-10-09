@@ -252,6 +252,8 @@ const Pcb = (() => {
       edgeParts.push({ c, side, plug }); lock.set(c, side === 'left' || side === 'right' ? 'x' : 'y');
     }
     const free = cs.filter(c => !lock.has(c));
+    // 2b) arrange for routability: anneal on wire length with fan-out room around each part, then legalise around it
+    if (opt.anneal !== false) anneal({ time_s: opt.anneal_s ?? 4, seed: opt.seed, fixed: new Set(edgeParts.map(e => e.c.ref)) });
     // 3) legalise: place parts one by one (connectors first, then biggest first) at the nearest free spot
     //    to where the schematic wants them — spiral search, inside the outline, no overlaps.
     const want = new Map(cs.map(c => [c, { x: c.pcb.x, y: c.pcb.y, rot: c.pcb.rot }]));
@@ -430,7 +432,7 @@ const Pcb = (() => {
   };
   function rules() {
     const r = Model.S.rules || {}, p = RULE_PRESETS[r.preset] || RULE_PRESETS.jlcpcb;
-    return Object.assign({ preset: 'jlcpcb', netWidths: {} }, p.values, r, { netWidths: Object.assign({}, r.netWidths || {}) });
+    return Object.assign({ preset: 'jlcpcb', netWidths: {}, routeTime: 90 }, p.values, r, { netWidths: Object.assign({}, r.netWidths || {}) });
   }
   const netWidth = (R, net) => +(R.netWidths[net] || (Model.isPower(net) ? R.powerTraceWidth : R.traceWidth));
   // Rules that violate the fab minimums (returned as warnings by setRules / DRC).
@@ -456,6 +458,7 @@ const Pcb = (() => {
     if (u.layers != null) { if (![1, 2].includes(+u.layers)) throw new Error('layers must be 1 or 2'); next.layers = +u.layers; }
     if (u.neckDown != null) next.neckDown = !!u.neckDown;
     if (u.viaInPad != null) next.viaInPad = !!u.viaInPad;
+    if (u.routeTime != null && u.routeTime !== '') { const v = +u.routeTime; if (!(v >= 5 && v <= 1800)) throw new Error('routeTime must be 5…1800 seconds'); next.routeTime = v; }
     if (u.netWidths) {
       next.netWidths = Object.assign({}, base.netWidths || {});
       for (const [n, v] of Object.entries(u.netWidths)) { if (v == null || v === '' || +v === 0) delete next.netWidths[n]; else next.netWidths[n] = +v; }
@@ -542,8 +545,11 @@ const Pcb = (() => {
       allPads.push(p);
     }
     // Existing copper is kept (opt.keep !== false): it becomes an obstacle for other nets and part of its own net.
-    const keep = opt.keep !== false;
-    const oldTraces = keep ? S.pcb.traces.slice() : [], oldVias = keep ? S.pcb.vias.slice() : [];
+    // Hand-drawn copper (manual) is always kept; earlier autorouted copper is kept only with opt.keepAll —
+    // otherwise it is routed again, so rip-up and reroute can move it.
+    const keep = opt.keep !== false, keepAuto = !!opt.keepAll;
+    const oldTraces = keep ? S.pcb.traces.filter(t => t.manual || keepAuto) : [], oldVias = keep ? S.pcb.vias.filter(v => v.manual || keepAuto) : [];
+    if (keep && !keepAuto) S.pcb = Object.assign({}, S.pcb, { traces: oldTraces.slice(), vias: oldVias.slice(), routed: {} });
     if (!keep) S.pcb = { traces: [], vias: [], routed: {}, pours: S.pcb.pours || [], holes: S.pcb.holes || [] };
     const conn = connectivity();
     const preT = [], preV = [];
@@ -905,7 +911,7 @@ const Pcb = (() => {
     }
 
     // ---------- negotiated rip-up and reroute, within a time budget ----------
-    const t0 = Date.now(), budget = Math.max(1, +(opt.time_limit_s ?? opt.timeLimit ?? 90)) * 1000, deadline = t0 + budget;
+    const t0 = Date.now(), budget = Math.max(1, +(opt.time_limit_s ?? opt.timeLimit ?? R.routeTime ?? 90)) * 1000, deadline = t0 + budget;
     const byId = {}; for (const j of todo) byId[j.id] = j;
     const result = {};   // net → routeNet result (committed)
     const rip = id => {
@@ -955,7 +961,7 @@ const Pcb = (() => {
       iter++;
       const cand = failedJobs().filter(j => !hard.has(j.net));
       // every remaining failure is blocked by pads / fixed copper even with the other nets ignored: a couple of fresh orders, then stop
-      if (!cand.length) { if (++noCand > 2) break; } else noCand = 0;
+      if (!cand.length && ++noCand > 2) break;
       if (cand.length && stale < 25) {
         const F = cand[Math.floor(rnd() * cand.length)];
         report(F.net, { phase: 'ripup' });
@@ -1292,75 +1298,202 @@ const Pcb = (() => {
     }
     return files;
   }
+  // ---------- placement by simulated annealing ----------
+  // Minimises a routability estimate: weighted half-perimeter wire length of every net, plus heavy penalties for
+  // overlapping courtyards and for leaving the board. Every part keeps a fan-out margin that grows with its pin count,
+  // and parts in opt.boost (e.g. on nets that failed to route) get extra room and pull.
+  // Fixed: locked parts, connectors on the board edge (they keep their edge). Returns the cost before / after.
+  function anneal(opt = {}) {
+    const S = Model.S, cs = placed(), idx = Model.pinIndex(), R = rules();
+    if (cs.length < 2) return { moved: 0 };
+    const t0 = Date.now(), limit = (opt.time_s ?? 3) * 1000, flip = !!opt.allow_bottom, boost = opt.boost || {};
+    let seed = opt.seed ?? 4242; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
+    const fixed = c => !!(c.pcb.locked || c.pcbEdge || edgeInfo(c) || (opt.fixed && opt.fixed.has(c.ref)));
+    const netNames = Object.keys(S.nets), nid = {}; netNames.forEach((n, i) => nid[n] = i);
+    const pitch = R.traceWidth + R.clearance;
+    // per part, per orientation (rot 0..3 × side): pad offsets on nets and the courtyard box (relative to the origin)
+    const P = cs.map(c => {
+      const save = c.pcb, orients = [];
+      for (const side of flip || c.pcb.side === 'B' ? ['F', 'B'] : ['F']) for (const rot of [0, 90, 180, 270]) {
+        c.pcb = { x: 0, y: 0, rot }; if (side === 'B') c.pcb.side = 'B';
+        const pads = padsOf(c, idx).filter(p => p.net).map(p => [nid[p.net], p.x, p.y]), b = fpBox(c);
+        orients.push({ rot, side, pads, box: b });
+      }
+      c.pcb = save;
+      const pins = padsOf(c, idx).length;
+      let o = orients.findIndex(q => q.rot === (c.pcb.rot || 0) && q.side === (c.pcb.side === 'B' ? 'B' : 'F')); if (o < 0) o = 0;
+      const nb = new Set(orients[0].pads.map(q => q[0]));
+      const margin = Math.min(3, 0.4 + pitch * Math.sqrt(pins) * 0.6 + (boost[c.ref] || 0));
+      return { c, x: c.pcb.x, y: c.pcb.y, o, orients, fixed: fixed(c), nets: [...nb], margin };
+    });
+    // net → [(part index, pad index list)] ; power nets weigh less (wide / poured), large nets get the usual HPWL correction
+    const netPins = netNames.map(() => []);
+    P.forEach((p, i) => { const by = {}; p.orients[0].pads.forEach((q, k) => (by[q[0]] = by[q[0]] || []).push(k)); for (const n in by) netPins[n].push([i, by[n]]); });
+    const netW = netNames.map((n, i) => { const k = netPins[i].reduce((a, q) => a + q[1].length, 0); if (k < 2) return 0; return (Model.isGround(n) ? 0.25 : Model.isPower(n) ? 0.45 : 1) * (1 + 0.05 * Math.max(0, k - 3)) * (1 + (opt.netBoost && opt.netBoost[n] || 0)); });
+    const hp = new Float64Array(netNames.length);
+    const netHP = n => {
+      let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+      for (const [i, ks] of netPins[n]) { const p = P[i], pads = p.orients[p.o].pads; for (const k of ks) { const x = p.x + pads[k][1], y = p.y + pads[k][2]; if (x < x0) x0 = x; if (x > x1) x1 = x; if (y < y0) y0 = y; if (y > y1) y1 = y; } }
+      return x1 >= x0 ? (x1 - x0) + (y1 - y0) : 0;
+    };
+    // board: rectangle fast path, polygon via corner tests
+    const W = S.board.w, H = S.board.h, poly = boardPoly(), rect = isRectBoard(), edgeM = Math.max(R.edgeClearance + 0.3, 0.6);
+    const BX = new Float64Array(P.length * 4);   // cached courtyard boxes (with fan-out margin)
+    const upd = i => { const p = P[i], b = p.orients[p.o].box, m = p.margin / 2; BX[i * 4] = p.x + b[0] - m; BX[i * 4 + 1] = p.y + b[1] - m; BX[i * 4 + 2] = p.x + b[2] + m; BX[i * 4 + 3] = p.y + b[3] + m; };
+    P.forEach((_, i) => upd(i));
+    const outside = p => {
+      const b0 = p.orients[p.o].box, b = [p.x + b0[0], p.y + b0[1], p.x + b0[2], p.y + b0[3]];
+      let o = Math.max(0, edgeM - b[0]) + Math.max(0, edgeM - b[1]) + Math.max(0, b[2] - (W - edgeM)) + Math.max(0, b[3] - (H - edgeM));
+      if (!rect && !o) for (const [x, y] of [[b[0], b[1]], [b[2], b[1]], [b[2], b[3]], [b[0], b[3]]]) if (!inPoly(x, y, poly)) o += 1;
+      return o;
+    };
+    const ovI = (i, j) => { const w = Math.min(BX[i * 4 + 2], BX[j * 4 + 2]) - Math.max(BX[i * 4], BX[j * 4]); if (w <= 0) return 0; const h = Math.min(BX[i * 4 + 3], BX[j * 4 + 3]) - Math.max(BX[i * 4 + 1], BX[j * 4 + 1]); return h > 0 ? w * h : 0; };
+    let OV = 4; const OUT = 60;
+    const partCost = i => { let s = OUT * outside(P[i]); for (let j = 0; j < P.length; j++) if (j !== i) s += OV * ovI(i, j); return s; };
+    let wire = 0; for (let n = 0; n < netNames.length; n++) { hp[n] = netHP(n); wire += netW[n] * hp[n]; }
+    const penAll = () => { let s = 0; for (let i = 0; i < P.length; i++) s += OUT * outside(P[i]); for (let i = 0; i < P.length; i++) for (let j = i + 1; j < P.length; j++) s += OV * ovI(i, j); return s; };
+    let pen = penAll();
+    const startCost = wire + pen;
+    const mov = P.map((p, i) => i).filter(i => !P[i].fixed);
+    if (!mov.length) return { moved: 0, cost: startCost };
+    // one move: change parts, recompute the touched nets and their penalties
+    const apply = (list, change) => {
+      const nets = new Set(); for (const i of list) for (const n of P[i].nets) nets.add(n);
+      let before = 0; for (const n of nets) before += netW[n] * hp[n];
+      let pb = 0; for (const i of list) pb += partCost(i); if (list.length === 2) pb -= OV * ovI(list[0], list[1]);
+      const u0 = change(), undo = () => { u0(); for (const i of list) upd(i); };
+      for (const i of list) upd(i);
+      const nh = new Map(); let after = 0; for (const n of nets) { const v = netHP(n); nh.set(n, v); after += netW[n] * v; }
+      let pa = 0; for (const i of list) pa += partCost(i); if (list.length === 2) pa -= OV * ovI(list[0], list[1]);
+      return { d: (after - before) + (pa - pb), commit: () => { for (const [n, v] of nh) hp[n] = v; wire += after - before; pen += pa - pb; }, undo };
+    };
+    const diag = Math.hypot(W, H);
+    const propose = T01 => {
+      const r = rnd(), i = mov[Math.floor(rnd() * mov.length)], p = P[i];
+      if (r < 0.62 || mov.length < 2) {
+        const rad = Math.max(0.3, diag * 0.35 * T01), ox = p.x, oy = p.y;
+        return apply([i], () => { p.x += (rnd() * 2 - 1) * rad; p.y += (rnd() * 2 - 1) * rad; return () => { p.x = ox; p.y = oy; }; });
+      }
+      if (r < 0.8) { const oo = p.o, per = 4; return apply([i], () => { const s = Math.floor(p.o / per); p.o = s * per + Math.floor(rnd() * per); return () => { p.o = oo; }; }); }
+      if (r < 0.95 || !flip) {
+        const j = mov[Math.floor(rnd() * mov.length)]; if (j === i) return null; const q = P[j];
+        return apply([i, j], () => { const ax = p.x, ay = p.y; p.x = q.x; p.y = q.y; q.x = ax; q.y = ay; return () => { q.x = p.x; q.y = p.y; p.x = ax; p.y = ay; }; });
+      }
+      if (p.orients.length < 8) return null;
+      const oo = p.o; return apply([i], () => { p.o = (p.o + 4) % 8; return () => { p.o = oo; }; });
+    };
+    // temperature from the typical uphill step
+    let sum = 0, cnt = 0;
+    for (let k = 0; k < 60; k++) { const m = propose(1); if (!m) continue; if (m.d > 0) { sum += m.d; cnt++; } m.undo(); }
+    const T0 = Math.max(0.05, (cnt ? sum / cnt : 1) * (opt.hot ?? 1.0));
+    let T = T0, moves = 0, best = { cost: wire + pen, s: P.map(p => [p.x, p.y, p.o]) };
+    const perT = Math.max(150, 30 * mov.length);
+    while (Date.now() - t0 < limit && T > T0 * 2e-4) {
+      for (let k = 0; k < perT; k++) {
+        const m = propose(Math.min(1, T / T0)); if (!m) continue; moves++;
+        if (m.d <= 0 || rnd() < Math.exp(-m.d / T)) { m.commit(); if (wire + pen < best.cost - 1e-9) best = { cost: wire + pen, s: P.map(p => [p.x, p.y, p.o]) }; }
+        else m.undo();
+      }
+      T *= 0.9;
+      // overlaps become more expensive as it cools, so the result needs little legalising
+      OV = Math.min(40, OV * 1.06); pen = penAll();
+      if (wire + pen < best.cost - 1e-9 || best.pen > 0) { best = { cost: wire + pen, pen: pen, s: P.map(p => [p.x, p.y, p.o]) }; }
+    }
+    // write back the best state
+    best.s.forEach(([x, y, o], i) => { const p = P[i]; if (p.fixed) return; const q = p.orients[o]; p.c.pcb.x = +(Math.round(x / 0.05) * 0.05).toFixed(3); p.c.pcb.y = +(Math.round(y / 0.05) * 0.05).toFixed(3); p.c.pcb.rot = q.rot; if (q.side === 'B') p.c.pcb.side = 'B'; else delete p.c.pcb.side; });
+    return { moves, cost_before: +startCost.toFixed(1), cost_after: +best.cost.toFixed(1), seconds: +((Date.now() - t0) / 1000).toFixed(1) };
+  }
+
+  // Legalise a placement after free moves: connectors back on their edge, no overlaps, everything on the board, snapped.
+  function legalisePlacement(gap = 0.4) {
+    const S = Model.S, lock = new Map();
+    for (const c of placed()) if (c.pcbEdge || edgeInfo(c) || c.pcb.locked) lock.set(c, 'xy');
+    separate(placed(), gap, lock);
+    for (const c of placed()) if (c.pcbEdge || edgeInfo(c)) {
+      const b = fpBox(c), side = c.pcbEdge || [['left', b[0]], ['right', S.board.w - b[2]], ['top', b[1]], ['bottom', S.board.h - b[3]]].sort((p, q) => p[1] - q[1])[0][0];
+      const had = c.pcbEdge; placeFootprint(c.ref, { edge: side }); if (!had) delete c.pcbEdge;
+    } else if (!c.pcb.locked) clampInside(c, boardPoly(), Math.max(rules().edgeClearance + 0.3, 0.6), S.board.w, S.board.h);
+    separate(placed().filter(c => !lock.has(c)), gap * 0.5, new Map());
+    for (const c of placed()) { c.pcb.x = +(Math.round(c.pcb.x / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round(c.pcb.y / 0.05) * 0.05).toFixed(3); }
+    return { overlaps: overlaps(placed(), 0).map(([a, b]) => `${a.ref}/${b.ref}`), outside: placed().filter(c => !boxInside(c, boardPoly(), -0.05)).map(c => c.ref) };
+  }
+  // Move parts until every net routes (and, with opt.shrink, make the board smaller while it still routes).
+  // Each round: give the parts on unrouted nets more room and pull, re-anneal locally from the best placement,
+  // legalise, route with rip-up; keep the best (fewest unrouted, then smallest board, then shortest copper).
   function optimize(opt = {}) {
-    const S = Model.S, t0 = Date.now(), limit = (opt.time_limit_s || 60) * 1000, maxIt = opt.iterations || 12, grow = !!opt.allow_grow, flip = !!opt.allow_bottom;
+    const S = Model.S, t0 = Date.now(), limit = (opt.time_limit_s || 120) * 1000, maxIt = opt.iterations || 60;
+    const grow = !!opt.allow_grow, flip = !!opt.allow_bottom, shrink = !!opt.shrink, rt = opt.route_time_s || 12, rtLong = opt.route_time_long_s || 45;
     if (!placed().length || !S.board.w) throw new Error('Generate the PCB first');
     const manual = { traces: S.pcb.traces.filter(t => t.manual), vias: S.pcb.vias.filter(v => v.manual) };
     const clone = o => JSON.parse(JSON.stringify(o));
     const snapPlace = () => placed().map(c => [c.ref, clone(c.pcb)]);
     const applyPlace = arr => arr.forEach(([ref, q]) => { const c = Model.comp(ref); if (c) c.pcb = clone(q); });
-    let seed = 12345; const rnd = () => (seed = (seed * 1103515245 + 12345) % 2147483648) / 2147483648;
-    let it = 0;
-    const evaluate = () => {
+    let it = 0, phase = 'route';
+    const left = () => limit - (Date.now() - t0);
+    const evaluate = (secs = rt) => {
       S.pcb = { traces: manual.traces.slice(), vias: manual.vias.slice(), pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: {} };
-      route({ time_limit_s: opt.route_time_s || 6, strictVias: true, onProgress: opt.onProgress ? p => opt.onProgress(Object.assign({}, p, { iteration: it, of: maxIt, optimizing: true })) : null });
-      const st = status(); return { failed: st.unrouted.length, len: st.trace_length_mm, unrouted: st.unrouted };
+      route({ time_limit_s: Math.max(3, Math.min(secs, left() / 1000)), onProgress: opt.onProgress ? p => opt.onProgress(Object.assign({}, p, { iteration: it, of: maxIt, optimizing: true, stage: phase })) : null });
+      const st = status(), cs = placed(), poly = boardPoly();
+      // parts that overlap or stick out of the board make the layout invalid, whatever the router says
+      const bad = overlaps(cs, 0.05).length + cs.filter(c => !boxInside(c, poly, -0.05)).length;
+      return { failed: st.unrouted.length + bad * 2, bad, len: st.trace_length_mm, unrouted: st.unrouted, area: +(S.board.w * S.board.h).toFixed(1) };
     };
-    const better = (a, b) => a.failed < b.failed || (a.failed === b.failed && a.len < b.len - 0.5);
-    let cur = evaluate();
+    const better = (a, b) => a.failed < b.failed || (a.failed === b.failed && (a.area < b.area - 1 || (Math.abs(a.area - b.area) <= 1 && a.len < b.len - 0.5)));
+    const legalise = () => legalisePlacement();
+    const scaleBoard = f => {
+      const cx = S.board.w / 2, cy = S.board.h / 2;
+      for (const c of placed()) { c.pcb.x = cx * f + (c.pcb.x - cx) * f; c.pcb.y = cy * f + (c.pcb.y - cy) * f; }
+      S.board.w = +(S.board.w * f).toFixed(1); S.board.h = +(S.board.h * f).toFixed(1);
+      if (S.board.shape && S.board.shape.pts) S.board.shape.pts = S.board.shape.pts.map(q => [+(q[0] * f).toFixed(3), +(q[1] * f).toFixed(3)]);
+      for (const h of S.pcb.holes || []) { h.x = cx * f + (h.x - cx) * f; h.y = cy * f + (h.y - cy) * f; }
+    };
+    let cur = evaluate(rtLong);
     let best = { score: cur, place: snapPlace(), pcb: clone(S.pcb), board: clone(S.board) };
-    const history = [{ iteration: 0, unrouted: cur.failed, length_mm: cur.len, move: 'start' }];
-    const idx = Model.pinIndex();
-    const movable = () => placed().filter(c => !c.pcbEdge && !c.pcb.locked && !edgeInfo(c));
-    while (it < maxIt && best.score.failed > 0 && Date.now() - t0 < limit) {
+    if (opt.onBest) opt.onBest({ unrouted: cur.failed });
+    const history = [{ iteration: 0, unrouted: cur.failed, length_mm: cur.len, board: `${S.board.w}×${S.board.h}`, move: 'start' }];
+    const pressure = {};   // nets that keep failing get more pull and their parts more room
+    const applyPressure = (boost, netBoost) => { if (Object.keys(netBoost).length) anneal({ time_s: Math.min(2, left() / 6000), hot: 0.2, seed: 77 + it, boost, netBoost, allow_bottom: flip }); };
+    let shrinkStep = 0.94, stuck = 0;
+    while (it < maxIt && left() > 4000) {
       it++;
       applyPlace(best.place); S.board = clone(best.board); S.pcb = clone(best.pcb);
-      const failed = best.score.unrouted, pads = placed().flatMap(c => padsOf(c, idx));
-      const involved = movable().filter(c => pads.some(p => p.ref === c.ref && failed.includes(p.net)));
-      const pool = involved.length ? involved : movable();
-      const pick = () => pool[Math.floor(rnd() * pool.length)];
-      const kind = ['toward', 'rotate', 'swap', 'toward', grow ? 'grow' : 'rotate', flip ? 'flip' : 'toward'][(it - 1) % 6];
-      let desc = kind;
-      if (kind === 'toward' && pool.length) {
-        const c = pick(), own = new Set(padsOf(c, idx).map(p => p.net).filter(n => failed.includes(n) || rnd() < 0.3));
-        const tgt = pads.filter(p => p.ref !== c.ref && own.has(p.net));
-        if (tgt.length) { const tx = tgt.reduce((a, p) => a + p.x, 0) / tgt.length, ty = tgt.reduce((a, p) => a + p.y, 0) / tgt.length, f = 0.35 + 0.3 * rnd(); c.pcb.x += (tx - c.pcb.x) * f; c.pcb.y += (ty - c.pcb.y) * f; desc = `move ${c.ref} toward its connections`; }
-      } else if (kind === 'rotate' && pool.length) { const c = pick(); c.pcb.rot = ((c.pcb.rot || 0) + (rnd() < 0.5 ? 90 : 180)) % 360; desc = `rotate ${c.ref}`; }
-      else if (kind === 'swap' && pool.length > 1) {
-        const a = pick(); let b = pick(); for (let k = 0; k < 6 && b === a; k++) b = pick();
-        if (a !== b) { const ax = a.pcb.x, ay = a.pcb.y; a.pcb.x = b.pcb.x; a.pcb.y = b.pcb.y; b.pcb.x = ax; b.pcb.y = ay; desc = `swap ${a.ref} ↔ ${b.ref}`; }
-      } else if (kind === 'flip' && pool.length) { const c = pick(); if (c.pcb.side === 'B') delete c.pcb.side; else c.pcb.side = 'B'; desc = `move ${c.ref} to the ${c.pcb.side === 'B' ? 'bottom' : 'top'} side`; }
-      else if (kind === 'grow') {
-        const f = 1.1, cx = S.board.w / 2, cy = S.board.h / 2;
-        for (const c of placed()) { c.pcb.x = cx * f + (c.pcb.x - cx) * f; c.pcb.y = cy * f + (c.pcb.y - cy) * f; }
-        S.board.w = +(S.board.w * f).toFixed(1); S.board.h = +(S.board.h * f).toFixed(1);
-        if (S.board.shape && S.board.shape.pts) S.board.shape.pts = S.board.shape.pts.map(q => [q[0] * f, q[1] * f]);
-        desc = `enlarge board to ${S.board.w}×${S.board.h} mm`;
-      }
-      // keep connectors on their edges, remove overlaps, stay on the board
-      const lock = new Map();
-      for (const c of placed()) if (c.pcbEdge || edgeInfo(c) || c.pcb.locked) lock.set(c, 'xy');
-      separate(placed(), 1.0, lock);
-      for (const c of placed()) if (c.pcbEdge || edgeInfo(c)) {
-        const b = fpBox(c), side = c.pcbEdge || [['left', b[0]], ['right', S.board.w - b[2]], ['top', b[1]], ['bottom', S.board.h - b[3]]].sort((p, q) => p[1] - q[1])[0][0];
-        const had = c.pcbEdge; placeFootprint(c.ref, { edge: side }); if (!had) delete c.pcbEdge;
-      } else {
-        const b = fpBox(c), m = 1;
-        if (b[0] < m) c.pcb.x += m - b[0]; if (b[1] < m) c.pcb.y += m - b[1];
-        if (b[2] > S.board.w - m) c.pcb.x -= b[2] - (S.board.w - m); if (b[3] > S.board.h - m) c.pcb.y -= b[3] - (S.board.h - m);
-      }
-      for (const c of placed()) { c.pcb.x = +(Math.round(c.pcb.x / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round(c.pcb.y / 0.05) * 0.05).toFixed(3); }
-      const sc = evaluate();
+      let desc = '';
+      if (best.score.failed > 0) {
+        phase = 'route';
+        for (const n of best.score.unrouted) pressure[n] = (pressure[n] || 0) + 1;
+        const idx = Model.pinIndex(), boost = {}, netBoost = {};
+        for (const [n, k] of Object.entries(pressure)) netBoost[n] = Math.min(4, 0.8 * k);
+        for (const c of placed()) for (const p of padsOf(c, idx)) if (p.net && pressure[p.net]) boost[c.ref] = Math.min(2.5, (boost[c.ref] || 0) + 0.25 * pressure[p.net]);
+        if (grow && stuck >= 4) { scaleBoard(1.08); stuck = 0; desc = `enlarge board to ${S.board.w}×${S.board.h} mm, re-arrange`; }
+        if (!desc && it % 2 === 0) {
+          // a fresh global arrangement (different seed) inside the same outline
+          fitInside({ anneal_s: Math.min(5, left() / 4000), seed: 3000 + it * 104729 });
+          applyPressure(boost, netBoost);
+          desc = 'new arrangement of all parts';
+        } else {
+          desc = desc || `re-arrange around ${best.score.unrouted.slice(0, 3).join(', ')}${best.score.unrouted.length > 3 ? '…' : ''}`;
+          anneal({ time_s: Math.min(4, left() / 4000), hot: stuck > 2 ? 0.6 : 0.25, seed: 1000 + it * 7919, boost, netBoost, allow_bottom: flip });
+        }
+      } else if (shrink) {
+        phase = 'shrink';
+        scaleBoard(shrinkStep); desc = `shrink board to ${S.board.w}×${S.board.h} mm`;
+        anneal({ time_s: Math.min(3, left() / 4000), hot: 0.3, seed: 2000 + it * 7919, allow_bottom: flip });
+      } else break;
+      legalise();
+      let sc = evaluate();
+      // a promising candidate (no worse than the best) gets the full rip-up time before it is judged
+      if (sc.failed > 0 && !sc.bad && sc.failed <= best.score.failed && left() > 15000) sc = evaluate(rtLong);
       const kept = better(sc, best.score);
-      history.push({ iteration: it, move: desc, unrouted: sc.failed, length_mm: sc.len, kept });
-      if (kept) best = { score: sc, place: snapPlace(), pcb: clone(S.pcb), board: clone(S.board) };
+      history.push({ iteration: it, move: desc, unrouted: sc.failed, length_mm: sc.len, board: `${S.board.w}×${S.board.h}`, kept });
+      if (kept) { best = { score: sc, place: snapPlace(), pcb: clone(S.pcb), board: clone(S.board) }; stuck = 0; if (opt.onBest) opt.onBest({ unrouted: sc.failed }); }
+      else { stuck++; if (phase === 'shrink') { shrinkStep = 1 - (1 - shrinkStep) / 2; if (shrinkStep > 0.985) break; } }
     }
     applyPlace(best.place); S.board = clone(best.board); S.pcb = clone(best.pcb);
     const st = status();
     return { iterations: it, routed: st.routed, total: st.nets, unrouted: st.unrouted, trace_length_mm: st.trace_length_mm, board: S.board, seconds: +((Date.now() - t0) / 1000).toFixed(1), history };
   }
 
-  return { addMountingHoles, autoPlace, placeFootprint, optimize, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
+  return { addMountingHoles, autoPlace, placeFootprint, optimize, anneal, legalisePlacement, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
 })();
 
 // Minimal ZIP (store, no compression) writer.
