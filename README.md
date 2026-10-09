@@ -6,6 +6,12 @@ An AI copilot for electronics design: describe a circuit in plain language and i
 
 ## See it in action
 
+**From one prompt to a routed board and a 3D-printed case** — the copilot (Gemini Flash Lite) designs an ESP32 board from *"create PCB for ESP"*: real JLCPCB parts, schematic, placement, rip-up autorouting (21/21 nets, DRC 0 errors), GND pours, then a fitted enclosure and a Whoop-style wristband pod (sped up 5×).
+
+[![Prompt to PCB to enclosure](docs/media/demo-esp32-board.gif)](docs/media/demo-esp32-board.mp4)
+
+▶ [Watch the full-speed video (MP4)](docs/media/demo-esp32-board.mp4)
+
 **AI copilot designing a circuit** (local Qwen 27B model, real tool calls, sped up)
 
 ![AI copilot building a circuit](docs/media/ai-copilot.gif)
