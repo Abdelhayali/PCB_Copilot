@@ -597,11 +597,13 @@ const Pcb = (() => {
         for (let i = 0; i < d.length; i += 2) { const x = cx + d[i], y = cy + d[i + 1]; if (x >= 0 && y >= 0 && x < W && y < H) { const k = layerOff + y * W + x; if (map[k] < val) map[k] = val; } }
       };
       // Build "where may this net's centreline / vias go" maps for width w.
+      // grid rounding can eat a few µm of clearance: keep a small safety margin so DRC never sees 0.199 vs 0.2
+      const safe = Math.max(0.01, g * 0.1);
       function buildMaps(id, w) {
         blockT.fill(0); blockV.fill(0); own.fill(0);
         const eT = R.edgeClearance + w / 2, eV = R.edgeClearance + vr;
         for (let i = 0; i < N; i++) { if (edge[i] < eT) { blockT[i] = 1; if (L > 1) blockT[N + i] = 1; } if (edge[i] < eV) blockV[i] = 1; }
-        const rT = w / 2 + R.clearance, rV = vr + R.clearance;
+        const rT = w / 2 + R.clearance + safe, rV = vr + R.clearance + safe;
         for (const p of allPads) {
           if (p.id === id) {
             for (const c of p.cells) {
@@ -625,7 +627,7 @@ const Pcb = (() => {
         }
         for (const v of gvias) {
           if (v.id === id) { for (let l = 0; l < L; l++) markDisk(own, l * N, v.x, v.y, vr, v.d); continue; }
-          for (let l = 0; l < L; l++) markDisk(blockT, l * N, v.x, v.y, w / 2 + v.d / 2 + R.clearance);
+          for (let l = 0; l < L; l++) markDisk(blockT, l * N, v.x, v.y, w / 2 + v.d / 2 + R.clearance + safe);
           markDisk(blockV, 0, v.x, v.y, Math.max(v.d / 2 + vr + R.clearance, (v.hole ? v.d : R.viaDrill) / 2 + R.viaDrill / 2 + R.minHoleToHole));
         }
       }
@@ -726,14 +728,49 @@ const Pcb = (() => {
               const fits = p => Math.min(p.w, p.h) >= w - 1e-9; // only run to the pad centre if the trace fits inside the pad
               const sp = padOf[run[0]]; if (sp && fits(allPads[sp - 1])) { const p = allPads[sp - 1]; pts.unshift([p.x, p.y]); }
               if (endPad && fits(endPad)) pts.push([endPad.x, endPad.y]);
-              const out = [pts[0]];
-              for (let k = 1; k < pts.length; k++) {
-                const a = out.length > 1 ? out[out.length - 2] : null, b = out[out.length - 1], c = pts[k];
+              // straighten: replace grid staircases by the longest clear straight runs (0/45/90° where possible)
+              const lo = runL * N, wt = w - 1e-9;
+              const cellOK = (x, y) => x >= 0 && y >= 0 && x < W && y < H && !(blockT[lo + y * W + x] && own[lo + y * W + x] < wt);
+              const clear = (a, b) => {
+                const n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (g * 0.5)));
+                for (let k = 0; k <= n; k++) {
+                  const fx = (a[0] + (b[0] - a[0]) * k / n) / g, fy = (a[1] + (b[1] - a[1]) * k / n) / g;
+                  const x0 = Math.floor(fx), y0 = Math.floor(fy), x1 = Math.ceil(fx), y1 = Math.ceil(fy);
+                  if (!cellOK(x0, y0) || !cellOK(x1, y0) || !cellOK(x0, y1) || !cellOK(x1, y1)) return false;
+                }
+                return true;
+              };
+              const octo = (a, b) => { const dx = b[0] - a[0], dy = b[1] - a[1]; return Math.abs(dx) < 1e-6 || Math.abs(dy) < 1e-6 || Math.abs(Math.abs(dx) - Math.abs(dy)) < 1e-6; };
+              const smooth = [pts[0]];
+              for (let i = 0; i < pts.length - 1;) {
+                let j = i + 1;
+                for (let k = pts.length - 1; k > i + 1; k--) if (clear(pts[i], pts[k])) { j = k; break; }
+                const a = pts[i], b = pts[j];
+                if (!octo(a, b)) {
+                  // prefer a straight + 45° dog-leg over an odd angle
+                  const dx = b[0] - a[0], dy = b[1] - a[1], d = Math.min(Math.abs(dx), Math.abs(dy)), sx = Math.sign(dx), sy = Math.sign(dy);
+                  const m1 = Math.abs(dx) > Math.abs(dy) ? [b[0] - sx * d, a[1]] : [a[0], b[1] - sy * d], m2 = [a[0] + sx * d, a[1] + sy * d];
+                  const m = [m1, m2].find(q => clear(a, q) && clear(q, b));
+                  if (m) smooth.push(m);
+                }
+                smooth.push(b); i = j;
+              }
+              const out = [smooth[0]];
+              for (let k = 1; k < smooth.length; k++) {
+                const a = out.length > 1 ? out[out.length - 2] : null, b = out[out.length - 1], c = smooth[k];
+                if (Math.hypot(c[0] - b[0], c[1] - b[1]) < 1e-6) continue;
                 if (a && Math.abs((b[0] - a[0]) * (c[1] - b[1]) - (b[1] - a[1]) * (c[0] - b[0])) < 1e-9) out[out.length - 1] = c; else out.push(c);
               }
               if (out.length >= 2) segs.push({ net: job.net, layer: runL ? 'B' : 'F', w: +w.toFixed(4), pts: out.map(q => [+q[0].toFixed(4), +q[1].toFixed(4)]) });
-              tcells.push({ id, l: runL, w, cells: run.map(s => s % N) });
-              for (const s of run) if (own[s] < w) own[s] = w;
+              // the copper now follows the straightened track: re-rasterise it for clearance and for the net's tree
+              const cells = new Set();
+              for (let k = 1; k < out.length; k++) {
+                const a = out[k - 1], b = out[k], n = Math.max(1, Math.ceil(Math.hypot(b[0] - a[0], b[1] - a[1]) / (g * 0.5)));
+                for (let q = 0; q <= n; q++) { const x = Math.round((a[0] + (b[0] - a[0]) * q / n) / g), y = Math.round((a[1] + (b[1] - a[1]) * q / n) / g); if (x >= 0 && y >= 0 && x < W && y < H) cells.add(y * W + x); }
+              }
+              for (const s of run) if (!cells.has(s % N) && !padOf[s]) tree.delete(s);
+              for (const c of cells) { tree.add(lo + c); if (own[lo + c] < w) own[lo + c] = w; }
+              tcells.push({ id, l: runL, w, cells: [...cells] });
             }
             run = [];
           };
