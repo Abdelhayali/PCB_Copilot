@@ -87,6 +87,11 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             self._login()
             return False
         return True
+    def end_headers(self):
+        # never let browsers run stale app code after an update
+        self.send_header("Cache-Control", "no-cache, must-revalidate")
+        super().end_headers()
+
     def do_GET(self):
         path = self.path.split("?")[0]
         if path == "/llm-proxy/_ping":

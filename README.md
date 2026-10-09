@@ -190,3 +190,7 @@ Values follow JLCPCB's published capabilities; check [jlcpcb.com/capabilities](h
 | Edit | select a track or via → change net, layer, width / diameter, drill, position in **Properties** |
 
 Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when the track being drawn violates the clearance rule; vias placed while routing are checked too. **Route** (autorouter) keeps every existing track and only routes what is still unconnected; the ratsnest and the “routed” count follow the real copper.
+
+### Connectors on the board edge
+
+**Generate PCB** puts connectors on the nearest board edge automatically: USB, DC jacks, RF and card connectors are rotated so the **opening faces outward, flush with the edge** (so a cable can plug in); pin headers and terminals sit just inside the edge. To choose the edge yourself, select the footprint on the PCB and click **⇤ Left / ⤒ Top / ⤓ Bottom / Right ⇥** in Properties — or ask the AI ("put the USB connector on the bottom edge"), which uses the `place_footprint` tool. The choice is remembered for later re-placements; press **Route** afterwards to reconnect.

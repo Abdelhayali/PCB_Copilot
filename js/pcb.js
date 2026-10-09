@@ -19,39 +19,124 @@ const Pcb = (() => {
   const placed = () => Model.S.components.filter(c => c.pcb && Lib.footprint(c.footprint));
 
   // ---------- auto placement ----------
-  function autoPlace(opt = {}) {
-    const S = Model.S, cs = S.components.filter(c => Lib.footprint(c.footprint));
-    if (!cs.length) throw new Error('No components with footprints to place');
-    const k = 0.085, gap = 1.0;
-    for (const c of cs) c.pcb = { x: c.x * k, y: c.y * k, rot: c.rot || 0 };
+  // Connectors go on the board edge. Parts with an opening (USB, jacks, RF, card slots) face outward, flush with the edge.
+  const PLUG_RE = /USB|TYPE-?C|MICRO-?B|MINI-?B|JACK|BARREL|DC-?0\d|RJ-?45|RJ-?11|SMA\b|U\.FL|IPEX|SD-?CARD|MICRO-?SD|TF-?CARD|SIM/i;
+  const CONN_RE = /CONN|HEADER|TERMINAL|SCREW|PINHEADER|JST|XH-|PH-|MOLEX|WAGO/i;
+  function edgeInfo(c) {
+    const lib = c.lcsc && Model.S.lib && Model.S.lib[c.lcsc];
+    const text = [c.value, c.footprint, lib && lib.name, lib && lib.package, lib && lib.footprint && lib.footprint.name].filter(Boolean).join(' ');
+    const plug = PLUG_RE.test(text);
+    if (!plug && !(c.type === 'connector' || CONN_RE.test(text) || /^(J|CN|USB|P)\d+$/i.test(c.ref))) return null;
+    let front = null;
+    if (plug) {
+      // the contacts (SMD row, or all pads) sit at the back; the body/opening extends toward the front
+      const fp = Lib.footprint(c.footprint), smd = fp.pads.filter(q => !q.drill), use = smd.length ? smd : fp.pads;
+      const px = use.reduce((t, q) => t + q.x, 0) / use.length, py = use.reduce((t, q) => t + q.y, 0) / use.length;
+      const vx = (fp.box[0] + fp.box[2]) / 2 - px, vy = (fp.box[1] + fp.box[3]) / 2 - py;
+      front = Math.abs(vx) > Math.abs(vy) ? [Math.sign(vx) || 1, 0] : [0, Math.sign(vy) || 1];
+    }
+    return { plug, front };
+  }
+  const NORMAL = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
+  // rotation that makes the connector face the given edge (plugs: opening outward; headers: long side along the edge)
+  function edgeRot(c, side, info) {
+    if (info.front) {
+      for (const r of [0, 90, 180, 270]) { const [x, y] = Lib.rot(info.front[0], info.front[1], r); if (Math.round(x) === NORMAL[side][0] && Math.round(y) === NORMAL[side][1]) return r; }
+    }
+    const b = Lib.footprint(c.footprint).box, wide = (b[2] - b[0]) >= (b[3] - b[1]), horiz = side === 'top' || side === 'bottom';
+    return wide === horiz ? 0 : 90;
+  }
+  function separate(cs, gap, lock = new Map()) {
     const half = c => { const b = Lib.rotBox(Lib.footprint(c.footprint).box, c.pcb.rot); return [(b[2] - b[0]) / 2, (b[3] - b[1]) / 2, (b[0] + b[2]) / 2, (b[1] + b[3]) / 2]; };
-    for (let it = 0; it < 400; it++) {
+    for (let it = 0; it < 500; it++) {
       let moved = false;
       for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
         const a = cs[i], b = cs[j], ha = half(a), hb = half(b);
         const dx = (b.pcb.x + hb[2]) - (a.pcb.x + ha[2]), dy = (b.pcb.y + hb[3]) - (a.pcb.y + ha[3]);
         const ox = ha[0] + hb[0] + gap - Math.abs(dx), oy = ha[1] + hb[1] + gap - Math.abs(dy);
-        if (ox > 0 && oy > 0) {
-          moved = true;
-          if (ox < oy) { const s = (dx >= 0 ? 1 : -1) * ox / 2; a.pcb.x -= s; b.pcb.x += s; }
-          else { const s = (dy >= 0 ? 1 : -1) * oy / 2; a.pcb.y -= s; b.pcb.y += s; }
-        }
+        if (ox <= 0 || oy <= 0) continue;
+        const la = lock.get(a) || '', lb = lock.get(b) || '';
+        let axis = ox < oy ? 'x' : 'y';
+        if (la.includes(axis) && lb.includes(axis)) axis = axis === 'x' ? 'y' : 'x';
+        if (la.includes(axis) && lb.includes(axis)) continue;
+        const ov = axis === 'x' ? ox : oy, sg = (axis === 'x' ? dx : dy) >= 0 ? 1 : -1;
+        const ka = la.includes(axis) ? 0 : lb.includes(axis) ? 1 : 0.5, kb = lb.includes(axis) ? 0 : la.includes(axis) ? 1 : 0.5;
+        a.pcb[axis] -= sg * ov * ka; b.pcb[axis] += sg * ov * kb; moved = true;
       }
       if (!moved) break;
     }
-    let b = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const c of cs) { const a = fpBox(c); b = [Math.min(b[0], a[0]), Math.min(b[1], a[1]), Math.max(b[2], a[2]), Math.max(b[3], a[3])]; }
-    const m = opt.margin ?? 3;
-    let W = Math.ceil(b[2] - b[0] + 2 * m), H = Math.ceil(b[3] - b[1] + 2 * m);
-    let ox = m - b[0], oy = m - b[1];
-    if (opt.w && opt.h) {
-      if (opt.w >= W && opt.h >= H) { ox += (opt.w - W) / 2; oy += (opt.h - H) / 2; }
-      W = Math.max(W, opt.w); H = Math.max(H, opt.h);
+  }
+  const unionBox = list => { let b = [Infinity, Infinity, -Infinity, -Infinity]; for (const c of list) { const a = fpBox(c); b = [Math.min(b[0], a[0]), Math.min(b[1], a[1]), Math.max(b[2], a[2]), Math.max(b[3], a[3])]; } return b; };
+
+  function autoPlace(opt = {}) {
+    const S = Model.S, cs = S.components.filter(c => Lib.footprint(c.footprint));
+    if (!cs.length) throw new Error('No components with footprints to place');
+    const k = 0.085, gap = 1.0, m = opt.margin ?? 3;
+    for (const c of cs) c.pcb = { x: c.x * k, y: c.y * k, rot: c.rot || 0 };
+    separate(cs, gap);
+    // connectors → nearest edge (or the edge chosen earlier with place_footprint)
+    const cb = unionBox(cs), cx = (cb[0] + cb[2]) / 2, cy = (cb[1] + cb[3]) / 2;
+    const edgeParts = [], lock = new Map(), sideOf = new Map();
+    for (const c of cs) {
+      const info = edgeInfo(c); if (!info && !c.pcbEdge) continue;
+      const fb = fpBox(c), px = (fb[0] + fb[2]) / 2, py = (fb[1] + fb[3]) / 2;
+      const side = c.pcbEdge || [['left', px - cb[0]], ['right', cb[2] - px], ['top', py - cb[1]], ['bottom', cb[3] - py]].sort((a, b) => a[1] - b[1])[0][0];
+      c.pcb.rot = edgeRot(c, side, info || { front: null });
+      const b2 = fpBox(c);
+      if (side === 'left') c.pcb.x += cb[0] - b2[0]; if (side === 'right') c.pcb.x += cb[2] - b2[2];
+      if (side === 'top') c.pcb.y += cb[1] - b2[1]; if (side === 'bottom') c.pcb.y += cb[3] - b2[3];
+      edgeParts.push({ c, side, plug: !!(info && info.plug) }); sideOf.set(c, side);
+      lock.set(c, side === 'left' || side === 'right' ? 'x' : 'y');
     }
-    for (const c of cs) { c.pcb.x = Math.round((c.pcb.x + ox) / G) * G; c.pcb.y = Math.round((c.pcb.y + oy) / G) * G; }
-    S.board = { w: W, h: H };
+    separate(cs, gap, lock);
+    // board outline: flush with plug openings, a little margin behind headers, normal margin elsewhere
+    const others = cs.filter(c => !sideOf.has(c)), ob = others.length ? unionBox(others) : unionBox(cs), all = unionBox(cs);
+    const bound = { left: all[0] - m, right: all[2] + m, top: all[1] - m, bottom: all[3] + m };
+    for (const side of ['left', 'right', 'top', 'bottom']) {
+      const here = edgeParts.filter(e => e.side === side); if (!here.length) continue;
+      const out = side === 'left' || side === 'top' ? -1 : 1, idx = { left: 0, top: 1, right: 2, bottom: 3 }[side];
+      const ext = v => out < 0 ? Math.min(...v) : Math.max(...v);
+      const plugs = here.filter(e => e.plug), heads = here.filter(e => !e.plug);
+      let edge = ext(here.map(e => fpBox(e.c)[idx]).concat(others.length ? [ob[idx] + out * 1.5] : []));
+      if (!plugs.length) edge += out * 1.5;
+      bound[side] = edge;
+      // plugs flush with the edge, headers 1.5 mm in
+      for (const e of plugs) { const d = edge - fpBox(e.c)[idx]; if (side === 'left' || side === 'right') e.c.pcb.x += d; else e.c.pcb.y += d; }
+      for (const e of heads) { const d = edge - out * 1.5 - fpBox(e.c)[idx]; if (side === 'left' || side === 'right') e.c.pcb.x += d; else e.c.pcb.y += d; }
+    }
+    let W = bound.right - bound.left, H = bound.bottom - bound.top, ox = -bound.left, oy = -bound.top;
+    if (opt.w && opt.h && opt.w >= W && opt.h >= H) {
+      // a fixed board size: keep the edge parts on their edges, centre the rest
+      const ex = opt.w - W, ey = opt.h - H;
+      for (const c of cs) { const sd = sideOf.get(c); c.pcb.x += sd === 'right' ? ex : sd === 'left' ? 0 : ex / 2; c.pcb.y += sd === 'bottom' ? ey : sd === 'top' ? 0 : ey / 2; }
+      W = opt.w; H = opt.h;
+    }
+    W = Math.ceil(W * 10) / 10; H = Math.ceil(H * 10) / 10;
+    for (const c of cs) { c.pcb.x = +(Math.round((c.pcb.x + ox) / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round((c.pcb.y + oy) / 0.05) * 0.05).toFixed(3); }
+    S.board = { w: +W.toFixed(1), h: +H.toFixed(1) };
     S.pcb = { traces: [], vias: [], routed: {} };
-    return { board: S.board, placed: cs.length };
+    return { board: S.board, placed: cs.length, on_edge: edgeParts.map(e => `${e.c.ref}:${e.side}${e.plug ? ' (opening outward)' : ''}`) };
+  }
+
+  // Move / rotate one footprint, or put it on a board edge (plugs face outward, flush with the edge).
+  function placeFootprint(ref, o = {}) {
+    const S = Model.S, c = Model.comp(ref);
+    if (!c || !Lib.footprint(c.footprint)) throw new Error(`No footprint for "${ref}"`);
+    if (!c.pcb || !S.board.w) throw new Error('Generate the PCB first');
+    if (o.edge) {
+      if (!NORMAL[o.edge]) throw new Error('edge must be left, right, top or bottom');
+      const info = edgeInfo(c) || { plug: false, front: null };
+      c.pcbEdge = o.edge; c.pcb.rot = edgeRot(c, o.edge, info);
+      const b = fpBox(c), inset = info.plug ? 0 : 1.5;
+      if (o.edge === 'left') c.pcb.x += inset - b[0]; if (o.edge === 'right') c.pcb.x += S.board.w - inset - b[2];
+      if (o.edge === 'top') c.pcb.y += inset - b[1]; if (o.edge === 'bottom') c.pcb.y += S.board.h - inset - b[3];
+      if (o.along != null) { if (o.edge === 'left' || o.edge === 'right') c.pcb.y = +o.along; else c.pcb.x = +o.along; }
+    }
+    if (o.rot != null) c.pcb.rot = ((Math.round(+o.rot / 90) * 90) % 360 + 360) % 360;
+    if (o.x != null) c.pcb.x = +o.x; if (o.y != null) c.pcb.y = +o.y;
+    c.pcb.x = +(+c.pcb.x).toFixed(3); c.pcb.y = +(+c.pcb.y).toFixed(3);
+    const b = fpBox(c);
+    return { ref: c.ref, x: c.pcb.x, y: c.pcb.y, rot: c.pcb.rot, edge: c.pcbEdge || null, outside_board: b[0] < -0.01 || b[1] < -0.01 || b[2] > S.board.w + 0.01 || b[3] > S.board.h + 0.01 };
   }
 
   // ---------- design rules ----------
@@ -600,7 +685,7 @@ const Pcb = (() => {
     files['board-PTH.drl'] = drl + 'M30\n';
     return files;
   }
-  return { autoPlace, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
+  return { autoPlace, placeFootprint, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
 })();
 
 // Minimal ZIP (store, no compression) writer.

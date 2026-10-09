@@ -126,6 +126,7 @@ const App = (() => {
         <label>Footprint<select id="pFp">${fps.map(f => `<option ${f === c.footprint ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
         <div class="row"><button id="pRot">⟳ Rotate (R)</button><button id="pDel" class="danger">Delete</button></div>
+        ${view === 'pcb' && c.pcb ? `<div class="ph small">Place on board edge${c.pcbEdge ? ' · <span class="muted">' + c.pcbEdge + '</span>' : ''}</div><div class="row edgebtns"><button data-edge="left" title="Left edge">⇤ Left</button><button data-edge="top" title="Top edge">⤒ Top</button><button data-edge="bottom" title="Bottom edge">⤓ Bottom</button><button data-edge="right" title="Right edge">Right ⇥</button></div>` : ''}
         <div class="row"><button id="pEdit" style="flex:1">✎ ${c.type === 'part' ? 'Edit symbol &amp; footprint' : 'Make editable part'}</button></div>
         <div class="ph small">Pins</div><table class="pins">${Lib.type(c.type).pins(c).map(p => `<tr><td>${esc(p.num)}</td><td>${esc(p.name)}</td><td class="${idx[c.ref + '.' + p.num] ? '' : 'muted'}">${esc(idx[c.ref + '.' + p.num] || '—')}</td></tr>`).join('')}</table>`;
       const apply = (u) => { try { Model.mutate(() => Model.updateComponent(Object.assign({ ref: c.ref }, u))); if (u.new_ref) { Sch.ui.sel = u.new_ref; Pcb.ui.sel = u.new_ref; } } catch (e) { toast(e.message); } };
@@ -136,6 +137,7 @@ const App = (() => {
       $('#pRot').onclick = () => (view === 'sch' ? Sch : Pcb).key({ key: 'r' });
       $('#pDel').onclick = () => { Sch.select(null); Pcb.ui.sel = null; Model.mutate(() => Model.removeComponent(c.ref)); };
       $('#pEdit').onclick = () => editComponent(c.ref);
+      el.querySelectorAll('[data-edge]').forEach(b => b.onclick = () => { try { const r = Model.mutate(() => Pcb.placeFootprint(c.ref, { edge: b.dataset.edge })); toast(`${c.ref} on the ${b.dataset.edge} edge${r.outside_board ? ' — outside the board, enlarge it or move it' : ''} · press Route to reconnect`); } catch (e) { toast(e.message); } });
     } else if (net && Model.S.nets[net]) {
       el.innerHTML = `<div class="ph">Net</div><label>Name<input id="pNet" value="${esc(net)}"></label>
         <div class="ph small">Pins (${Model.S.nets[net].length})</div><div class="netpins">${Model.S.nets[net].map(esc).join(', ')}</div>

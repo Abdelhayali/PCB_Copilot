@@ -275,3 +275,4 @@ input.warnin { border-color: var(--warn); }
 #layerPanel .fph .ltitle { cursor: pointer; }
 #layerPanel.collapsed #layerRows, #layerPanel.collapsed .ldim { display: none; }
 #pcbPalette.collapsed .tbtn span { display: none; }
+.edgebtns button { flex: 1; padding: 3px 4px; font-size: 11px; }
