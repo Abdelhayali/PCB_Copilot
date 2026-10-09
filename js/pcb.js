@@ -169,7 +169,9 @@ const Pcb = (() => {
     const text = [c.value, c.footprint, lib && lib.name, lib && lib.package, lib && lib.footprint && lib.footprint.name].filter(Boolean).join(' ');
     // chips whose names mention USB etc. (USBLC6 ESD arrays, CH340 USB-UART, …) are not connectors
     const chip = /\b(SOT|SOD|SOIC|SOP|SSOP|TSSOP|MSOP|QFN|DFN|QFP|LQFP|TQFP|BGA|WLCSP|SC-?70|SC-?88|UDFN)[-_\d]|USBLC|CH3[34]\d|CP210|FT232|ESD|TVS/i.test(text);
-    const plug = !chip && PLUG_RE.test(text);
+    // a pin header / socket footprint is a header whatever its value says ("USB_CON" on a 1x04 header is not a USB socket)
+    const header = /pin ?header|pin ?socket|pinhdr|\bhdr|\b[12]x\d{1,2}\b/i.test([c.footprint, lib && lib.footprint && lib.footprint.name, lib && lib.package].filter(Boolean).join(' '));
+    const plug = !chip && !header && PLUG_RE.test(text);
     if (chip && c.type !== 'connector' && !/^(J|CN|P)\d+$/i.test(c.ref)) return null;
     if (!plug && !(c.type === 'connector' || CONN_RE.test(text) || /^(J|CN|USB|P)\d+$/i.test(c.ref))) return null;
     let front = null;
@@ -184,6 +186,15 @@ const Pcb = (() => {
     return { plug, front };
   }
   const NORMAL = { left: [-1, 0], right: [1, 0], top: [0, -1], bottom: [0, 1] };
+  // how far an edge part sits in from the edge: plugs flush (their opening overhangs on purpose); headers etc. flush too,
+  // moved in only as much as their copper needs for the edge-clearance rule
+  function edgeInset(c, side, plug) {
+    if (plug) return 0;
+    const b = fpBox(c), pads = padsOf(c); if (!pads.length) return 0;
+    const gap = side === 'left' ? Math.min(...pads.map(p => p.x - p.w / 2)) - b[0] : side === 'right' ? b[2] - Math.max(...pads.map(p => p.x + p.w / 2))
+      : side === 'top' ? Math.min(...pads.map(p => p.y - p.h / 2)) - b[1] : b[3] - Math.max(...pads.map(p => p.y + p.h / 2));
+    return Math.max(0, rules().edgeClearance + 0.1 - gap);
+  }
   // rotation that makes the connector face the given edge (plugs: opening outward; headers: long side along the edge)
   function edgeRot(c, side, info) {
     if (info.front) {
@@ -247,11 +258,11 @@ const Pcb = (() => {
       const fb = fpBox(c), px = (fb[0] + fb[2]) / 2, py = (fb[1] + fb[3]) / 2;
       const side = c.pcbEdge || [['left', px], ['right', W - px], ['top', py], ['bottom', H - py]].sort((a, b) => a[1] - b[1])[0][0];
       c.pcb.rot = edgeRot(c, side, info || { front: null });
-      const plug = !!(info && info.plug), inset = plug ? 0 : 1.5, b = fpBox(c);
+      const plug = !!(info && info.plug), inset = edgeInset(c, side, plug), b = fpBox(c);
       if (side === 'left') c.pcb.x += inset - b[0]; if (side === 'right') c.pcb.x += W - inset - b[2];
       if (side === 'top') c.pcb.y += inset - b[1]; if (side === 'bottom') c.pcb.y += H - inset - b[3];
       const n = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[side];
-      for (let t = 0; t < 80 && !boxInside(c, poly, plug ? 0 : margin); t++) { c.pcb.x += n[0] * 0.25; c.pcb.y += n[1] * 0.25; }
+      for (let t = 0; t < 80 && !boxInside(c, poly, -0.05); t++) { c.pcb.x += n[0] * 0.25; c.pcb.y += n[1] * 0.25; }
       edgeParts.push({ c, side, plug }); lock.set(c, side === 'left' || side === 'right' ? 'x' : 'y');
     }
     const free = cs.filter(c => !lock.has(c));
@@ -282,7 +293,7 @@ const Pcb = (() => {
         let done = false;
         for (let k = 0; k <= 400 && !done; k++) for (const sgn of k ? [1, -1] : [1]) {
           c.pcb.x = base.x + along[0] * sgn * k * 0.25; c.pcb.y = base.y + along[1] * sgn * k * 0.25;
-          if (okAt(c, placed, gap, e.plug ? -0.05 : margin)) { done = true; break; }
+          if (okAt(c, placed, gap, -0.05)) { done = true; break; }
         }
         if (!done) { c.pcb.x = base.x; c.pcb.y = base.y; failed.push(c.ref); }
         placed.push(c);
@@ -313,11 +324,11 @@ const Pcb = (() => {
     }
     let failed = [];
     for (const gap of [1.0, 0.6, 0.3]) { failed = legalise(gap); if (!failed.length) break; }
-    // nudge plug connectors back flush with their edge after the search
-    for (const e of edgeParts) if (e.plug) {
-      const q = fpBox(e.c);
-      if (e.side === 'left') e.c.pcb.x -= q[0]; if (e.side === 'right') e.c.pcb.x += W - q[2];
-      if (e.side === 'top') e.c.pcb.y -= q[1]; if (e.side === 'bottom') e.c.pcb.y += H - q[3];
+    // put every edge connector back flush with its edge after the search
+    for (const e of edgeParts) {
+      const q = fpBox(e.c), ins = edgeInset(e.c, e.side, e.plug);
+      if (e.side === 'left') e.c.pcb.x += ins - q[0]; if (e.side === 'right') e.c.pcb.x += W - ins - q[2];
+      if (e.side === 'top') e.c.pcb.y += ins - q[1]; if (e.side === 'bottom') e.c.pcb.y += H - ins - q[3];
       const n = { left: [1, 0], right: [-1, 0], top: [0, 1], bottom: [0, -1] }[e.side];
       for (let t = 0; t < 80 && !boxInside(e.c, poly, -0.05); t++) { e.c.pcb.x += n[0] * 0.25; e.c.pcb.y += n[1] * 0.25; }
     }
@@ -372,25 +383,35 @@ const Pcb = (() => {
     const legal = () => !overlaps(placed(), 0.35).length && placed().every(c => boxInside(c, boardPoly(), -0.05));
     const snap = () => ({ board: clone(S.board), place: placed().map(c => [c.ref, clone(c.pcb)]) });
     const restore = s => { S.board = clone(s.board); for (const [ref, q] of s.place) { const c = Model.comp(ref); if (c) c.pcb = clone(q); } };
-    // board aspect decides which edges the connectors land on: try the natural one, square and turned 90°
-    const W0 = S.board.w, H0 = S.board.h, A0 = W0 * H0, sq = Math.sqrt(A0);
-    const aspects = rect ? [[W0, H0], [sq, sq], [H0, W0]] : [[W0, H0]];
+    // For three board shapes (natural aspect, square, turned 90° — the shape decides which edges the connectors get),
+    // binary-search the smallest board on which the full packer (connectors on edges, annealing, spiral legalising)
+    // still places everything legally; keep the smallest result.
+    const W0 = S.board.w, H0 = S.board.h, A0 = W0 * H0;
+    const partsArea = placed().reduce((a, c) => { const q = fpBox(c); return a + (q[2] - q[0]) * (q[3] - q[1]); }, 0);
+    const ratios = rect ? [W0 / H0, 1, H0 / W0] : [W0 / H0];
     let winner = null, steps = 0;
-    aspects.forEach(([aw, ah], vi) => {
-      const tEnd = t0 + limit * (vi + 1) / aspects.length;
-      S.board.w = +(aw * 1.3).toFixed(1); S.board.h = +(ah * 1.3).toFixed(1); if (S.board.shape && S.board.shape.pts) scaleXY(1, 1);
-      fitInside(Object.assign({}, opt, { tries: opt.tries ?? 3, compact: 0.6, anneal_s: opt.anneal_s ?? 0.9, seed: 11 + vi * 101 }));
-      legalisePlacement(0.4);
-      let best = legal() ? snap() : null, n = 0;
-      const fails = { x: 0, y: 0 };
-      for (let k = 0; k < 40 && best && (fails.x < 2 || fails.y < 2) && Date.now() < tEnd; k++) {
-        const ax = fails.x >= 2 ? 'y' : fails.y >= 2 ? 'x' : (k % 2 ? 'y' : 'x'), f = fails[ax] ? 0.97 : 0.92;
-        scaleXY(ax === 'x' ? f : 1, ax === 'y' ? f : 1);
-        anneal({ time_s: 0.6, hot: 0.2, seed: 500 + k * 31 + vi, compact: 0.6 });
-        legalisePlacement(0.4);
-        if (legal()) { best = snap(); n++; } else { restore(best); fails[ax]++; }
+    ratios.forEach((r, vi) => {
+      const tEnd = t0 + limit * (vi + 1) / ratios.length;
+      const sizeFor = area => [Math.sqrt(area * r), Math.sqrt(area / r)];
+      const tryArea = area => {
+        const [w, h] = sizeFor(area);
+        S.board.w = +w.toFixed(1); S.board.h = +h.toFixed(1);
+        fitInside(Object.assign({}, opt, { tries: 2, compact: 0.6, anneal_s: 0.5, seed: 11 + vi * 101 + steps }));
+        legalisePlacement(0.4); steps++;
+        return legal() ? snap() : null;
+      };
+      // upper bound: grow until it packs; lower bound: the parts themselves (+20 %)
+      let hiA = Math.max(A0, partsArea * 2.2), best = null;
+      for (let g = 0; g < 4 && !best && Date.now() < tEnd; g++) { best = tryArea(hiA); if (!best) hiA *= 1.4; }
+      if (!best) return;
+      let loA = partsArea * 1.2;
+      while (hiA / loA > 1.06 && Date.now() < tEnd) {
+        const mid = Math.sqrt(loA * hiA), s = tryArea(mid);
+        if (s) { best = s; hiA = mid; } else loA = mid;
       }
-      if (best) { const b = unionBox(placed()), area = (b[2] - b[0]) * (b[3] - b[1]); if (!winner || area < winner.area) { winner = { area, s: best }; steps = n; } }
+      restore(best);
+      const b = unionBox(placed()), area = (b[2] - b[0]) * (b[3] - b[1]);
+      if (!winner || area < winner.area) winner = { area, s: best };
     });
     if (winner) restore(winner.s);
     // trim a rectangular board to the parts (+ edge margin), keeping connectors flush with their edges
@@ -475,7 +496,7 @@ const Pcb = (() => {
       if (!NORMAL[o.edge]) throw new Error('edge must be left, right, top or bottom');
       const info = edgeInfo(c) || { plug: false, front: null };
       c.pcbEdge = o.edge; c.pcb.rot = edgeRot(c, o.edge, info);
-      const b = fpBox(c), inset = info.plug ? 0 : 1.5;
+      const inset = edgeInset(c, o.edge, info.plug), b = fpBox(c);
       if (o.edge === 'left') c.pcb.x += inset - b[0]; if (o.edge === 'right') c.pcb.x += S.board.w - inset - b[2];
       if (o.edge === 'top') c.pcb.y += inset - b[1]; if (o.edge === 'bottom') c.pcb.y += S.board.h - inset - b[3];
       if (o.along != null) { if (o.edge === 'left' || o.edge === 'right') c.pcb.y = +o.along; else c.pcb.x = +o.along; }
