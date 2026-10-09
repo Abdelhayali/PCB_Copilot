@@ -23,6 +23,7 @@
         <button data-exp="bom">Bill of materials (.csv)</button>
         <button data-exp="net">Netlist (.net)</button>
         <button data-exp="svg">Schematic (.svg)</button>
+        <button data-exp="easyeda">Schematic for EasyEDA (.json)</button>
         <button data-exp="pcbsvg">PCB image (.svg)</button>
       </div>
     </div>
@@ -167,7 +168,7 @@
 <div id="projModal" class="hidden modal">
   <div class="dlg wide">
     <div class="row-h"><h2>Projects</h2><button id="projClose">✕</button></div>
-    <div class="row"><input id="projSearch" placeholder="Search projects…" style="flex:1"><button id="projNew" class="primary">＋ New project</button><button id="projImport">Import .json</button></div>
+    <div class="row"><input id="projSearch" placeholder="Search projects…" style="flex:1"><button id="projNew" class="primary">＋ New project</button><button id="projImport" title="A CircuitPilot project file, or an EasyEDA PCB (File → Export → EasyEDA Source)">Import .json / EasyEDA PCB</button></div>
     <div id="projList"></div>
   </div>
 </div>
@@ -279,6 +280,7 @@
 <script src="js/pcbview.js"></script>
 <script src="js/enclosure.js"></script>
 <script src="js/shape3d.js"></script>
+<script src="js/easyeda.js"></script>
 <script src="js/encview.js"></script>
 <script src="js/pcb3d.js"></script>
 <script src="js/engine.js"></script>

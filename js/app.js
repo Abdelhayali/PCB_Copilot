@@ -562,6 +562,11 @@ const App = (() => {
       if (kind === 'json') download(fname('.circuit.json'), JSON.stringify(S, null, 1), 'application/json');
       if (kind === 'gerber') { gerberCheck(); return; }
       if (kind === 'svg') download(fname('-schematic.svg'), Sch.exportSVG(), 'image/svg+xml');
+      if (kind === 'easyeda') {
+        if (!S.components.length) throw new Error('The schematic is empty');
+        download(fname('-schematic.easyeda.json'), EasyEDA.exportSchematic(), 'application/json');
+        toast('EasyEDA schematic saved — EasyEDA Standard: File → Open → EasyEDA Source · EasyEDA Pro: File → Import → EasyEDA (Standard)', 8000);
+      }
       if (kind === 'pcbsvg') { if (!S.board.w) throw new Error('No PCB yet'); if (view !== 'pcb') Pcb.render(); download(fname('-pcb.svg'), Pcb.exportSVG(), 'image/svg+xml'); }
       if (kind === 'bomjlc') { jlcBom(); return; }
       if (kind === 'bom') {
@@ -684,7 +689,17 @@ const App = (() => {
     $('#fileIn').onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
       try {
-        const d = JSON.parse(await f.text()); delete d.id; if (!d.name) d.name = f.name.replace(/\.circuit\.json$|\.json$/i, '');
+        const d = JSON.parse(await f.text()), name = f.name.replace(/\.circuit\.json$|\.json$/i, '');
+        const ee = EasyEDA.isEasyEDA(d);
+        if (ee === 'schematic') throw new Error('this is an EasyEDA schematic — export the PCB document from EasyEDA (File → Export → EasyEDA Source) and import that');
+        if (ee) {   // EasyEDA PCB → new project with parts, footprints, nets, tracks and a generated schematic
+          const nd = Model.blank(); nd.name = name; Model.load(nd);
+          const r = Model.mutate(() => EasyEDA.importPcb(d));
+          Projects.markLoaded(); await Projects.saveNow(); Projects.close(); showView('pcb'); Pcb.fit();
+          toast(`Imported EasyEDA PCB: ${r.components} parts, ${r.nets} nets, ${r.tracks} tracks, ${r.vias} vias${r.notes.length ? ' — ' + r.notes.join('; ') : ''}`, 9000);
+          e.target.value = ''; return;
+        }
+        delete d.id; if (!d.name) d.name = name;
         Model.load(d); Projects.markLoaded(); await Projects.saveNow(); Projects.close(); Sch.fit(); toast('Imported ' + f.name + ' as a new project');
       } catch (err) { toast('Could not open: ' + err.message); }
       e.target.value = '';
