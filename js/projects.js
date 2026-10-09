@@ -63,6 +63,15 @@ const Projects = (() => {
     delete d.id; d.name = (d.name || 'Untitled') + ' (copy)';
     await api('PUT', '/api/projects/', d); render();
   }
+  // Save as: store the current design (with its unsaved edits) as a new project and continue in it
+  async function saveAs(name) {
+    await saveNow();
+    const d = JSON.parse(Model.snapshot()); delete d.id; d.name = name;
+    const r = await api('PUT', '/api/projects/', d);
+    Model.mutate(() => { Model.S.id = r.id; Model.S.name = name; });
+    serverUpdated = r.updated; lastSaved = Model.snapshot(); Model.emit('meta'); setStatus('saved');
+    App.toast('Saved as “' + name + '”'); return true;
+  }
   async function rename(id, name) {
     if (id === Model.S.id) { Model.mutate(() => { Model.S.name = name; }); await saveNow(); }
     else { const d = await api('GET', '/api/projects/' + id); d.name = name; await api('PUT', '/api/projects/' + id, d); }
@@ -145,5 +154,5 @@ const Projects = (() => {
       } catch (err) { App.toast(err.message); }
     };
   }
-  return { init, show, close, saveNow, create, get online() { return online; }, get myLib() { return myLib; }, loadLibrary, savePart, deletePart, markLoaded: () => { lastSaved = ''; } };
+  return { init, show, close, saveNow, saveAs, create, get online() { return online; }, get myLib() { return myLib; }, loadLibrary, savePart, deletePart, markLoaded: () => { lastSaved = ''; } };
 })();

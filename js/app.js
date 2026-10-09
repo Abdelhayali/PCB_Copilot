@@ -604,6 +604,11 @@ const App = (() => {
       if (!Projects.online) { exportAs('json'); return; }
       toast((await Projects.saveNow()) ? 'Project saved' : 'Save failed — see the status next to the name');
     };
+    $('#btnSaveAs').onclick = async () => {
+      if (!Projects.online) { exportAs('json'); return; }
+      const n = prompt('Save project as', (Model.S.name || 'Untitled') + ' (copy)'); if (n === null) return;
+      try { await Projects.saveAs(n.trim() || 'Untitled'); } catch (e) { toast('Save as failed: ' + e.message); }
+    };
     $('#btnNewPart').onclick = () => PartEditor.open(PartEditor.blankDef(), { isNew: true, saveLib: true, allowPlace: true });
     $('#fileIn').onchange = async e => {
       const f = e.target.files[0]; if (!f) return;
@@ -647,6 +652,7 @@ const App = (() => {
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? Model.redo() : Model.undo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); Model.redo(); return; }
+      if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); $('#btnSaveAs').click(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#btnSave').click(); return; }
       if (view === 'enc') return;
       if (e.key === 'f' || e.key === 'F') { view === 'sch' ? Sch.fit() : Pcb.fit(); return; }
