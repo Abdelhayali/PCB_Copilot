@@ -2,16 +2,14 @@
 // PCB: auto-placement, design rules (JLCPCB defaults), rule-driven 2-layer autorouter (A*), DRC, rendering, Gerber + Excellon export.
 const Pcb = (() => {
   const G = 0.25; // placement snap (mm); routing grid comes from the design rules
-  let svg, world, grid, vp;
-  const ui = { sel: null, drag: null, pan: null, drc: null, show: { F: true, B: true, rats: true, silk: true }, onSelect: () => { } };
 
   // ---------- geometry ----------
   function padsOf(c, idx) {
     const fp = Lib.footprint(c.footprint); if (!fp || !c.pcb) return [];
     const r = c.pcb.rot || 0, sw = r === 90 || r === 270;
-    return fp.pads.map(p => {
+    return fp.pads.map((p, i) => {
       const [x, y] = Lib.rot(p.x, p.y, r), key = c.ref + '.' + p.num;
-      return { ...p, x: c.pcb.x + x, y: c.pcb.y + y, w: sw ? p.h : p.w, h: sw ? p.w : p.h, key, ref: c.ref, net: idx ? idx[key] : undefined };
+      return { ...p, x: c.pcb.x + x, y: c.pcb.y + y, w: sw ? p.h : p.w, h: sw ? p.w : p.h, key, uid: c.ref + '#' + i, ref: c.ref, net: idx ? idx[key] : undefined };
     });
   }
   function fpBox(c, pad = 0) {
@@ -153,13 +151,37 @@ const Pcb = (() => {
       for (const l of p.layers) for (const cell of cells) { p.cells.push(l * N + cell); padOf[l * N + cell] = allPads.length + 1; }
       allPads.push(p);
     }
+    // Existing copper is kept (opt.keep !== false): it becomes an obstacle for other nets and part of its own net.
+    const keep = opt.keep !== false;
+    const oldTraces = keep ? S.pcb.traces.slice() : [], oldVias = keep ? S.pcb.vias.slice() : [];
+    if (!keep) S.pcb = { traces: [], vias: [], routed: {} };
+    const conn = connectivity();
+    const preT = [], preV = [];
+    let orphanT = -100000;
+    for (const t of oldTraces) {
+      const id = t.net && netId[t.net] ? netId[t.net] : orphanT--, l = t.layer === 'B' ? 1 : 0;
+      if (l >= L) continue;
+      const cells = new Set();
+      for (let i = 1; i < t.pts.length; i++) {
+        const [ax, ay] = t.pts[i - 1], [bx, by] = t.pts[i], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / (g / 2)));
+        for (let k = 0; k <= n; k++) { const x = Math.round((ax + (bx - ax) * k / n) / g), y = Math.round((ay + (by - ay) * k / n) / g); if (x >= 0 && y >= 0 && x < W && y < H) cells.add(y * W + x); }
+      }
+      preT.push({ id, l, w: t.w, cells: [...cells], net: t.net });
+    }
+    for (const v of oldVias) preV.push({ id: v.net && netId[v.net] ? netId[v.net] : orphanT--, x: Math.round(v.x / g), y: Math.round(v.y / g), d: v.d, net: v.net });
     const jobs = netNames.map(n => {
       const pads = allPads.filter(p => p.net === n);
       let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
       for (const p of pads) { x0 = Math.min(x0, p.x); x1 = Math.max(x1, p.x); y0 = Math.min(y0, p.y); y1 = Math.max(y1, p.y); }
-      return { net: n, id: netId[n], pads, hpwl: (x1 - x0) + (y1 - y0), w: netWidth(R, n) };
+      // group pads already joined by existing copper into islands ("super pads")
+      const c = conn[n], islands = [];
+      if (c) for (const grp of c.groups) { const ids = new Set(grp.map(q => q.uid)); islands.push(pads.filter(q => ids.has(q.uid))); }
+      else pads.forEach(q => islands.push([q]));
+      return { net: n, id: netId[n], pads, islands: islands.filter(i => i.length), hpwl: (x1 - x0) + (y1 - y0), w: netWidth(R, n) };
     }).filter(j => j.pads.length >= 2);
-    if (!jobs.length) { S.pcb = { traces: [], vias: [], routed: {} }; return { routed: 0, total: 0, failed: [], rules: R.preset }; }
+    const already = jobs.filter(j => j.islands.length <= 1).map(j => j.net);
+    const todo = jobs.filter(j => j.islands.length > 1);
+    if (!todo.length) { S.pcb = { traces: oldTraces, vias: oldVias, routed: Object.fromEntries(already.map(n => [n, true])) }; return { routed: jobs.length, total: jobs.length, failed: [], necked_down: [], vias: oldVias.length, kept_tracks: oldTraces.length, rules: R.preset }; }
 
     const maxW = Math.max(R.traceWidth, ...jobs.map(j => j.w));
     const padReach = Math.max(maxW / 2, R.viaDiameter / 2) + R.clearance + R.viaDrill / 2 + R.minHoleToHole;
@@ -186,7 +208,7 @@ const Pcb = (() => {
     const vr = R.viaDiameter / 2, slack = 0.3 * g;
 
     function runAttempt(order) {
-      const tcells = [], gvias = [], viasOut = [], traces = [], routed = {}, failed = [], necked = new Set();
+      const tcells = preT.map(t => Object.assign({}, t)), gvias = preV.map(v => Object.assign({}, v)), viasOut = [], traces = [], routed = {}, failed = [], necked = new Set();
       const markDisk = (map, layerOff, cx, cy, r, val = 1) => {
         const d = disk(r);
         for (let i = 0; i < d.length; i += 2) { const x = cx + d[i], y = cy + d[i + 1]; if (x >= 0 && y >= 0 && x < W && y < H) { const k = layerOff + y * W + x; if (map[k] < val) map[k] = val; } }
@@ -229,9 +251,11 @@ const Pcb = (() => {
         const sid = ++searchId, wt = w - 1e-9; stats.searches++;
         let anyT = false;
         for (const t of target.cells) { stamp[t] = sid; g2[t] = Infinity; closed[t] = 0; tmask[t] = 0; if (own[t] >= wt || !blockT[t]) { tmask[t] = 1; anyT = true; } }
+        // aim at the nearest pad of the target terminal
+        let tp = target.pads ? target.pads[0] : target;
         if (!anyT) return null;
         const [wx0, wy0, wx1, wy1] = win;
-        const tx = target.x / g, ty = target.y / g, heap = new Heap(), K = Math.SQRT2 - 1, HW = 1.15;
+        const tx = tp.x / g, ty = tp.y / g, heap = new Heap(), K = Math.SQRT2 - 1, HW = 1.15;
         let started = 0;
         for (const s0 of sources) {
           if (blockT[s0] && own[s0] < wt) continue;
@@ -280,14 +304,19 @@ const Pcb = (() => {
       for (const job of order) {
         if (opt.onProgress) opt.onProgress({ net: job.net, done: jobNo, total: order.length, attempt: attemptNo });
         jobNo++;
-        const { id, pads } = job;
-        const tree = new Set(pads[0].cells), done = [pads[0]], rest = pads.slice(1), segs = [], vs = [];
+        const { id } = job;
+        // each island (pads already joined by kept copper) acts as one terminal; its copper is part of the tree
+        const islandCells = isl => new Set(isl.flatMap(q => q.cells));
+        const terms = job.islands.map(isl => ({ pads: isl, x: isl.reduce((a, q) => a + q.x, 0) / isl.length, y: isl.reduce((a, q) => a + q.y, 0) / isl.length, w: Math.max(...isl.map(q => q.w)), h: Math.max(...isl.map(q => q.h)), cells: [...islandCells(isl)] }));
+        // kept tracks/vias of this net extend the terminal they touch
+        for (const t of tcells) if (t.id === id) { const tc = t.cells.map(c => t.l * N + c), hit = terms.find(T => tc.some(c => T.cells.includes(c))); if (hit) hit.cells.push(...tc); }
+        const tree = new Set(terms[0].cells), done = [terms[0]], rest = terms.slice(1), segs = [], vs = [];
         let ok = true, mapW = null;
         const widths = [job.w];
         if (R.neckDown) for (const w2 of [R.traceWidth, R.minTraceWidth]) if (w2 < widths[widths.length - 1] - 1e-9) widths.push(w2);
         while (rest.length) {
           let bi = 0, bd = Infinity;
-          rest.forEach((p, i) => { for (const q of done) { const d = Math.hypot(p.x - q.x, p.y - q.y); if (d < bd) { bd = d; bi = i; } } });
+          rest.forEach((T, i) => { for (const D of done) for (const p of T.pads) for (const q of D.pads) { const d = Math.hypot(p.x - q.x, p.y - q.y); if (d < bd) { bd = d; bi = i; } } });
           const target = rest.splice(bi, 1)[0];
           if (target.cells.some(c => tree.has(c))) { done.push(target); continue; }
           let path = null, w = job.w;
@@ -337,7 +366,8 @@ const Pcb = (() => {
             }
             run.push(s); tree.add(s);
           }
-          flush(target);
+          const lastPad = padOf[path[path.length - 1]] ? allPads[padOf[path[path.length - 1]] - 1] : null;
+          flush(lastPad);
           for (const c of target.cells) tree.add(c);
           done.push(target);
         }
@@ -347,7 +377,7 @@ const Pcb = (() => {
       return { traces, vias: viasOut, routed, failed, necked: [...necked] };
     }
 
-    let order = jobs.slice().sort((a, b) => a.hpwl - b.hpwl), best = null;
+    let order = todo.slice().sort((a, b) => a.hpwl - b.hpwl), best = null;
     const tries = opt.tries || 2;
     let attemptNo = 0;
     for (let t = 0; t < tries; t++) {
@@ -358,8 +388,9 @@ const Pcb = (() => {
       const f = new Set(r.failed);
       order = [...order.filter(j => f.has(j.net)), ...order.filter(j => !f.has(j.net))];
     }
-    S.pcb = { traces: best.traces, vias: best.vias, routed: best.routed };
-    return { routed: Object.keys(best.routed).length, total: jobs.length, failed: best.failed, necked_down: best.necked, vias: best.vias.length, board: S.board, grid_mm: +g.toFixed(3), search: stats, rules: { preset: R.preset, trace: R.traceWidth, power: R.powerTraceWidth, clearance: R.clearance, via: `${R.viaDiameter}/${R.viaDrill}`, layers: L } };
+    for (const n of already) best.routed[n] = true;
+    S.pcb = { traces: oldTraces.concat(best.traces), vias: oldVias.concat(best.vias), routed: best.routed };
+    return { routed: Object.keys(best.routed).length, total: jobs.length, kept_tracks: oldTraces.length, failed: best.failed, necked_down: best.necked, vias: best.vias.length, board: S.board, grid_mm: +g.toFixed(3), search: stats, rules: { preset: R.preset, trace: R.traceWidth, power: R.powerTraceWidth, clearance: R.clearance, via: `${R.viaDiameter}/${R.viaDrill}`, layers: L } };
   }
 
   // ---------- DRC (exact geometry) ----------
@@ -419,10 +450,10 @@ const Pcb = (() => {
     for (const c of cs) for (const p of padsOf(c, idx)) objs.push({ s: padShape(p), net: p.net || '~' + (orphan++), layers: L === 1 ? ['F'] : (p.drill ? ['F', 'B'] : ['F']), what: `pad ${p.key}`, drill: p.drill, x: p.x, y: p.y });
     for (const t of S.pcb.traces) {
       if (t.w < R.minTraceWidth - 1e-6) add('trace-width', `Trace on ${t.net} is ${t.w} mm (fab minimum ${R.minTraceWidth})`, t.pts[0][0], t.pts[0][1]);
-      for (let i = 1; i < t.pts.length; i++) objs.push({ s: { k: 'seg', a: t.pts[i - 1], b: t.pts[i], r: t.w / 2 }, net: t.net, layers: [t.layer], what: `trace ${t.net}`, x: (t.pts[i - 1][0] + t.pts[i][0]) / 2, y: (t.pts[i - 1][1] + t.pts[i][1]) / 2 });
+      for (let i = 1; i < t.pts.length; i++) objs.push({ s: { k: 'seg', a: t.pts[i - 1], b: t.pts[i], r: t.w / 2 }, net: t.net || '~t' + S.pcb.traces.indexOf(t), layers: [t.layer], what: `trace ${t.net || '(no net)'}`, x: (t.pts[i - 1][0] + t.pts[i][0]) / 2, y: (t.pts[i - 1][1] + t.pts[i][1]) / 2 });
     }
     for (const v of S.pcb.vias) {
-      objs.push({ s: { k: 'circ', c: [v.x, v.y], r: v.d / 2 }, net: v.net, layers: ['F', 'B'], what: `via ${v.net}`, drill: v.drill, x: v.x, y: v.y });
+      objs.push({ s: { k: 'circ', c: [v.x, v.y], r: v.d / 2 }, net: v.net || '~v' + S.pcb.vias.indexOf(v), layers: ['F', 'B'], what: `via ${v.net || '(no net)'}`, drill: v.drill, x: v.x, y: v.y });
       if (v.drill < R.minViaDrill - 1e-6) add('via', `Via drill ${v.drill} < ${R.minViaDrill} mm`, v.x, v.y);
       if ((v.d - v.drill) / 2 < R.minAnnularRing - 1e-6) add('via', `Via annular ring ${((v.d - v.drill) / 2).toFixed(3)} < ${R.minAnnularRing} mm`, v.x, v.y);
     }
@@ -480,94 +511,53 @@ const Pcb = (() => {
     return { violations: out, errors, warnings, summary: errors ? `${errors} errors, ${warnings} warnings` : warnings ? `0 errors, ${warnings} warnings` : 'DRC passed' };
   }
 
-  function status() {
-    const S = Model.S, idx = Model.pinIndex(), cs = placed();
-    const nets = Object.keys(S.nets).filter(n => cs.flatMap(c => padsOf(c, idx)).filter(p => p.net === n).length >= 2);
-    const routed = nets.filter(n => S.pcb.routed[n]);
-    let len = 0; for (const t of S.pcb.traces) for (let i = 1; i < t.pts.length; i++) len += Math.hypot(t.pts[i][0] - t.pts[i - 1][0], t.pts[i][1] - t.pts[i - 1][1]);
-    return { placed: cs.length, components: S.components.length, board: S.board, nets: nets.length, routed: routed.length, unrouted: nets.filter(n => !S.pcb.routed[n]), vias: S.pcb.vias.length, trace_length_mm: +len.toFixed(1) };
+  // Which pads of each net are joined by copper (pads, tracks, vias that touch on a shared layer).
+  function connectivity() {
+    const S = Model.S, idx = Model.pinIndex(), L2 = (rules().layers === 1) ? ['F'] : ['F', 'B'];
+    const nodes = [];
+    for (const c of placed()) for (const p of padsOf(c, idx)) if (p.net) nodes.push({ k: 'pad', p, net: p.net, layers: p.drill ? L2 : ['F'], shapes: [padShape(p)] });
+    S.pcb.traces.forEach((t, i) => { if (t.net) nodes.push({ k: 'trace', i, net: t.net, layers: [t.layer], shapes: t.pts.slice(1).map((q, j) => ({ k: 'seg', a: t.pts[j], b: q, r: t.w / 2 })) }); });
+    S.pcb.vias.forEach((v, i) => { if (v.net) nodes.push({ k: 'via', i, net: v.net, layers: L2, shapes: [{ k: 'circ', c: [v.x, v.y], r: v.d / 2 }] }); });
+    const par = nodes.map((_, i) => i), find = i => { while (par[i] !== i) i = par[i] = par[par[i]]; return i; };
+    const byNet = {};
+    nodes.forEach((n, i) => (byNet[n.net] = byNet[n.net] || []).push(i));
+    for (const ids of Object.values(byNet)) {
+      const boxes = ids.map(i => { let b = [Infinity, Infinity, -Infinity, -Infinity]; for (const sh of nodes[i].shapes) { const q = bboxOf(sh); b = [Math.min(b[0], q[0]), Math.min(b[1], q[1]), Math.max(b[2], q[2]), Math.max(b[3], q[3])]; } return b; });
+      for (let a = 0; a < ids.length; a++) for (let b = a + 1; b < ids.length; b++) {
+        const A = nodes[ids[a]], B = nodes[ids[b]], ba = boxes[a], bb = boxes[b];
+        if (ba[0] > bb[2] + 0.01 || bb[0] > ba[2] + 0.01 || ba[1] > bb[3] + 0.01 || bb[1] > ba[3] + 0.01) continue;
+        if (!A.layers.some(l => B.layers.includes(l)) || find(ids[a]) === find(ids[b])) continue;
+        if (A.shapes.some(sa => B.shapes.some(sb => shapeDist(sa, sb) <= 0.002))) par[find(ids[a])] = find(ids[b]);
+      }
+    }
+    const out = {};
+    for (const [net, ids] of Object.entries(byNet)) {
+      const pads = ids.filter(i => nodes[i].k === 'pad').map(i => nodes[i].p); if (pads.length < 2) continue;
+      const groups = {};
+      ids.forEach(i => { if (nodes[i].k === 'pad') (groups[find(i)] = groups[find(i)] || []).push(nodes[i].p); });
+      const g = Object.values(groups);
+      out[net] = { pads, groups: g, complete: g.length === 1 };
+    }
+    return out;
   }
-
-  // ---------- view ----------
-  function init(el) {
-    svg = el;
-    svg.innerHTML = `<defs><pattern id="pgrid" width="1.27" height="1.27" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="0.06" class="griddot"/></pattern></defs><rect id="pgridr" fill="url(#pgrid)"/><g id="pworld"></g>`;
-    world = svg.querySelector('#pworld'); grid = svg.querySelector('#pgridr');
-    vp = new Viewport(svg, { min: 2, max: 200, scale: 10, onChange: vb => { grid.setAttribute('x', vb[0]); grid.setAttribute('y', vb[1]); grid.setAttribute('width', vb[2]); grid.setAttribute('height', vb[3]); } });
-    svg.addEventListener('mousedown', down); window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
-  }
-  const padSvg = (p, cls) => {
-    let s;
-    if (p.shape === 'round') s = `<circle class="${cls}" cx="${p.x}" cy="${p.y}" r="${p.w / 2}"/>`;
-    else s = `<rect class="${cls}" x="${p.x - p.w / 2}" y="${p.y - p.h / 2}" width="${p.w}" height="${p.h}" rx="${p.shape === 'rect' ? 0.05 : Math.min(p.w, p.h) / 2}"/>`;
-    if (p.drill) s += `<circle class="drill" cx="${p.x}" cy="${p.y}" r="${p.drill / 2}"/>`;
-    return s;
-  };
-  function ratsnest() {
-    const S = Model.S, idx = Model.pinIndex(), lines = [], pads = placed().flatMap(c => padsOf(c, idx));
-    for (const n of Object.keys(S.nets)) {
-      if (S.pcb.routed[n]) continue;
-      const ps = pads.filter(p => p.net === n); if (ps.length < 2) continue;
-      const inT = [ps[0]], rest = ps.slice(1);
-      while (rest.length) {
-        let bi = 0, bj = 0, bd = Infinity;
-        rest.forEach((p, i) => inT.forEach((q, j) => { const d = Math.hypot(p.x - q.x, p.y - q.y); if (d < bd) { bd = d; bi = i; bj = j; } }));
-        lines.push([inT[bj], rest[bi]]); inT.push(rest.splice(bi, 1)[0]);
+  // Ratsnest: shortest lines that would join the still-separate copper islands of each net.
+  function ratsnest(conn = connectivity()) {
+    const lines = [];
+    for (const [net, c] of Object.entries(conn)) {
+      if (c.complete) continue;
+      const islands = c.groups.map(g => g.slice()), joined = [islands.shift()];
+      while (islands.length) {
+        let best = null;
+        islands.forEach((isl, i) => { for (const a of isl) for (const J of joined) for (const b of J) { const d = Math.hypot(a.x - b.x, a.y - b.y); if (!best || d < best.d) best = { d, i, a, b }; } });
+        lines.push({ net, a: best.a, b: best.b }); joined.push(islands.splice(best.i, 1)[0]);
       }
     }
     return lines;
   }
-  function render() {
-    const S = Model.S, out = [], idx = Model.pinIndex(), cs = placed();
-    if (!cs.length || !S.board.w) { world.innerHTML = '<text class="empty" x="0" y="0" text-anchor="middle" style="font-size:2.4px">No PCB yet — click “Generate PCB” or ask the Copilot to make the board</text>'; return; }
-    out.push(`<rect class="board" x="0" y="0" width="${S.board.w}" height="${S.board.h}" rx="0.5"/>`);
-    const tr = l => S.pcb.traces.filter(t => t.layer === l).map(t => `<polyline class="trace ${l}" stroke-width="${t.w}" points="${t.pts.map(p => p.join(',')).join(' ')}"><title>${esc(t.net)}</title></polyline>`).join('');
-    if (ui.show.B) out.push(`<g class="layerB">${tr('B')}</g>`);
-    if (ui.show.F) out.push(`<g class="layerF">${tr('F')}</g>`);
-    for (const c of cs) {
-      out.push(`<g class="fp${ui.sel === c.ref ? ' sel' : ''}" data-ref="${esc(c.ref)}">`);
-      const b = fpBox(c);
-      out.push(`<rect class="fphit" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`);
-      if (ui.show.silk) {
-        out.push(`<rect class="silk" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`);
-        out.push(`<text class="silktxt" x="${(b[0] + b[2]) / 2}" y="${b[1] - 0.35}" text-anchor="middle">${esc(c.ref)}</text>`);
-      }
-      for (const p of padsOf(c, idx)) {
-        if (!p.drill && !ui.show.F) continue;
-        out.push(padSvg(p, p.drill ? 'pad tht' : 'pad smd').replace('/>', `><title>${esc(p.key)}${p.net ? ' · ' + esc(p.net) : ''}</title></${p.shape === 'round' ? 'circle' : 'rect'}>`));
-      }
-      out.push('</g>');
-    }
-    for (const v of S.pcb.vias) out.push(`<circle class="via" cx="${v.x}" cy="${v.y}" r="${v.d / 2}"/><circle class="drill" cx="${v.x}" cy="${v.y}" r="${v.drill / 2}"/>`);
-    if (ui.show.rats) for (const [a, b] of ratsnest()) out.push(`<line class="rats" x1="${a.x}" y1="${a.y}" x2="${b.x}" y2="${b.y}"/>`);
-    if (ui.drc) for (const v of ui.drc.violations) if (v.x != null) out.push(`<g class="drcmark ${v.severity}" transform="translate(${v.x} ${v.y})"><circle r="0.9"/><path d="M-0.45 -0.45L0.45 0.45M0.45 -0.45L-0.45 0.45"/><title>${esc(v.msg)}</title></g>`);
-    world.innerHTML = out.join('');
-  }
-  const fit = () => { const S = Model.S; vp.fit(S.board.w ? [0, 0, S.board.w, S.board.h] : [-30, -20, 30, 20], 4); };
-  function down(e) {
-    const pt = vp.toWorld(e.clientX, e.clientY);
-    if (e.button !== 0) { ui.pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
-    const el = e.target.closest('[data-ref]');
-    if (el) { const c = Model.comp(el.dataset.ref); ui.sel = c.ref; ui.onSelect(c.ref); ui.drag = { ref: c.ref, ox: pt.x - c.pcb.x, oy: pt.y - c.pcb.y, moved: false }; render(); }
-    else { ui.sel = null; ui.onSelect(null); ui.pan = { x: e.clientX, y: e.clientY }; render(); }
-  }
-  function move(e) {
-    if (!svg || svg.classList.contains('hidden')) return;
-    if (ui.pan) { vp.panBy(e.clientX - ui.pan.x, e.clientY - ui.pan.y); ui.pan = { x: e.clientX, y: e.clientY }; return; }
-    if (!ui.drag) return;
-    const pt = vp.toWorld(e.clientX, e.clientY), c = Model.comp(ui.drag.ref); if (!c) return;
-    const nx = Math.round((pt.x - ui.drag.ox) / G) * G, ny = Math.round((pt.y - ui.drag.oy) / G) * G;
-    if (nx !== c.pcb.x || ny !== c.pcb.y) {
-      if (!ui.drag.moved) { Model.begin(); ui.drag.moved = true; Model.invalidate(Model.netsOfComp(c.ref)); }
-      c.pcb.x = nx; c.pcb.y = ny; Model.emit('move');
-    }
-  }
-  function up() { if (ui.drag && ui.drag.moved) Model.emit('change'); ui.drag = null; ui.pan = null; }
-  function key(e) {
-    const c = ui.sel && Model.comp(ui.sel);
-    if ((e.key === 'r' || e.key === 'R') && c && c.pcb) { Model.mutate(() => { c.pcb.rot = ((c.pcb.rot || 0) + 90) % 360; Model.invalidate(Model.netsOfComp(c.ref)); }); return true; }
-    if (e.key === 'Escape') { ui.sel = null; render(); return true; }
-    return false;
+  function status(conn = connectivity()) {
+    const S = Model.S, nets = Object.keys(conn), routed = nets.filter(n => conn[n].complete);
+    let len = 0; for (const t of S.pcb.traces) for (let i = 1; i < t.pts.length; i++) len += Math.hypot(t.pts[i][0] - t.pts[i - 1][0], t.pts[i][1] - t.pts[i - 1][1]);
+    return { placed: placed().length, components: S.components.length, board: S.board, nets: nets.length, routed: routed.length, unrouted: nets.filter(n => !conn[n].complete), vias: S.pcb.vias.length, trace_length_mm: +len.toFixed(1) };
   }
 
   // ---------- fabrication outputs ----------
@@ -610,11 +600,7 @@ const Pcb = (() => {
     files['board-PTH.drl'] = drl + 'M30\n';
     return files;
   }
-  function exportSVG() {
-    const S = Model.S, css = `.board{fill:#0b3d1e}.trace{fill:none;stroke-linecap:round;stroke-linejoin:round}.trace.F{stroke:#c83434}.trace.B{stroke:#3a6fd8;opacity:.8}.pad{fill:#d4a72c}.via{fill:#b0b0b0}.drill{fill:#111}.silk{fill:none;stroke:#eee;stroke-width:.12}.silktxt{fill:#eee;font:1px sans-serif}.fphit,.rats{display:none}`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="-2 -2 ${S.board.w + 4} ${S.board.h + 4}" width="${(S.board.w + 4) * 10}" height="${(S.board.h + 4) * 10}"><style>${css}</style>${world.innerHTML}</svg>`;
-  }
-  return { init, render, fit, key, autoPlace, route, status, gerbers, exportSVG, ui, padsOf, rules, setRules, ruleWarnings, drc, RULE_PRESETS, get vp() { return vp; } };
+  return { autoPlace, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
 })();
 
 // Minimal ZIP (store, no compression) writer.

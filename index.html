@@ -63,10 +63,11 @@
         <button id="btnRules" title="Design rules (JLCPCB defaults)">⚙ Rules</button>
         <button id="btnDrc" title="Design rule check">DRC</button>
         <label>Board <input id="boardW" type="number" min="5" step="1" placeholder="auto">×<input id="boardH" type="number" min="5" step="1" placeholder="auto"> mm</label>
-        <label class="chk"><input type="checkbox" data-layer="F" checked>Top</label>
-        <label class="chk"><input type="checkbox" data-layer="B" checked>Bottom</label>
-        <label class="chk"><input type="checkbox" data-layer="rats" checked>Ratsnest</label>
-        <label class="chk"><input type="checkbox" data-layer="silk" checked>Silk</label>
+        <span class="tsep"></span>
+        <label title="Active routing layer (T / B / L)">Layer <select id="pLayer"><option value="F">TopLayer</option><option value="B">BottomLayer</option></select></label>
+        <label title="Track width for new tracks (+ / - while routing). Empty = design-rule width">Width <input id="pWidth" type="number" step="0.05" min="0.05" placeholder="auto"> mm</label>
+        <label title="Routing angle (Space)">Angle <select id="pAngle"><option value="45">45°</option><option value="90">90°</option><option value="any">Any</option></select></label>
+        <label title="Snap grid">Grid <select id="pGrid"></select></label>
         <button id="btnFitP" title="F">Fit</button>
         <button id="btnGerber">Gerbers ⤓</button>
       </div>
@@ -204,6 +205,7 @@
 <script src="js/model.js"></script>
 <script src="js/schematic.js"></script>
 <script src="js/pcb.js"></script>
+<script src="js/pcbview.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ai.js"></script>
 <script src="js/projects.js"></script>

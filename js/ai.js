@@ -95,7 +95,11 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
       if (m.role === 'user') out.push({ role: 'user', content: m.text });
       else if (m.role === 'assistant') {
         const o = { role: 'assistant', content: m.text || '' };
-        if (m.toolCalls && m.toolCalls.length) o.tool_calls = m.toolCalls.map(t => ({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.input || {}) } }));
+        // Gemini "thinking" models require each tool call's thought_signature to be sent back unchanged.
+        // Calls recorded before this fix (or from another provider) get Google's documented bypass value.
+        const gem = /generativelanguage\.googleapis\.com/.test(settings.oaiBase);
+        if (m.toolCalls && m.toolCalls.length) o.tool_calls = m.toolCalls.map(t => Object.assign({ id: t.id, type: 'function', function: { name: t.name, arguments: JSON.stringify(t.input || {}) } },
+          t.extra ? { extra_content: t.extra } : gem ? { extra_content: { google: { thought_signature: 'skip_thought_signature_validator' } } } : {}));
         out.push(o);
       } else if (m.role === 'tool') for (const r of m.results) out.push({ role: 'tool', tool_call_id: r.id, content: r.content });
     }
@@ -131,7 +135,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
       text: (m.content || '').trim(),
       toolCalls: (m.tool_calls || []).map((t, i) => {
         let input = {}; try { input = JSON.parse(t.function.arguments || '{}'); } catch (e) { input = { __parse_error: t.function.arguments }; }
-        return { id: t.id || 'call_' + Date.now() + '_' + i, name: t.function.name, input };
+        return Object.assign({ id: t.id || 'call_' + Date.now() + '_' + i, name: t.function.name, input }, t.extra_content ? { extra: t.extra_content } : {});
       }),
       usage: j.usage ? { in: j.usage.prompt_tokens, out: j.usage.completion_tokens } : null
     };

@@ -22,6 +22,14 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 |---|---|
 | ![Part editor](docs/media/part-editor.gif) | ![Edit a database part](docs/media/part-editor.png) |
 
+**EasyEDA-style PCB editor** — layers panel, PCB tools, hand routing with T/B layer switching (vias are added automatically)
+
+![Hand routing with layer switching](docs/media/pcb-routing.gif)
+
+| Layers panel (show / hide / colour / active layer) | Hand-routed tracks + vias |
+|---|---|
+| ![Layers](docs/media/pcb-layers.png) | ![PCB editor](docs/media/pcb-editor.png) |
+
 | Design rules (JLCPCB defaults) | Autorouted 2-layer PCB |
 |---|---|
 | ![Design rules](docs/media/design-rules.png) | ![PCB](docs/media/pcb.png) |
@@ -42,6 +50,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
 - **PCB** — auto-placement from the schematic, rule-driven A* 2-layer autorouter (runs in a Web Worker) with vias and neck-down, ratsnest, draggable footprints.
+- **EasyEDA-style PCB editor** — Layers panel (EasyEDA colours, show/hide, colour, active layer, dim inactive), PCB Tools (Select, Track `W`, Via `V`, Measure `M`), interactive 45°/90°/any-angle routing with T/B layer switching and automatic vias, live clearance check, track/via properties, segment delete; the autorouter keeps hand-routed tracks.
 - **Design rules & DRC** — JLCPCB 2-layer defaults, editable per project (trace/power widths, per-net widths, clearance, vias, edge clearance, layers); exact-geometry DRC with markers on the board.
 - **Exports** — Gerber + Excellon drill (.zip), BOM (.csv), netlist (.net), schematic and PCB SVG, project JSON.
 - **Automation** — MCP server for Claude Code / Claude Desktop / Cursor, plus a REST + OpenAPI interface.
@@ -166,3 +175,18 @@ curl -H "Authorization: Bearer <password>" -X POST http://127.0.0.1:5174/tools/s
 - The AI and MCP/REST clients get `get_design_rules`, `set_design_rules` and `run_drc`; `generate_pcb` reports the DRC result.
 
 Values follow JLCPCB's published capabilities; check [jlcpcb.com/capabilities](https://jlcpcb.com/capabilities/pcb-capabilities) for the latest before ordering.
+
+## PCB editor (EasyEDA-style)
+
+| Action | How |
+|---|---|
+| Layers | **Layers** panel: eye = show/hide, swatch = colour, click a copper layer = make it active; **All / None / Top / Bot** quick views; *Dim inactive copper* |
+| Select / move | `S` or `Esc` — click a footprint, track segment or via; drag footprints and vias; double-click a track to select all of it; `R` rotates a footprint |
+| Route a track | `W`, click a pad / via / track to start (net is taken from it), click to add corners, click a pad of the same net to finish |
+| While routing | `T` / `B` / `L` / `V` switch layer (adds a via) · `Space` cycles 45° / 90° / any angle · `/` flips the bend · `+` / `-` width · `Backspace` removes the last corner · `Esc` or right-click finishes |
+| Via | `V`, click to place (takes the net of what is under it) |
+| Measure | `M`, click two points (mm and mil) |
+| Delete | select, then `Del` (a segment splits its track) |
+| Edit | select a track or via → change net, layer, width / diameter, drill, position in **Properties** |
+
+Live feedback: the coordinate bar shows X/Y, layer, width, net, and warns when the track being drawn violates the clearance rule; vias placed while routing are checked too. **Route** (autorouter) keeps every existing track and only routes what is still unconnected; the ratsnest and the “routed” count follow the real copper.

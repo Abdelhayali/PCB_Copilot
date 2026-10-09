@@ -177,6 +177,30 @@ try {
   }, { hold: 2.5 });
   await js(`Pcb.fit(); return 1`); await sleep(400);
   await shot('pcb');
+  // EasyEDA-style editor: layers panel + hand routing with layer switching
+  await js(`if (document.querySelector('#layerPanel').classList.contains('collapsed')) document.querySelector('#layerPanel .ltitle').click(); return 1`);
+  await shot('pcb-layers');
+  await js(`document.querySelector('#layerPanel .ltitle').click(); Model.mutate(() => { Model.S.pcb.traces = Model.S.pcb.traces.filter(t => t.net !== 'LED_A' && t.net !== 'LED_STATUS'); }); Pcb.ui.drc = null; Pcb.render(); return 1`);
+  const padXY = key => js(`const svg = document.querySelector('#pcbSvg'), m = svg.getScreenCTM(), idx = Model.pinIndex();
+    const p = Model.S.components.flatMap(c => Pcb.padsOf(c, idx)).find(p => p.key === Model.resolvePins(${JSON.stringify(key)})[0]); return [m.a * p.x + m.e, m.d * p.y + m.f];`);
+  await js(`const idx = Model.pinIndex(), P = Model.S.components.flatMap(c => Pcb.padsOf(c, idx)), k = ['U2.IO8', 'R4.1', 'R4.2', 'D1.A'].map(n => Model.resolvePins(n)[0]);
+    const q = P.filter(p => k.includes(p.key)); const xs = q.map(p => p.x), ys = q.map(p => p.y);
+    Pcb.vp.fit([Math.min(...xs) - 3, Math.min(...ys) - 4, Math.max(...xs) + 3, Math.max(...ys) + 4], 1); return 1`); await sleep(300);
+  const key = async k => { await cdp('Input.dispatchKeyEvent', { type: 'keyDown', key: k, text: k.length === 1 ? k : undefined }); await cdp('Input.dispatchKeyEvent', { type: 'keyUp', key: k }); await sleep(450); };
+  await record('pcb-routing', async () => {
+    const [ax, ay] = await padXY('U2.IO8'), [bx, by] = await padXY('R4.1'), [cx, cy] = await padXY('R4.2'), [dx, dy] = await padXY('D1.A');
+    await key('w');
+    // LED_STATUS: U2.IO8 → out → bottom layer (via) → back to top (via) → R4.1
+    const mx = (ax + bx) / 2;
+    await click(ax, ay); await moveTo(ax + 50, ay, 16); await click(ax + 50, ay);
+    await key('b'); await moveTo(mx, by + 40, 18); await click(mx, by + 40);
+    await key('t'); await moveTo(bx, by, 20); await sleep(250); await click(bx, by); await sleep(600);
+    // LED_A: R4.2 → D1.A on the top layer
+    await click(cx, cy); await moveTo(dx, dy, 20); await sleep(300); await click(dx, dy); await sleep(800);
+    await key('Escape');
+  }, { hold: 2.5, maxFrame: 0.5 });
+  await shot('pcb-editor');
+  await js(`Pcb.fit(); return 1`);
   await js(`document.querySelector('#btnRules').click(); return 1`); await sleep(500);
   await shot('design-rules');
   await js(`document.querySelector('#rulesClose').click(); return 1`);

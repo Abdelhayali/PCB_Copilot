@@ -21,6 +21,7 @@ const App = (() => {
     $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
     $('#schSvg').classList.toggle('hidden', v !== 'sch'); $('#pcbSvg').classList.toggle('hidden', v !== 'pcb');
     $('#schTools').classList.toggle('hidden', v !== 'sch'); $('#pcbTools').classList.toggle('hidden', v !== 'pcb');
+    PcbView.setVisible(v === 'pcb');
     renderAll();
     if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else Sch.vp.apply();
   }
@@ -112,6 +113,7 @@ const App = (() => {
   function renderProps() {
     const el = $('#props');
     if (el.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON') return;
+    if (view === 'pcb' && PcbView.props(el)) return;
     const ref = view === 'sch' ? Sch.ui.sel : Pcb.ui.sel, net = view === 'sch' ? Sch.ui.selNet : null;
     const c = ref && Model.comp(ref);
     if (c) {
@@ -421,7 +423,7 @@ const App = (() => {
 
   // ---------- init ----------
   function init() {
-    Sch.init($('#schSvg')); Pcb.init($('#pcbSvg'));
+    Sch.init($('#schSvg')); Pcb.init($('#pcbSvg')); PcbView.bindBar();
     Sch.ui.onSelect = () => renderProps(); Pcb.ui.onSelect = () => renderProps();
     let saved = null; try { saved = localStorage.getItem('cp.design'); } catch (e) { }
     if (saved) try { Model.load(saved); } catch (e) { }

@@ -62,7 +62,7 @@ ul.erc { padding-left: 16px; font-size: 12px; } ul.erc .error { color: var(--bad
 .tools input[type=number] { width: 58px; padding: 3px 5px; }
 .chk { display: flex; align-items: center; gap: 4px; cursor: pointer; }
 #views { position: relative; flex: 1; min-height: 0; background: var(--canvas); }
-#views svg { position: absolute; inset: 0; width: 100%; height: 100%; user-select: none; cursor: default; }
+#views > svg { position: absolute; inset: 0; width: 100%; height: 100%; user-select: none; cursor: default; }
 #status { padding: 5px 12px; font-size: 12px; color: var(--muted); background: var(--panel); border-top: 1px solid var(--line); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 #status .good { color: var(--good); } #status .warn { color: var(--warn); } #status .bad { color: var(--bad); }
 #ercLink { cursor: pointer; text-decoration: underline dotted; }
@@ -94,21 +94,11 @@ text { font-family: var(--font); }
 .rubber { stroke: var(--accent); stroke-width: 1.2; stroke-dasharray: 4 3; fill: none; pointer-events: none; }
 .empty { fill: var(--muted); font-size: 9px; }
 
-/* pcb */
-.board { fill: #0d3b22; stroke: #e8e8b0; stroke-width: .15; }
-.trace { fill: none; stroke-linecap: round; stroke-linejoin: round; }
-.trace.F { stroke: #d9534f; }
-.trace.B { stroke: #4a7fe0; opacity: .85; }
-.pad { fill: #d4a72c; }
-.pad.smd { fill: #d9a53a; }
-.via { fill: #b8bcc4; }
-.drill { fill: #0a0d10; }
-.silk { fill: none; stroke: #e9e9e9; stroke-width: .12; opacity: .85; }
-.silktxt { fill: #f0f0f0; font-size: 1.1px; font-weight: 700; }
-.fphit { fill: transparent; cursor: move; }
-.fp.sel .fphit { fill: #5b8cff22; stroke: var(--accent); stroke-width: .12; }
-.rats { stroke: #ffe14d; stroke-width: .1; stroke-dasharray: .4 .3; opacity: .9; pointer-events: none; }
-
+/* footprint preview in the part editor */
+#edFp .board { fill: #0d3b22; stroke: #e8e8b0; stroke-width: .15; }
+#edFp .pad { fill: #d4a72c; }
+#edFp .drill { fill: #0a0d10; }
+#edFp .silk { fill: none; stroke: #e9e9e9; stroke-width: .12; opacity: .85; }
 /* copilot */
 .cp-head { display: flex; align-items: center; justify-content: space-between; padding: 10px 12px; border-bottom: 1px solid var(--line); }
 .cp-head .title { font-weight: 700; font-size: 14px; }
@@ -245,3 +235,43 @@ input.warnin { border-color: var(--warn); }
 @media (max-width: 800px) { .edbody { grid-template-columns: 1fr; overflow: auto; } .edmeta { grid-template-columns: 1fr 1fr; } .dlg.editor { height: 96vh; } }
 .dlg .edpad label input, .dlg .edpad label select { width: 72px; display: block; }
 .dlg .edmeta label input { width: 100%; }
+
+/* EasyEDA-style PCB editor */
+#pcbSvg { background: #000; }
+.tsep { width: 1px; align-self: stretch; background: var(--line); margin: 0 4px; }
+#pcbOverlay { position: absolute; inset: 0; pointer-events: none; }
+.fpanel { position: absolute; pointer-events: auto; background: #1b1f26ee; border: 1px solid #333b47; border-radius: 8px; box-shadow: 0 6px 20px #0009; font-size: 12px; user-select: none; }
+.fph { display: flex; align-items: center; justify-content: space-between; gap: 6px; padding: 5px 8px; font-weight: 700; font-size: 11px; color: var(--muted); border-bottom: 1px solid #333b47; text-transform: uppercase; letter-spacing: .05em; }
+#pcbPalette { top: 10px; left: 10px; display: flex; flex-direction: column; width: 64px; }
+#pcbPalette .fph { justify-content: center; font-size: 9px; padding: 4px; }
+.tbtn { display: flex; align-items: center; gap: 4px; margin: 3px; padding: 5px 6px; background: transparent; border-color: transparent; }
+.tbtn svg { width: 20px; height: 20px; fill: #cfd6df; stroke: #cfd6df; }
+.tbtn span { font-size: 10px; color: var(--muted); font-weight: 700; }
+.tbtn.on { background: #2f6bff33; border-color: var(--accent); }
+.tbtn.on svg { fill: #fff; stroke: #fff; }
+#layerPanel { top: 10px; right: 10px; width: 236px; }
+.lq button { font-size: 10px; padding: 0 5px; margin-left: 2px; text-transform: none; letter-spacing: 0; }
+.lrow { display: flex; align-items: center; gap: 6px; padding: 3px 8px; cursor: pointer; }
+.lrow:hover { background: #ffffff0d; }
+.lrow.act { background: #ffffff14; }
+.lrow.off .lname { color: #6b7380; }
+.lact { width: 12px; color: #fff; font-size: 11px; }
+.lsw { width: 16px; height: 12px; border-radius: 2px; border: 1px solid #0008; position: relative; overflow: hidden; cursor: pointer; flex: none; }
+.lsw input { position: absolute; inset: -4px; opacity: 0; cursor: pointer; }
+.lname { flex: 1; font-family: ui-monospace, Consolas, monospace; font-size: 11.5px; }
+.leye { width: 18px; text-align: center; font-size: 12px; }
+.ldim { display: flex; gap: 6px; align-items: center; padding: 5px 8px; border-top: 1px solid #333b47; color: var(--muted); font-size: 11px; }
+#pcbCoord { position: absolute; left: 10px; bottom: 8px; pointer-events: none; background: #000a; padding: 3px 8px; border-radius: 6px; font-size: 11px; color: #ccd; font-family: ui-monospace, Consolas, monospace; max-width: calc(100% - 270px); }
+#pcbCoord .bad { color: #ff6b6b; font-weight: 700; }
+#pcbSvg .trk { stroke-linecap: round; cursor: pointer; }
+#pcbSvg .pad, #pcbSvg .via { cursor: pointer; }
+#pcbSvg .hl { filter: brightness(1.8) saturate(1.2); }
+#pcbSvg .fphit { fill: transparent; cursor: move; }
+#pcbSvg .selbox { fill: none; stroke: #ffffff; stroke-width: 0.08; stroke-dasharray: 0.3 0.2; pointer-events: none; }
+#pcbSvg .selline { fill: none; stroke: #ffffff; opacity: 0.35; stroke-linecap: round; stroke-linejoin: round; pointer-events: none; }
+#pcbSvg .rprev { fill: none; stroke-linecap: round; stroke-linejoin: round; opacity: 0.85; pointer-events: none; }
+#pcbSvg #pcbLive { pointer-events: none; }
+@media (max-width: 800px) { #layerPanel { width: 180px; } #pcbPalette { width: 54px; } }
+#layerPanel .fph .ltitle { cursor: pointer; }
+#layerPanel.collapsed #layerRows, #layerPanel.collapsed .ldim { display: none; }
+#pcbPalette.collapsed .tbtn span { display: none; }
