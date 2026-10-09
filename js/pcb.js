@@ -492,7 +492,21 @@ const Pcb = (() => {
   // Route with vias kept off SMD pins. Nets that cannot be finished that way are retried on their own,
   // allowing a via on their own pin as a last resort (reported, and flagged by DRC as a warning).
   function route(opt = {}) {
-    const r = routeOnce(opt);
+    const t0 = Date.now(), S = Model.S;
+    let r = routeOnce(opt);
+    // Copper pours: pads joined through a pour before routing can be cut off once tracks split the pour into
+    // islands. Re-check the poured nets and connect the pieces (tracks, or vias down to the other layer's pour).
+    if ((S.pcb.pours || []).length && !opt.onlyNets) {
+      const poured = new Set(S.pcb.pours.map(p => p.net));
+      for (let k = 0; k < 2; k++) {
+        const conn = connectivity(), broken = Object.keys(conn).filter(n => poured.has(n) && !conn[n].complete);
+        if (!broken.length) break;
+        const left = (opt.time_limit_s ?? rules().routeTime ?? 90) - (Date.now() - t0) / 1000;
+        routeOnce(Object.assign({}, opt, { keep: true, keepAll: true, onlyNets: broken, onBest: null, time_limit_s: Math.max(8, Math.min(40, left)) }));
+      }
+      const st = status();
+      r = Object.assign({}, r, { routed: st.routed, total: st.nets, failed: st.unrouted, vias: S.pcb.vias.length, seconds: +((Date.now() - t0) / 1000).toFixed(1) });
+    }
     if (r.via_in_pad && r.via_in_pad.length) r.note = 'Via on an SMD pin was needed for: ' + r.via_in_pad.join(', ') + ' (DRC warning). Optimize placement or give the router more room to avoid it.';
     return r;
   }
@@ -575,7 +589,23 @@ const Pcb = (() => {
       if (c) for (const grp of c.groups) { const ids = new Set(grp.map(q => q.uid)); islands.push(pads.filter(q => ids.has(q.uid))); }
       else pads.forEach(q => islands.push([q]));
       return { net: n, id: netId[n], pads, islands: islands.filter(i => i.length), hpwl: (x1 - x0) + (y1 - y0), w: netWidth(R, n) };
-    }).filter(j => j.pads.length >= 2);
+    }).filter(j => j.pads.length >= 2 && (!opt.onlyNets || opt.onlyNets.includes(j.net)));
+    // pour pass: the pour copper tied to the main group is part of the start tree, so a cut-off pad only has to
+    // reach the nearest live pour (a short stub, or a via down to the other layer's pour)
+    if (opt.onlyNets) for (const j of jobs) {
+      const prs = (S.pcb.pours || []).filter(p => p.net === j.net); if (!prs.length || j.islands.length < 2) continue;
+      j.islands.sort((a, b) => b.length - a.length);
+      const main = j.islands[0], ras = prs.map(pr => ({ pr, r: pourRaster(pr), l: pr.layer === 'B' ? 1 : 0 })).filter(q => q.l < L);
+      const live = ras.map(q => new Set(main.filter(p => p.drill || (p.layer || 'F') === q.pr.layer).map(p => q.r.at(p.x, p.y)).filter(Boolean)));
+      // one hop through the net's vias: a via in a live island of one layer makes its island on the other layer live
+      for (let pass = 0; pass < 2; pass++) for (const v of S.pcb.vias) if (v.net === j.net) {
+        const onLive = ras.some((q, k) => live[k].has(q.r.at(v.x, v.y)));
+        if (onLive) ras.forEach((q, k) => { const lab = q.r.at(v.x, v.y); if (lab) live[k].add(lab); });
+      }
+      const extra = [];
+      ras.forEach((q, k) => { if (!live[k].size) return; for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) if (live[k].has(q.r.at(x * g, y * g))) extra.push(q.l * N + y * W + x); });
+      if (extra.length) j.pourCells = extra;
+    }
     const already = jobs.filter(j => j.islands.length <= 1).map(j => j.net);
     const todo = jobs.filter(j => j.islands.length > 1);
     if (!todo.length) { S.pcb = { traces: oldTraces, vias: oldVias, pours: S.pcb.pours || [], holes: S.pcb.holes || [], routed: Object.fromEntries(already.map(n => [n, true])) }; return { routed: jobs.length, total: jobs.length, failed: [], necked_down: [], vias: oldVias.length, kept_tracks: oldTraces.length, rules: R.preset }; }
@@ -654,12 +684,12 @@ const Pcb = (() => {
     // routed copper added to / removed from the board
     function track(ts, vs2, sgn) { const tt0 = Date.now(); trackI(ts, vs2, sgn); stats.tTrack = (stats.tTrack || 0) + Date.now() - tt0; }
     function trackI(ts, vs2, sgn) { for (const M of wcache.values()) { for (const t of ts) if (!t.fixed) cuAdd(M.rT, M.rV, t, M.w, sgn); for (const v of vs2) if (!v.fixed) viaAdd(M.rT, M.rV, v, M.w, sgn); } }
-    const tmpT = new Int32Array(L * N), tmpV = new Int32Array(N);
+    const tmpT = new Int32Array(L * N), tmpV = new Int32Array(N), vipCell = new Uint8Array(N);
     // Build "where may this net's centreline / vias go" maps for width w.
     function buildMaps(id, w) {
       const tb0 = Date.now();
       const M = mapsFor(w);
-      own.fill(0);
+      own.fill(0); vipCell.fill(0);
       for (let k = 0; k < L * N; k++) tmpT[k] = M.pT[k] + M.fT[k] + (soft ? 0 : M.rT[k]);
       for (let k = 0; k < N; k++) tmpV[k] = M.pV[k] + M.fV[k] + (soft ? 0 : M.rV[k]);
       for (const p of allPads) if (p.id === id) padAdd(tmpT, tmpV, p, w, -1);
@@ -679,12 +709,15 @@ const Pcb = (() => {
           }
           // no vias on SMD pins (solder wicks into the hole; JLCPCB needs paid filled vias for that):
           // keep vias off our own small pads, except well inside large exposed / thermal pads
-          if (!p.drill && !R.viaInPad && !vip.has(id)) {
-            const big = Math.min(p.w, p.h) >= 2 * R.viaDiameter + 0.4, nr = p.near;
+          // drill-to-drill spacing applies to our own through-hole pads too
+          if (p.drill) { const nr = p.near, hole = R.viaDrill / 2 + R.minHoleToHole; for (let k = 0; k < nr.length; k += 3) if (nr[k + 2] < hole) blockV[nr[k]] = 1; }
+          // (a net allowed via-in-pad as a last resort pays a heavy cost for it, so it is used only where unavoidable)
+          if (!p.drill && !R.viaInPad) {
+            const big = Math.min(p.w, p.h) >= 2 * R.viaDiameter + 0.4, nr = p.near, last = vip.has(id);
             for (let k = 0; k < nr.length; k += 3) {
               const i = nr[k]; if (nr[k + 1] >= vr + 0.05) continue;
               if (big && Math.max(own[i], L > 1 ? own[N + i] : 0) >= R.viaDiameter + 0.3) continue;
-              blockV[i] = 1;
+              if (last) vipCell[i] = 1; else blockV[i] = 1;
             }
           }
         }
@@ -788,7 +821,7 @@ const Pcb = (() => {
             const os = (1 - l) * N + i;
             if (stamp[os] !== sid) { stamp[os] = sid; g2[os] = Infinity; closed[os] = 0; tmask[os] = 0; }
             if (!closed[os]) {
-              const ng = g2[s] + viaCost + (soft && softV[i] ? SOFT * 3 : 0);
+              const ng = g2[s] + viaCost * (vipCell[i] ? 20 : 1) + (soft && softV[i] ? SOFT * 3 : 0);
               if (ng < g2[os]) { g2[os] = ng; came[os] = s; const ddx = Math.abs(x - tx), ddy = Math.abs(y - ty); heap.push(ng + HW * (ddx > ddy ? ddx + K * ddy : ddy + K * ddx), os); }
             }
           }
@@ -807,6 +840,7 @@ const Pcb = (() => {
       const terms = job.islands.map(isl => ({ pads: isl, x: isl.reduce((a, q) => a + q.x, 0) / isl.length, y: isl.reduce((a, q) => a + q.y, 0) / isl.length, w: Math.max(...isl.map(q => q.w)), h: Math.max(...isl.map(q => q.h)), cells: [...islandCells(isl)] }));
       // kept tracks/vias of this net extend the terminal they touch
       for (const t of st.tcells) if (t.id === id && t.fixed) { const tc = t.cells.map(c => t.l * N + c), hit = terms.find(T => tc.some(c => T.cells.includes(c))); if (hit) hit.cells.push(...tc); }
+      if (job.pourCells) terms[0].cells.push(...job.pourCells);
       const tree = new Set(terms[0].cells), done = [terms[0]], rest = terms.slice(1), segs = [], vs = [];
       let ok = true, mapW = null, necked = false;
       const widths = [job.w];
@@ -1097,7 +1131,7 @@ const Pcb = (() => {
         if (p.drill || p.net !== v.net || padDist(p, v.x, v.y) >= v.d / 2) continue;
         const big = Math.min(p.w, p.h) >= 2 * v.d + 0.4, depth = Math.min(p.w / 2 - Math.abs(v.x - p.x), p.h / 2 - Math.abs(v.y - p.y));
         if (big && depth >= v.d / 2 + 0.15) continue; // thermal via well inside an exposed pad
-        add('via-in-pad', `Via on SMD pad ${p.key} (${v.net}) — solder wicks into the hole; move the via off the pin (re-route) or allow via-in-pad in the rules (filled vias cost extra at JLCPCB)`, v.x, v.y, 'warning');
+        add('via-in-pad', `Via on SMD pad ${p.key} (${v.net}) — solder wicks into the hole. ${Model.isGround(v.net) ? 'Add a GND copper pour (⬛ Pour GND) and route again — the pour connects GND without these vias — or' : 'Route again /'} ✨ Optimize to make room, or allow via-in-pad in the rules (filled vias cost extra at JLCPCB)`, v.x, v.y, 'warning');
       }
     }
     (S.pcb.holes || []).forEach((h, i) => objs.push({ s: { k: 'circ', c: [h.x, h.y], r: h.d / 2 }, net: '~hole' + i, layers: ['F', 'B'], what: `mounting hole ${i + 1}`, drill: h.d, x: h.x, y: h.y }));

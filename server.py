@@ -33,6 +33,9 @@ HOP_HEADERS = {"host", "origin", "referer", "connection", "content-length", "acc
                "cookie", "cf-connecting-ip", "cf-ray", "cf-visitor", "cf-ipcountry", "cdn-loop",
                "x-forwarded-for", "x-forwarded-proto"}
 ALLOWED_PORTS = {8080}
+# Cloud model APIs without browser CORS support, reached through /llm-cloud/<name>/... (fixed destinations only)
+CLOUD_RE = re.compile(r"^/llm-cloud/([a-z]+)(/.*)?$")
+CLOUD_HOSTS = {"ollama": "https://ollama.com"}
 PASSWORD = None
 LOGIN_PAGE = b"""<!doctype html><meta name=viewport content="width=device-width,initial-scale=1">
 <title>CircuitPilot</title><body style="background:#0f1216;color:#dfe5ec;font:15px system-ui;display:grid;place-items:center;height:100vh;margin:0">
@@ -99,6 +102,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
             return self._send(200, b'{"ok":true}', "application/json")
         if PROXY_RE.match(path):
             return self._proxy()
+        if CLOUD_RE.match(path):
+            return self._cloud()
         if path == "/api/version":  # changes whenever the app files change → open tabs offer a reload
             files = ["index.html", "styles.css"] + ["js/" + f for f in os.listdir("js") if f.endswith(".js")]
             v = max(os.path.getmtime(f) for f in files if os.path.exists(f))
@@ -138,6 +143,8 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         path = self.path.split("?")[0]
         if PROXY_RE.match(path):
             return self._proxy()
+        if CLOUD_RE.match(path):
+            return self._cloud()
         if path.startswith(("/api/projects", "/api/library")):
             return self._store(path)
         if path == "/api/extract" and self.command == "POST":  # text of a file attached in the chat
@@ -230,6 +237,26 @@ class Handler(http.server.SimpleHTTPRequestHandler):
         self.send_header("Content-Length", str(len(body)))
         self.end_headers()
         self.wfile.write(body)
+
+    def _cloud(self):
+        path, _, query = self.path.partition("?")
+        name, rest = CLOUD_RE.match(path).groups()
+        host = CLOUD_HOSTS.get(name)
+        if not host:
+            return self._send(404, b'{"error":{"message":"unknown cloud provider"}}', "application/json")
+        url = host + (rest or "/") + (f"?{query}" if query else "")
+        length = int(self.headers.get("Content-Length") or 0)
+        body = self.rfile.read(length) if length else None
+        headers = {k: v for k, v in self.headers.items() if k.lower() in ("authorization", "content-type", "accept")}
+        headers["User-Agent"] = "CircuitPilot"
+        req = urllib.request.Request(url, data=body, headers=headers, method=self.command)
+        try:
+            with urllib.request.urlopen(req, timeout=900) as r:
+                self._send(r.status, r.read(), r.headers.get("Content-Type", "application/json"))
+        except urllib.error.HTTPError as e:
+            self._send(e.code, e.read(), e.headers.get("Content-Type", "application/json"))
+        except Exception as e:
+            self._send(502, json.dumps({"error": {"message": f"Could not reach {host}: {e}"}}).encode(), "application/json")
 
     def _proxy(self):
         path, _, query = self.path.partition("?")

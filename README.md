@@ -51,7 +51,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 
 ## Features
 
-- **Model picker** — Claude (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5) or any OpenAI-compatible endpoint (OpenAI, Gemini, Grok, OpenRouter, Ollama, LM Studio, llama.cpp, local servers).
+- **Model picker** — Claude (Fable 5.1, Opus 5.5, Sonnet 5.5, Haiku 4.5) or any OpenAI-compatible endpoint (OpenAI, Gemini, Grok, OpenRouter, Ollama, **Ollama Cloud** (via the server proxy), LM Studio, llama.cpp, vLLM / ExLlama / TabbyAPI, local servers); the context window is detected from the server.
 - **Three copilot modes** — **Agent** edits the design with tools, **Ask** is read-only review and Q&A, **Plan** writes a BOM + netlist plan you approve with **Execute plan**.
 - **Every palette part is a real JLCPCB part** — the schematic keeps clean symbols while the footprint and pinout come from a specific LCSC part (Basic parts where possible, LEDs by colour); **⇄ JLCPCB parts** converts older designs and **Export → BOM for JLCPCB assembly** matches part numbers for every value.
 - **Real component database** — JLCPCB/LCSC search with stock and price; exact pinouts and real footprints for every part, cached locally.

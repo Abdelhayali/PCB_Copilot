@@ -637,7 +637,7 @@ const App = (() => {
     initKnowledge();
     Projects.init().then(renderParts);
 
-    renderParts(); renderModels(); setMode('agent'); renderChat(); renderAll();
+    renderParts(); renderModels(); setMode('agent'); renderChat(); renderAll(); AI.probeContext().then(updateCtx).catch(() => { });
     requestAnimationFrame(() => Sch.fit());
 
     $('#partSearch').oninput = () => { renderParts(); searchDb($('#partSearch').value); };

@@ -14,6 +14,7 @@ const AI = (() => {
     'OpenRouter': 'https://openrouter.ai/api/v1',
     'Local :8080': 'http://localhost:8080/v1',
     'Ollama (local)': 'http://localhost:11434/v1',
+    'Ollama Cloud': 'https://ollama.com/v1',
     'LM Studio (local)': 'http://localhost:1234/v1',
   };
   const defaults = { anthropicKey: '', oaiBase: 'https://api.openai.com/v1', oaiKey: '', oaiModels: '', model: 'claude-sonnet-5-5', maxTokens: 8192, includeContext: true, webAccess: true, braveKey: '' };
@@ -33,6 +34,8 @@ const AI = (() => {
     let u; try { u = new URL(base); } catch (e) { throw new Error('Invalid base URL: ' + base); }
     const local = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', location.hostname].includes(u.hostname);
     if (local && u.protocol === 'http:' && await hasProxy()) return `${location.origin}/llm-proxy/${u.port || 80}${u.pathname.replace(/\/+$/, '')}`;
+    // cloud APIs that don't allow browser (CORS) calls go through server.py's fixed-destination proxy
+    if (/(^|\.)ollama\.com$/.test(u.hostname) && await hasProxy()) return `${location.origin}/llm-cloud/ollama${u.pathname.replace(/\/+$/, '')}`;
     return base;
   }
   async function fetchModels(base, key) {
@@ -206,8 +209,19 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
       if (n > 0) return (ctxCache[model.id] = n);
       const list = await get(base + '/models').catch(() => null);
       const m = list && (list.data || list.models || []).find(x => (x.id || x.name) === model.id);
-      const c = m && (m.context_length || m.max_context_length || m.context_window || m.loaded_context_length || m.meta?.n_ctx || m.meta?.n_ctx_train);
+      // vLLM / ExLlama / TabbyAPI report max_model_len or max_seq_len, LM Studio max_context_length, OpenRouter context_length
+      const c = m && (m.max_model_len || m.max_seq_len || m.context_length || m.max_context_length || m.loaded_context_length || m.context_window || m.top_provider?.context_length || m.meta?.n_ctx || m.meta?.n_ctx_train);
       if (c > 0) return (ctxCache[model.id] = c);
+      const tabby = await get(base + '/model').catch(() => null);   // TabbyAPI: the loaded model
+      const ct = tabby && (tabby.parameters?.max_seq_len || tabby.max_seq_len);
+      if (ct > 0) return (ctxCache[model.id] = ct);
+      // Ollama (local or cloud): /api/show → num_ctx if the model sets it, else the model's context length
+      const show = await fetch(root + '/api/show', { method: 'POST', headers: Object.assign({ 'content-type': 'application/json' }, headers), body: JSON.stringify({ model: model.id }), signal: AbortSignal.timeout(6000) }).then(r => r.ok ? r.json() : null).catch(() => null);
+      if (show) {
+        const num = /num_ctx\s+(\d+)/.exec(show.parameters || ''), key = Object.keys(show.model_info || {}).find(k => k.endsWith('.context_length'));
+        const v = num ? +num[1] : key ? +show.model_info[key] : 0;
+        if (v > 0) return (ctxCache[model.id] = v);
+      }
     } catch (e) { }
     return contextWindow(model);
   }
