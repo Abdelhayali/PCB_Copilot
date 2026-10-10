@@ -318,6 +318,16 @@ Enclosure **STL ⤓** files are always rebuilt at high resolution (≈0.4 mm cur
 - **Export → Schematic for EasyEDA (.json)** writes the schematic as an EasyEDA Standard document (symbols, pins, net labels, LCSC part numbers). Open it in EasyEDA Standard with *File → Open → EasyEDA Source*, or in EasyEDA Pro with *File → Import → EasyEDA (Standard)*. Every part with an LCSC number is linked to its EasyEDA library symbol and footprint, so EasyEDA's *Footprints Verification* finds them (parts without an LCSC number get their footprint chosen in EasyEDA).
 - **Projects → Import .json / EasyEDA PCB** opens an EasyEDA Standard PCB (*File → Export → EasyEDA Source* in EasyEDA) as a new project: footprints become library parts (LCSC numbers kept), with placement (top/bottom, rotation), nets, tracks, vias, holes, copper areas and the board outline; a schematic is generated from the nets.
 
+## License and credit
+
+CircuitPilot is open source under the [MIT License](LICENSE), © 2026 Abdelhay Ali. You can use, change and share it, including commercially, as long as the copyright notice stays with the code.
+
+If CircuitPilot helps your project, please credit it, for example:
+
+> Designed with [CircuitPilot](https://github.com/Abdelhayali/CircuitPilot) by Abdelhay Ali
+
+A link back, a star on GitHub or a mention when you share your board is much appreciated.
+
 ## Data sources & licenses
 
 CircuitPilot's design, code and UI are original work. It uses third-party **data and libraries**, credited here as their terms require:
