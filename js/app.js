@@ -973,7 +973,7 @@ const App = (() => {
     Engine.env.route = runRouter;
     Engine.env.shape = code => EncView.runScript(code);
     Engine.env.searchKey = () => AI.settings.braveKey;
-    Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } if (what === 'show-enc') { showView('enc'); EncView.rebuild(); } };
+    Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } if (what === 'show-enc') { showView('enc'); EncView.rebuild(); } if (what === 'show-doc') showView('doc'); };
     EncView.init(); Pcb3D.init(); DocView.init();
     $('#btn3d').onclick = () => { const on = !Pcb3D.ui.on; PcbView.setVisible(!on); Pcb3D.setOn(on); };
     initKnowledge();
