@@ -8,7 +8,7 @@
 const UA = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36 CircuitPilot';
 const JLC_SEARCH = 'https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList';
 const MAX_BYTES = 15_000_000;
-const DEFAULT_ORIGINS = 'https://bodynet.net,https://www.bodynet.net,https://abdelhayali.github.io,http://localhost:5173,http://127.0.0.1:5173';
+const DEFAULT_ORIGINS = 'https://pcbgo.site,https://www.pcbgo.site,https://bodynet.net,https://www.bodynet.net,https://abdelhayali.github.io,http://localhost:5173,http://127.0.0.1:5173';
 
 function corsHeaders(origin) {
   return {
