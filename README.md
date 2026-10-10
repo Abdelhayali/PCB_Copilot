@@ -4,7 +4,7 @@ An AI copilot for electronics design: describe a circuit in plain language and i
 
 ![CircuitPilot — ESP32-C3 board schematic](docs/media/schematic.png)
 
-**▶ Try it online: [pcbgo.site](https://pcbgo.site)**: nothing to install. Open ⚙ Settings, paste an API key (Claude, OpenAI, Gemini, Ollama Cloud, OpenRouter…) and describe your circuit. Projects are saved in your browser. For local models, knowledge folders and Claude Code control, run the desktop version (below).
+**▶ Try it online: [pcbgo.site](https://pcbgo.site)**: nothing to install. The **🔑 Connect AI** window walks you through getting a free Google Gemini or Ollama Cloud key in about a minute (Claude, OpenAI, OpenRouter and others work too). Your key stays in your browser. Then describe your circuit. Projects are saved in your browser. For local models, knowledge folders and Claude Code control, run the desktop version (below).
 
 ## See it in action
 
@@ -76,6 +76,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Project knowledge** — point a project at a folder of docs, guides and datasheets (md/txt/pdf/docx) the AI follows.
 - **Checkpoints** — every Agent message snapshots the design; restore with one click. Full undo/redo.
 - **Schematic editor** — built-in parts plus database/custom parts, power symbols, click pin-to-pin wiring, drag, rotate (R), auto-layout.
+- **Cross-probing** — select a part or a net in the schematic and it is selected on the PCB, and the other way round (clicking a track highlights its whole net in the schematic). Switching tabs scrolls to the selection and opens the right schematic sheet.
 - **Select, move, copy, paste** — in the schematic and on the PCB: drag a box on empty space to select several parts (Shift+click adds or removes), drag any of them to move the group, **Ctrl+C / Ctrl+X / Ctrl+V / Ctrl+D / Ctrl+A**, **R** rotates and **Del** deletes the selection. Right-click a part (or the selection) for a menu: Cut, Copy, Paste, Duplicate, Rotate, Delete, Properties, Edit symbol & footprint — plus Flip side and Lock position on the PCB. Pasted groups keep their power nets (GND, +3V3…) and their own wiring on new nets. Right- or middle-drag pans.
 - **Professional schematic sheets** — an A-series drawing frame with zone markers and a title block (title, company/author, document, sheet *n of m*, date, revision, size) filled from the Documentation fields; toggle it with the *frame* checkbox. **Multi-page schematics**: add sheets with ＋ in the sheet bar (double-click a tab to rename it), move parts between sheets from Properties, and nets that continue on another sheet are drawn as net labels and connected by name. The copilot can use sheets too (`add_sheet`, `move_to_sheet`, `sheet` in `add_components`).
 - **Readable spacing enforced** — after every copilot edit the layout is spaced out so that parts *and their net labels* never overlap, no matter where the model put them.
@@ -307,7 +308,7 @@ The geometry engine (CSG with watertight-mesh repair) is self-contained JavaScri
 
 The **Documentation** tab turns the design into a product datasheet — previewed live, exported with **PDF ⤓**:
 
-- cover with title, tagline, 3D render and key specifications; description, features and applications (**✦ Write with AI** drafts them from the design; edit them in the side panel)
+- cover with title, tagline, 3D render and key specifications; description, features and applications (**✦ Write with AI** drafts them from the design; edit them in the side panel, or let Claude Code write them with the `get_documentation` / `set_documentation` tools)
 - main components and power rails, full schematic
 - PCB: 3D renders of the top and bottom, copper layout, PCB / fabrication specifications (size, layers, track / space, vias, holes, routing, DRC / ERC)
 - mechanical drawing with board dimensions, mounting holes and edge connectors; connector pinout tables
