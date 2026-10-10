@@ -181,5 +181,26 @@ const Pcb3D = (() => {
     resize(); if (fit) preset('iso'); else draw();
     $('#p3info').innerHTML = `<b>${S.board.w} × ${S.board.h} × ${th} mm</b> · ${Pcb.placed().length} parts · ${S.pcb.traces.length} tracks · ${S.pcb.vias.length} vias<br><span class="muted">Drag to orbit · right-drag / Shift-drag to pan · wheel to zoom</span>`;
   }
-  return { init, setOn, ui, rebuild: () => rebuild(true) };
+  // PNG of the 3D board for documents (rendered off-screen at a fixed size on a light background)
+  async function snapshot(view = 'iso', w = 1400, h = 950, bg = '#ffffff') {
+    await loadThree(); const T = window.THREE;
+    if (!renderer) setup();
+    if (dirty || !root) { dirty = true; await rebuild(false); }
+    if (!root) return null;
+    const old = Object.assign({}, cam), size = renderer.getSize(new T.Vector2()), pr = renderer.getPixelRatio(), oc = renderer.getClearColor(new T.Color()).getHex(), oa = renderer.getClearAlpha();
+    const partsVis = root.userData.parts ? root.userData.parts.visible : true;
+    if (root.userData.parts) root.userData.parts.visible = true;
+    renderer.setPixelRatio(1); renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setClearColor(bg, 1);
+    const S = Model.S;
+    if (view === 'top') { cam.th = -Math.PI / 2; cam.ph = 0.0001; } else if (view === 'bottom') { cam.th = -Math.PI / 2; cam.ph = Math.PI - 0.0001; } else { cam.th = -1.15; cam.ph = 0.95; }
+    cam.tx = S.board.w / 2; cam.ty = -S.board.h / 2; cam.tz = 0;
+    const fov = camera.fov * Math.PI / 180, span = Math.max(S.board.w / camera.aspect, S.board.h) * (view === 'iso' ? 1.25 : 1.1);
+    cam.r = span / 2 / Math.tan(fov / 2) + 2;
+    draw();
+    const url = renderer.domElement.toDataURL('image/png');
+    Object.assign(cam, old); if (root.userData.parts) root.userData.parts.visible = partsVis;
+    renderer.setPixelRatio(pr); renderer.setSize(size.x, size.y); renderer.setClearColor(oc, oa); resize(); draw();
+    return { url, w, h };
+  }
+  return { init, setOn, ui, rebuild: () => rebuild(true), snapshot };
 })();

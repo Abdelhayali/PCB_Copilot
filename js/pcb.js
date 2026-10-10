@@ -595,6 +595,22 @@ const Pcb = (() => {
       const st = status();
       r = Object.assign({}, r, { routed: st.routed, total: st.nets, failed: st.unrouted, vias: S.pcb.vias.length, seconds: +((Date.now() - t0) / 1000).toFixed(1) });
     }
+    // Clearance repair: the grid can shave a few µm off the clearance (e.g. a track passing a pad corner). Re-route just
+    // those nets with a wider safety margin; keep the original if the repair would leave the net unrouted.
+    if (!opt.onlyNets) {
+      const tooClose = new Set();
+      for (const v of drc().violations) if (v.type === 'clearance' || v.type === 'short') { const m = /trace (\S+)/g; let x; while ((x = m.exec(v.msg))) if (x[1] !== '(no') tooClose.add(x[1]); }
+      const nets = [...tooClose].filter(n => S.nets[n]);
+      if (nets.length) {
+        const before = JSON.stringify(S.pcb), bad0 = drc().violations.filter(v => v.type === 'clearance' || v.type === 'short').length, conn0 = connectivity();
+        S.pcb.traces = S.pcb.traces.filter(t => t.manual || !nets.includes(t.net)); S.pcb.vias = S.pcb.vias.filter(v => v.manual || !nets.includes(v.net));
+        routeOnce(Object.assign({}, opt, { keep: true, keepAll: true, onlyNets: nets, onBest: null, safeExtra: 0.04, time_limit_s: 15 }));
+        const conn = connectivity(), lost = nets.some(n => conn0[n] && conn0[n].complete && !(conn[n] && conn[n].complete));
+        const bad1 = drc().violations.filter(v => v.type === 'clearance' || v.type === 'short').length;
+        if (lost || bad1 >= bad0) S.pcb = JSON.parse(before);
+        else { const st = status(); r = Object.assign({}, r, { routed: st.routed, failed: st.unrouted, vias: S.pcb.vias.length, clearance_repaired: nets }); }
+      }
+    }
     if (r.via_in_pad && r.via_in_pad.length) r.note = 'Via on an SMD pin was needed for: ' + r.via_in_pad.join(', ') + ' (DRC warning). Optimize placement or give the router more room to avoid it.';
     return r;
   }
@@ -734,7 +750,7 @@ const Pcb = (() => {
       for (let i = 0; i < d.length; i += 2) { const x = cx + d[i], y = cy + d[i + 1]; if (x >= 0 && y >= 0 && x < W && y < H) { const k = layerOff + y * W + x; if (map[k] < val) map[k] = val; } }
     };
     // grid rounding can eat a few µm of clearance: keep a small safety margin so DRC never sees 0.199 vs 0.2
-    const safe = Math.max(0.01, g * 0.1);
+    const safe = Math.max(0.01, g * 0.1) + (+opt.safeExtra || 0);
     // Obstacle counts per trace width, kept up to date incrementally: pads, fixed (kept) copper and routed copper.
     // A net's maps are then "counts minus its own contributions > 0", built in one linear pass.
     const wcache = new Map();

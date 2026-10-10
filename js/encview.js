@@ -387,5 +387,30 @@ const EncView = (() => {
     else App.download(base + '-enclosure.zip', makeZip(files));
     App.toast(`Exported ${r.parts.length} part${r.parts.length > 1 ? 's' : ''}${r !== prev ? ` · high resolution (${r.parts.reduce((a, p) => a + p.triangles, 0).toLocaleString()} triangles)` : ''}`, 6000);
   }
-  return { init, show, hide, props, ui, rebuild: () => rebuild(true), runScript };
+  // PNG of the enclosure for documents (off-screen, light background); o.explode lifts the lid / covers
+  async function snapshot(o = {}) {
+    const w = o.w || 1400, h = o.h || 950, bg = o.bg || '#ffffff';
+    await loadThree(); const T = window.THREE;
+    if (!renderer) setupScene();
+    if (Enclosure.mode() === 'custom') {
+      const code = Enclosure.script(); if (!code.trim()) return null;
+      try { await runScript(code); } catch (e) { return null; }
+      showCustom(false);
+    } else { if (dirty || !ui.built || ui.built.custom) rebuild(false); }
+    if (!ui.built || !root) return null;
+    const keep = { cam: Object.assign({}, cam), explode: ui.explode, lid: ui.lid, xray: ui.xray, pcb: ui.pcb }, size = renderer.getSize(new T.Vector2()), pr = renderer.getPixelRatio(), oc = renderer.getClearColor(new T.Color()).getHex(), oa = renderer.getClearAlpha();
+    ui.explode = !!o.explode; ui.lid = o.lid !== false; ui.xray = false; ui.pcb = o.pcb !== false; place();
+    const box = new T.Box3(); root.updateMatrixWorld(true); root.traverse(m => { if (m.isMesh && m.visible) box.expandByObject(m); });
+    if (box.isEmpty()) return null;
+    const c = box.getCenter(new T.Vector3()), sz = box.getSize(new T.Vector3());
+    renderer.setPixelRatio(1); renderer.setSize(w, h, false); camera.aspect = w / h; camera.updateProjectionMatrix(); renderer.setClearColor(bg, 1);
+    cam.th = o.th ?? -1.0; cam.ph = o.ph ?? 1.05; cam.tx = c.x; cam.ty = c.y; cam.tz = c.z;
+    const fov = camera.fov * Math.PI / 180, span = Math.max(sz.x, sz.y, sz.z) * 1.45; cam.r = span / 2 / Math.tan(fov / 2);
+    draw();
+    const url = renderer.domElement.toDataURL('image/png');
+    Object.assign(cam, keep.cam); ui.explode = keep.explode; ui.lid = keep.lid; ui.xray = keep.xray; ui.pcb = keep.pcb;
+    renderer.setPixelRatio(pr); renderer.setSize(size.x, size.y); renderer.setClearColor(oc, oa); place(); resize(); draw();
+    return { url, w, h };
+  }
+  return { init, show, hide, props, ui, rebuild: () => rebuild(true), runScript, snapshot };
 })();
