@@ -503,7 +503,7 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     L.push(`const adds = [], cuts = [];`);
     L.push(`let body = softSolid(out, zLow, zt, roundTop, roundBottom);`);
     if (o.flange) L.push(`adds.push(extrude(out.offset(${o.flange}), 1.5).translate([0, 0, zLow - 0.3]));   // adhesive flange (0.3 below the body: no coplanar faces)`);
-    if (o.lugs) L.push(`{ const g = strapLugs({ W: strapAxis === 'x' ? BL : BW, L: strapAxis === 'x' ? BW : BL, z: zLow + ${o.lugs === 'pins' ? '3' : '2.4'}, strap, style: lugStyle, t: ${o.lugT || 4.5}, cx: 0, cy: 0 });`,
+    if (o.lugs) L.push(`{ const g = strapLugs({ W: strapAxis === 'x' ? BL : BW, L: strapAxis === 'x' ? BW : BL, z: zLow + ${o.lugs === 'pins' ? '3' : '2.4'}, strap, style: lugStyle, t: ${o.lugT || 4.5}, cx: 0, cy: 0, outline: strapAxis === 'x' ? out.translate([-e.cx, -e.cy]).rotate(-90) : out.translate([-e.cx, -e.cy]) });`,
       `  const place = s => strapAxis === 'x' ? s.rotate([0, 0, 90]).translate([e.cx, e.cy, 0]) : s.translate([e.cx, e.cy, 0]); adds.push(place(g.add)); cuts.push(place(g.cut)); }`);
     if (o.electrodes) {
       L.push(`// snap-electrode studs (Ø3.9–4 mm studs → Ø4.2 holes) on the ${o.studsTop ? 'top (lead wires snap on)' : 'skin side'}`);
@@ -517,7 +517,7 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     if (o.ears) L.push(`{ const m = mountEars(BW, zLow, e.cx, e.cy); adds.push(m.add); cuts.push(m.cut); }   // screw ears`);
     if (o.vents) L.push(`cuts.push(ventSlots(e, zt, ${o.vents}));`);
     L.push(`const inner = out.offset(-t);                    // hollow inside, following the outer shape`);
-    L.push(`let shell = difference(union(body, ...adds), hollow(out, e, t), ...cuts, cutter, connectorCuts(e), topWindows(e, zt));`);
+    L.push(`let shell = difference(union(body, ...adds), hollow(out, e, t, roundTop), ...cuts, cutter, connectorCuts(e), topWindows(e, zt));`);
     L.push(`shell = union(shell, boardPosts(e));`);
     L.push(`const [base, lid] = splitLid(shell, e, e.zTop, { fit: 0.2, lipH: ${o.lipH ?? 1.6}, inner });`);
     L.push(`part('${o.baseName || 'base'}', base, { color: '${o.c1 || 'dimgray'}' });`);
@@ -652,7 +652,8 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     // the cavity the board lives in
     // (its ceiling sits 0.25 mm above zTop, so it is never coplanar with the base / lid split at zTop)
     // hollow interior that follows the outer outline at wall thickness t (always includes the board pocket)
-    K2.hollow = (out, e, t, r = 1) => union(K2.cavity(e, r), extrude(out.offset(-t), e.zTop + 0.25 - e.zFloor).translate([0, 0, e.zFloor]));
+    // (with roundTop the inner top follows the rounded outer top, so the lid keeps its wall thickness at the edges)
+    K2.hollow = (out, e, t, roundTop = 0, r = 1) => union(K2.cavity(e, r), roundTop > t + 0.05 ? K2.softSolid(out.offset(-t), e.zFloor, e.zTop + 0.25, roundTop - t, 0) : extrude(out.offset(-t), e.zTop + 0.25 - e.zFloor).translate([0, 0, e.zFloor]));
     K2.cavity = (e, r = 1) => extrude(api2.roundedRect(e.w, e.l, Math.min(r, e.w / 2 - 0.01, e.l / 2 - 0.01)).translate([e.cx, e.cy]), e.zTop + 0.25 - e.zFloor).translate([0, 0, e.zFloor]);
     // posts under the board corners (clear of bottom-side parts); pilot holes at PCB mounting holes
     K2.boardPosts = (e, d = 3) => {
@@ -708,17 +709,29 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     };
     // concave underside following the wrist (cylinder along X); returns the cutter and the lift at the ends
     K2.wristCurve = (L, zLow, R = 34) => { const sag = R - Math.sqrt(Math.max(0, R * R - (L / 2) * (L / 2))); return { sag, cutter: cylinder({ r: R, h: 400, center: true, fn: 160 }).rotate([0, 90, 0]).translate([0, 0, zLow + sag - R]) }; };
-    // strap attachments on the ±Y ends: 'slot' (strap loops through), 'pins' (watch lugs with spring-bar holes), 'bar' (closed loop bar)
+    // where the body outline is at a given x (largest y for side +1, smallest for -1), in the outline's own coordinates
+    K2.edgeAt = (shape2d, x, side = 1) => {
+      const P = shape2d.pts, ys = [];
+      for (let i = 0, j = P.length - 1; i < P.length; j = i++) { const [xi, yi] = P[i], [xj, yj] = P[j]; if ((xi <= x) !== (xj <= x) && xi !== xj) ys.push(yi + (yj - yi) * (x - xi) / (xj - xi)); }
+      return ys.length ? (side > 0 ? Math.max(...ys) : Math.min(...ys)) : null;
+    };
+    // strap attachments on the ±Y ends: 'slot' (strap loops through), 'pins' (watch lugs with spring-bar holes), 'bar' (closed loop bar).
+    // With o.outline (the body outline in the same local frame) each lug reaches into the body, so it is one solid with it.
     K2.strapLugs = (o) => {
-      const { W, L, z, strap = 22, style = 'slot', t = 4.5, cx = 0, cy = 0 } = o, add = [], cut = [];
+      const { W, L, z, strap = 22, style = 'slot', t = 4.5, cx = 0, cy = 0, outline = null } = o, add = [], cut = [];
+      const reach = (x, s) => { const e = outline ? K2.edgeAt(outline, x, s) : null; return e == null ? cy : e - s * 1.5; };   // 1.5 mm into the body
       for (const s of [-1, 1]) {
         const yE = cy + s * L / 2;
         if (style === 'pins') {
-          for (const sx of [-1, 1]) add.push(roundedBox([3.2, 8, t], 1.2).translate([cx + sx * (strap / 2 + 1.6), yE + s * 3, z]));
+          for (const sx of [-1, 1]) {
+            const x = cx + sx * (strap / 2 + 1.6), y0 = Math.min(s * reach(x - 1.6, s), s * reach(x + 1.6, s), s * (yE - s * 1)) * s, y1 = yE + s * 7;
+            add.push(roundedBox([3.2, Math.abs(y1 - y0), t], 1.2).translate([x, (y0 + y1) / 2, z]));
+          }
           cut.push(cylinder({ d: 1.3, h: strap + 12, center: true, fn: 16 }).rotate([0, 90, 0]).translate([cx, yE + s * 5, z]));
         } else {
-          const depth = style === 'bar' ? 5 : 7;
-          add.push(roundedBox([strap + 6, depth, t], Math.min(1.5, t / 2 - 0.05)).translate([cx, yE + s * (depth / 2 - 1), z]));
+          const depth = style === 'bar' ? 5 : 7, hw = strap / 2 + 3;
+          const y0 = Math.min(s * reach(cx - hw, s), s * reach(cx + hw, s), s * reach(cx, s), s * (yE - s * 1)) * s, y1 = yE + s * (depth - 1);
+          add.push(roundedBox([strap + 6, Math.abs(y1 - y0), t], Math.min(1.5, t / 2 - 0.05)).translate([cx, (y0 + y1) / 2, z]));
           cut.push(cube([strap + 1, style === 'bar' ? 2 : 2.6, t + 2], { center: true }).translate([cx, yE + s * (depth - 2.8), z]));
         }
       }
@@ -843,7 +856,11 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
       const b = bboxOf(p.polys), tris = K().triangles(p.polys);
       const edges = new Map(), q = v => `${Math.round(v.x * 1e4)},${Math.round(v.y * 1e4)},${Math.round(v.z * 1e4)}`;
       for (const [a, bb, c] of tris) for (const [u, w] of [[a, bb], [bb, c], [c, a]]) { const ku = q(u), kw = q(w); if (ku === kw) continue; const k = ku < kw ? ku + '|' + kw : kw + '|' + ku; edges.set(k, (edges.get(k) || 0) + 1); }
-      let open = 0; for (const n of edges.values()) if (n % 2) open++;   // odd = a real hole; 4 = closed (non-manifold) seam
+      let open = 0; for (const n of edges.values()) if (n % 2) open++;
+      // separate solid pieces (polygons sharing a vertex belong together): a printed part should be one piece
+      const par = new Map(), find = k => { while (par.get(k) !== k) { par.set(k, par.get(par.get(k))); k = par.get(k); } return k; };
+      for (const pl of p.polys) { const ks = pl.v.map(q); for (const k of ks) if (!par.has(k)) par.set(k, k); const r0 = find(ks[0]); for (const k of ks) { const r1 = find(k); if (r1 !== r0) par.set(r1, r0); } }
+      const pieces = new Set([...par.keys()].map(find)).size;   // odd = a real hole; 4 = closed (non-manifold) seam
       // print orientation: rotate, then sit on the bed (z min = 0), centred on x/y
       let tf = null;
       if (p.print && p.print.rotate) {
@@ -852,12 +869,14 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
         let zmin = Infinity; for (const pl of p.polys) for (const v of pl.v) zmin = Math.min(zmin, rot(v).z);
         tf = v => { const r = rot(v); return new V(r.x, r.y, r.z - zmin); };
       } else tf = v => new V(v.x, v.y, v.z - b[2]);
-      const r = { name: p.name, color: p.color || null, explode: p.explode, bbox: b.map(v => +v.toFixed(2)), size_mm: [b[3] - b[0], b[4] - b[1], b[5] - b[2]].map(v => +v.toFixed(2)), volume_cm3: +(volumeOf(p.polys) / 1000).toFixed(2), triangles: tris.length, open_edges: open };
+      const r = { name: p.name, color: p.color || null, explode: p.explode, bbox: b.map(v => +v.toFixed(2)), size_mm: [b[3] - b[0], b[4] - b[1], b[5] - b[2]].map(v => +v.toFixed(2)), volume_cm3: +(volumeOf(p.polys) / 1000).toFixed(2), triangles: tris.length, open_edges: open, pieces };
       if (opts.keepPolys) r.polys = p.polys;
       if (opts.mesh !== false) Object.assign(r, K().meshArrays(p.polys));
       if (opts.stl !== false) r.stl = K().stl(p.polys, p.name, tf);
       return r;
     });
+    report.floating = out.filter(p => p.pieces > 1).map(p => ({ part: p.name, pieces: p.pieces }));
+    for (const f of report.floating) report.warnings.push(`part "${f.part}" is ${f.pieces} separate pieces — a feature does not touch the body (move it so it overlaps, or union it)`);
     if (out.some(p => p.open_edges)) report.warnings.push('some parts are not perfectly watertight (open_edges > 0) — most slicers repair this automatically');
     const scad = ['// CircuitPilot custom enclosure — OpenSCAD source generated from the 3D script (mm).', '// Coordinates: origin = PCB outline centre, Z = 0 at the PCB bottom.', '// Render one part: put ! in front of its call at the bottom, F6, then export STL.', '']
       .concat(parts.map(p => `module ${p.name.replace(/[^\w]/g, '_')}() {\n${scadOf(p.shape.node, '  ')}\n}\n`))

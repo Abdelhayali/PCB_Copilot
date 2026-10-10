@@ -383,3 +383,8 @@ ul.cutl li { padding: 2px 0; }
 .dfield { display: block; margin: 6px 0; font-size: 12px; }
 .dfield input, .dfield textarea { width: 100%; box-sizing: border-box; margin-top: 2px; }
 @media (max-width: 700px) { .dpage { padding: 18px 16px; } .dgrid { grid-template-columns: 1fr; } }
+/* datasheet tables: fixed layout, long part numbers wrap, never wider than the page */
+.dpage { overflow: hidden; }
+.dtab { table-layout: fixed; }
+.dtab th, .dtab td { overflow-wrap: anywhere; word-break: break-word; }
+@media (max-width: 700px) { .dtab { font-size: 10.5px; } .dtab th, .dtab td { padding: 3px 4px; } }

@@ -99,7 +99,7 @@ const DocView = (() => {
   // ---------- preview (HTML) ----------
   const esc2 = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const lines = s => String(s || '').split('\n').map(x => x.replace(/^[-•*]\s*/, '').trim()).filter(Boolean);
-  const tbl = (head, rows) => `<table class="dtab"><thead><tr>${head.map(h => `<th>${esc2(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc2(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+  const tbl = (head, rows, widths) => `<table class="dtab">${widths ? `<colgroup>${widths.map(w => `<col style="width:${w}%">`).join('')}</colgroup>` : ''}<thead><tr>${head.map(h => `<th>${esc2(h)}</th>`).join('')}</tr></thead><tbody>${rows.map(r => `<tr>${r.map(c => `<td>${esc2(c)}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
   const img = (im, cls = '') => im ? `<img class="dimg ${cls}" src="${im.url}">` : '';
   async function render() {
     const el = $('#docPages'); if (!el) return;
@@ -110,7 +110,7 @@ const DocView = (() => {
     let h = `<div class="dpage cover"><div class="dhead"><span>${esc2(d.title)}</span><span>Datasheet · Rev ${esc2(d.version)}</span></div>
       <h1>${esc2(d.title)}</h1>${d.subtitle ? `<div class="dsub">${esc2(d.subtitle)}</div>` : ''}
       ${img(I.pcb3d_iso, 'hero') || img(I.sch, 'hero')}
-      <h2>Key specifications</h2>${tbl(['', ''], keySpecs)}
+      <h2>Key specifications</h2>${tbl(['', ''], keySpecs, [30, 70])}
       ${d.description ? `<h2>Description</h2><p>${esc2(d.description).replace(/\n/g, '<br>')}</p>` : '<p class="muted">Add a description in the panel on the left (or ✦ Write with AI).</p>'}</div>`;
     if (d.features || d.applications) h += `<div class="dpage">${d.features ? `<h2>Features</h2><ul>${lines(d.features).map(x => `<li>${esc2(x)}</li>`).join('')}</ul>` : ''}${d.applications ? `<h2>Applications</h2><ul>${lines(d.applications).map(x => `<li>${esc2(x)}</li>`).join('')}</ul>` : ''}
       ${D.ics.length ? `<h2>Main components</h2>${tbl(['Ref', 'Part', 'Description'], D.ics.map(i => [i.ref, i.value, i.desc]))}` : ''}</div>`;
@@ -118,7 +118,7 @@ const DocView = (() => {
     if (D.hasPcb) h += `<div class="dpage"><h2>PCB</h2><div class="dgrid">${img(I.pcb3d_top)}${img(I.pcb3d_bottom)}</div><div class="dcap"><span>Top</span><span>Bottom</span></div>${img(I.pcb2d)}<div class="dcap"><span>Copper layout (red: top, blue: bottom)</span></div><h2>PCB specifications</h2>${tbl(['Parameter', 'Value'], D.specs)}</div>`;
     if (D.hasPcb) h += `<div class="dpage"><h2>Mechanical drawing</h2>${img(I.mech)}${D.conns.length ? '<h2>Connector pinout</h2>' + D.conns.map(c => `<h3>${esc2(c.ref)} — ${esc2(c.value)}${c.edge ? ` <span class="muted">(${c.edge} edge)</span>` : ''}</h3>${tbl(['Pin', 'Name', 'Signal'], c.pins.map(p => [p.num, p.name, p.net]))}`).join('') : ''}</div>`;
     if (D.enc) h += `<div class="dpage"><h2>Enclosure</h2><div class="dgrid">${img(I.enc)}${img(I.encx)}</div><div class="dcap"><span>Assembled</span><span>Exploded</span></div><p class="muted">${esc2(D.enc.kind)} — 3D-printable (STL + OpenSCAD in the Enclosure tab).</p>${tbl(D.enc.outer ? ['Dimension', 'Value'] : ['Part', 'Size (W × D × H)', 'Volume'], D.enc.rows)}</div>`;
-    h += `<div class="dpage"><h2>Bill of materials</h2>${tbl(['Qty', 'References', 'Value', 'Footprint', 'Description', 'LCSC'], D.bom.map(b => [b.qty, b.refs, b.value, b.fp, b.desc, b.lcsc]))}${d.notes ? `<h2>Notes</h2><p>${esc2(d.notes).replace(/\n/g, '<br>')}</p>` : ''}</div>`;
+    h += `<div class="dpage"><h2>Bill of materials</h2>${tbl(['Qty', 'References', 'Value', 'Footprint', 'Description', 'LCSC'], D.bom.map(b => [b.qty, b.refs, b.value, b.fp, b.desc, b.lcsc]), [7, 17, 14, 23, 25, 14])}${d.notes ? `<h2>Notes</h2><p>${esc2(d.notes).replace(/\n/g, '<br>')}</p>` : ''}</div>`;
     el.innerHTML = h;
   }
 
