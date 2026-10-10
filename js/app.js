@@ -768,6 +768,14 @@ const App = (() => {
     $('#modelSel').classList.toggle('hidden', !html);
   }
 
+  // default model per provider (used when connecting and whenever the model list is refreshed)
+  function preferredModel(base, ids) {
+    base = String(base || '');
+    if (/generativelanguage\.googleapis\.com/.test(base)) return ids.find(id => id === 'gemini-flash-lite-latest') || ids.find(id => /flash-lite/.test(id) && !/preview|exp/.test(id)) || ids.find(id => /flash/.test(id)) || ids[0];
+    if (/(^|\/\/|\.)ollama\.com/.test(base)) return ids.find(id => id === 'gpt-oss:120b') || ids.find(id => /gpt-oss/.test(id)) || ids[0];
+    return ids[0];
+  }
+
   // ---------- first run: connect an AI model (free Gemini / Ollama Cloud guides) ----------
   const SETUP = {
     gemini: {
@@ -775,12 +783,11 @@ const App = (() => {
       steps: ['Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with your Google account.',
         'Click <b>Create API key</b> (pick or create a project if Google asks).',
         'Copy the key. It starts with <code>AIza</code>. Paste it below.'],
-      note: 'Free, no credit card. The free plan has daily limits, and Google may use free-plan prompts to improve its products, so turning on billing in AI Studio is better for confidential designs.',
+      note: '<b>gemini-flash-lite-latest</b> is selected for you: fast, and it has the most generous free limits. Free, no credit card. The free plan has daily limits, and Google may use free-plan prompts to improve its products, so turning on billing in AI Studio is better for confidential designs.',
       pick: ids => {
         const chat = ids.filter(id => /gemini/i.test(id) && !/embed|image|tts|audio|live|vision|aqa|imagen|veo|learnlm|gemma/i.test(id));
-        const ver = id => parseFloat((/gemini-(\d+(?:\.\d+)?)/i.exec(id) || [])[1] || 0);
-        const flash = chat.filter(id => /flash/i.test(id) && !/lite|preview|exp/i.test(id)).sort((a, b) => ver(b) - ver(a));
-        return { list: chat.length ? chat : ids, model: flash[0] || chat.sort((a, b) => ver(b) - ver(a))[0] || ids[0] };
+        const list = chat.length ? chat : ids;
+        return { list, model: preferredModel(SETUP.gemini.base, list) };
       },
     },
     ollama: {
@@ -789,7 +796,7 @@ const App = (() => {
         'Open <a href="https://ollama.com/settings/keys" target="_blank" rel="noopener">ollama.com/settings/keys</a> and click <b>Add API key</b>.',
         'Give it a name, copy the key and paste it below.'],
       note: 'The free plan includes a usage allowance. <b>gpt-oss:120b</b> is selected for you: it handles the copilot\'s tool calls well (it designed the wearable in the demo video). On this web version, Ollama Cloud requests go through the CircuitPilot relay, because Ollama does not accept requests straight from web pages. The relay passes them on and stores nothing; its code is public in the repo.',
-      pick: ids => ({ list: ids, model: ids.find(id => id === 'gpt-oss:120b') || ids.find(id => /gpt-oss/.test(id)) || ids[0] }),
+      pick: ids => ({ list: ids, model: preferredModel(SETUP.ollama.base, ids) }),
     },
     claude: {
       steps: ['Open <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com/settings/keys</a> and sign in.',
@@ -869,13 +876,13 @@ const App = (() => {
     try {
       const ids = await AI.fetchModels(s.oaiBase, s.oaiKey);
       const upd = { oaiModels: ids.join(', ') };
-      if (!AI.allModels().some(m => m.id === s.model) || (!s.anthropicKey && !ids.includes(s.model))) upd.model = ids[0];
+      if (!AI.allModels().some(m => m.id === s.model) || (!s.anthropicKey && !ids.includes(s.model))) upd.model = preferredModel(s.oaiBase, ids);
       AI.saveSettings(upd); renderModels();
     } catch (e) { }
   }
   function saveSettings() {
     const ids = $('#sOModels').value.split(',').map(x => x.trim()).filter(Boolean);
-    if (ids.length && !$('#sAnth').value.trim() && !ids.includes(AI.settings.model)) AI.saveSettings({ model: ids[0] });
+    if (ids.length && !$('#sAnth').value.trim() && !ids.includes(AI.settings.model)) AI.saveSettings({ model: preferredModel($('#sBase').value.trim(), ids) });
     AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || ($('#sOKey').value.trim() ? 'https://api.openai.com/v1' : ''), oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, contextWindow: +$('#sCtxWin').value || 0, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim(), relayUrl: $('#sRelay').value.trim() });
     $('#modal').classList.add('hidden'); renderModels(); AI.probeContext().then(updateCtx); toast('Settings saved (stored only in this browser)');
   }
