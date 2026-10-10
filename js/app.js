@@ -19,11 +19,12 @@ const App = (() => {
   function showView(v) {
     view = v;
     $$('.tab').forEach(b => b.classList.toggle('active', b.dataset.view === v));
-    $('#schSvg').classList.toggle('hidden', v !== 'sch'); $('#pcbSvg').classList.toggle('hidden', v !== 'pcb'); $('#encView').classList.toggle('hidden', v !== 'enc');
-    $('#schTools').classList.toggle('hidden', v !== 'sch'); $('#pcbTools').classList.toggle('hidden', v !== 'pcb'); $('#encTools').classList.toggle('hidden', v !== 'enc');
+    $('#schSvg').classList.toggle('hidden', v !== 'sch'); $('#pcbSvg').classList.toggle('hidden', v !== 'pcb'); $('#encView').classList.toggle('hidden', v !== 'enc'); $('#docView').classList.toggle('hidden', v !== 'doc');
+    $('#schTools').classList.toggle('hidden', v !== 'sch'); $('#pcbTools').classList.toggle('hidden', v !== 'pcb'); $('#encTools').classList.toggle('hidden', v !== 'enc'); $('#docTools').classList.toggle('hidden', v !== 'doc');
     PcbView.setVisible(v === 'pcb' && !Pcb3D.ui.on);
     $('#pcb3dView').classList.toggle('hidden', !(v === 'pcb' && Pcb3D.ui.on));
     if (v === 'enc') EncView.show(); else EncView.hide();
+    if (v === 'doc') DocView.show(); else DocView.hide();
     renderAll();
     if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else if (v === 'sch') Sch.vp.apply();
   }
@@ -128,6 +129,7 @@ const App = (() => {
     if (el.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON') return;
     if (view === 'pcb' && PcbView.props(el)) return;
     if (view === 'enc' && EncView.props(el)) return;
+    if (view === 'doc' && DocView.props(el)) return;
     const ref = view === 'sch' ? Sch.ui.sel : Pcb.ui.sel, net = view === 'sch' ? Sch.ui.selNet : null;
     const c = ref && Model.comp(ref);
     if (c) {
@@ -687,7 +689,7 @@ const App = (() => {
     Engine.env.shape = code => EncView.runScript(code);
     Engine.env.searchKey = () => AI.settings.braveKey;
     Engine.env.ui = what => { if (what === 'fit-sch') Sch.fit(); if (what === 'show-pcb') { showView('pcb'); Pcb.fit(); } if (what === 'show-enc') { showView('enc'); EncView.rebuild(); } };
-    EncView.init(); Pcb3D.init();
+    EncView.init(); Pcb3D.init(); DocView.init();
     $('#btn3d').onclick = () => { const on = !Pcb3D.ui.on; PcbView.setVisible(!on); Pcb3D.setOn(on); };
     initKnowledge();
     Projects.init().then(renderParts);

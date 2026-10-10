@@ -54,6 +54,7 @@
         <button class="tab active" data-view="sch">Schematic</button>
         <button class="tab" data-view="pcb">PCB</button>
         <button class="tab" data-view="enc">Enclosure</button>
+        <button class="tab" data-view="doc">Documentation</button>
       </div>
       <div id="schTools" class="tools">
         <button id="btnLayout">Auto-layout</button>
@@ -74,6 +75,12 @@
         <button id="encStl" class="primary" title="One STL per printed part (oriented for printing)">STL ⤓</button>
         <button id="encScad" title="Parametric OpenSCAD source">OpenSCAD ⤓</button>
         <button id="encZip" title="STLs + .scad + notes">All (.zip) ⤓</button>
+      </div>
+      <div id="docTools" class="tools hidden">
+        <button id="docAi" title="Let the AI write the tagline, description, features and applications from the design">✦ Write with AI</button>
+        <button id="docRefresh" title="Re-render the schematic, PCB, 3D and enclosure images">↻ Refresh images</button>
+        <span class="tsep"></span>
+        <button id="docPdf" class="primary" title="Product datasheet PDF: description, specifications, schematic, PCB, mechanical drawing, pinouts, enclosure, BOM">PDF ⤓</button>
       </div>
       <div id="pcbTools" class="tools hidden">
         <button id="btn3d" title="Switch between the 2D editor and a 3D view of the board">◈ 3D</button>
@@ -109,6 +116,7 @@
       <svg id="schSvg"></svg>
       <svg id="pcbSvg" class="hidden"></svg>
       <div id="encView" class="hidden"></div>
+      <div id="docView" class="hidden"></div>
       <div id="pcb3dView" class="hidden"></div>
       <div id="routeBusy" class="hidden"><span class="spin"></span> <span id="routeMsg">Routing…</span> <button id="routeCancel" title="Stop now and keep the best result found so far">Stop</button></div>
     </div>
@@ -292,6 +300,7 @@
 <script src="js/shape3d.js"></script>
 <script src="js/easyeda.js"></script>
 <script src="js/encview.js"></script>
+<script src="js/docview.js"></script>
 <script src="js/pcb3d.js"></script>
 <script src="js/engine.js"></script>
 <script src="js/ai.js"></script>

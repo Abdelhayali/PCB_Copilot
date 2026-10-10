@@ -740,13 +740,14 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     const names = Object.keys(lib);
     let ret;
     try {
-      const fn = new Function(...names, 'console', '"use strict";\n' + code);
+      // the script runs in its own inner scope, so its own variables may reuse kit names (cavity, loop, …)
+      const fn = new Function(...names, 'console', '"use strict"; return (() => {\n' + code + '\n})();');
       ret = fn(...names.map(k => lib[k]), { log: lib.log, warn: lib.log, error: lib.log });
       if (!parts.length && ret instanceof Shape) lib.part('model', ret);
       if (!parts.length) throw new Error('The script made no parts — call part("name", shape) (or return a shape).');
       for (const p of parts) { p.polys = K().fillHoles(K().zipSeams(K().repair(p.shape.polys.map(q => q.clone())))); if (!p.polys.length) throw new Error(`part "${p.name}" is empty (check the boolean operations / positions)`); }
     } catch (e) {
-      const m = String(e && e.stack || '').match(/<anonymous>:(\d+):(\d+)/);
+      const m = String(e && e.stack || '').match(/eval at [^\n]*?<anonymous>:(\d+):(\d+)/) || String(e && e.stack || '').match(/^\s*at [^\n(]*\(?<anonymous>:(\d+):(\d+)/m);
       const err = new Error((e && e.message || String(e)) + (m ? ` (script line ${+m[1] - 3})` : ''));
       err.line = m ? +m[1] - 3 : null; err.logs = logs; budget = null; K().guard.deadline = 0; HQ3 = false; K().setQuality('preview'); throw err;
     }

@@ -357,3 +357,29 @@ ul.cutl li { padding: 2px 0; }
 .encmodeseg { margin: 4px 0 8px; display: inline-flex; }
 #encMode { margin-right: 6px; }
 @media (max-width: 700px) { .enc-code { width: 100%; top: 40%; border-left: 0; border-top: 1px solid var(--line); } }
+
+/* documentation tab: datasheet preview */
+#docView { position: absolute; inset: 0; overflow: auto; background: var(--view3d, #1b1f27); }
+.docstatus { position: sticky; top: 0; z-index: 2; text-align: center; font-size: 12px; color: var(--muted); padding: 4px; }
+.docstatus:empty { display: none; }
+.docpages { padding: 12px 16px 40px; display: flex; flex-direction: column; align-items: center; gap: 18px; }
+.dpage { background: #fff; color: #1f2937; width: min(794px, 100%); padding: 32px 40px; box-shadow: 0 4px 24px #0006; border-radius: 3px; font: 13px/1.5 system-ui, sans-serif; border-top: 5px solid #2563eb; }
+.dpage h1 { font-size: 28px; margin: 18px 0 4px; color: #111827; }
+.dpage h2 { font-size: 17px; margin: 22px 0 10px; color: #111827; border-bottom: 2px solid #2563eb; display: inline-block; padding-bottom: 2px; }
+.dpage h3 { font-size: 13.5px; margin: 14px 0 6px; color: #1f2937; }
+.dpage .dsub { font-size: 16px; color: #4b5563; margin-bottom: 12px; }
+.dpage .dhead { display: flex; justify-content: space-between; font-size: 11px; color: #6b7280; border-bottom: 1px solid #e5e7eb; padding-bottom: 4px; }
+.dpage .muted { color: #6b7280; }
+.dpage ul { margin: 4px 0 8px 18px; padding: 0; }
+.dimg { display: block; max-width: 100%; max-height: 520px; margin: 8px auto; border-radius: 3px; }
+.dimg.hero { max-height: 380px; }
+.dgrid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.dgrid .dimg { max-height: 300px; }
+.dcap { display: flex; justify-content: space-around; font-size: 11px; color: #6b7280; margin-bottom: 6px; }
+.dtab { width: 100%; border-collapse: collapse; font-size: 12px; margin: 4px 0 10px; }
+.dtab th { background: #2563eb; color: #fff; text-align: left; padding: 4px 6px; font-weight: 600; }
+.dtab td { border-bottom: 1px solid #e5e7eb; padding: 3px 6px; vertical-align: top; }
+.dtab tr:nth-child(even) td { background: #f8fafc; }
+.dfield { display: block; margin: 6px 0; font-size: 12px; }
+.dfield input, .dfield textarea { width: 100%; box-sizing: border-box; margin-top: 2px; }
+@media (max-width: 700px) { .dpage { padding: 18px 16px; } .dgrid { grid-template-columns: 1fr; } }

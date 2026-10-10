@@ -268,6 +268,18 @@ The AI writes a short **3D script** (`set_enclosure_script`): rounded boxes, con
 
 The geometry engine (CSG with watertight-mesh repair) is self-contained JavaScript, so it runs in the browser and in the MCP server; only the 3D preview loads three.js from cdnjs.
 
+## Documentation (product datasheet PDF)
+
+The **Documentation** tab turns the design into a product datasheet — previewed live, exported with **PDF ⤓**:
+
+- cover with title, tagline, 3D render and key specifications; description, features and applications (**✦ Write with AI** drafts them from the design; edit them in the side panel)
+- main components and power rails, full schematic
+- PCB: 3D renders of the top and bottom, copper layout, PCB / fabrication specifications (size, layers, track / space, vias, holes, routing, DRC / ERC)
+- mechanical drawing with board dimensions, mounting holes and edge connectors; connector pinout tables
+- enclosure renders (assembled and exploded) with dimensions; bill of materials with LCSC numbers; revision table
+
+Enclosure **STL ⤓** files are always rebuilt at high resolution (≈0.4 mm curve segments) so they can go straight to a 3D-printing service; the on-screen preview stays fast.
+
 ## EasyEDA interchange
 
 - **Export → Schematic for EasyEDA (.json)** writes the schematic as an EasyEDA Standard document (symbols, pins, net labels, LCSC part numbers). Open it in EasyEDA Standard with *File → Open → EasyEDA Source*, or in EasyEDA Pro with *File → Import → EasyEDA (Standard)*.
