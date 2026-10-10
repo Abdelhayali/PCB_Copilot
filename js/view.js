@@ -30,6 +30,13 @@ class Viewport {
     this.s = Math.min(this.max, Math.max(this.min, Math.min(r.width / bw, r.height / bh)));
     this.cx = (b[0] + b[2]) / 2; this.cy = (b[1] + b[3]) / 2; this.apply();
   }
+  // bring box b into view: pan to it if it fits at the current zoom, otherwise zoom out to fit it
+  reveal(b, pad) {
+    if (!b) return; if (!this.vb) this.apply(); const v = this.vb; if (!v) return;
+    if (b[0] - pad >= v[0] && b[1] - pad >= v[1] && b[2] + pad <= v[0] + v[2] && b[3] + pad <= v[1] + v[3]) return;
+    if (b[2] - b[0] + 2 * pad <= v[2] && b[3] - b[1] + 2 * pad <= v[3]) { this.cx = (b[0] + b[2]) / 2; this.cy = (b[1] + b[3]) / 2; this.apply(); }
+    else this.fit(b, pad);
+  }
   panBy(dxPx, dyPx) { this.cx -= dxPx / this.s; this.cy -= dyPx / this.s; this.apply(); }
 }
 const esc = s => String(s).replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

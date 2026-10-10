@@ -28,6 +28,7 @@ const App = (() => {
     const sb = document.getElementById('sheetBar'); if (sb) sb.classList.toggle('hidden', v !== 'sch');
     renderAll();
     if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else if (v === 'sch') Sch.vp.apply();
+    revealSelection(v);
   }
   function renderAll() {
     if (view === 'sch') Sch.render(); else if (view === 'pcb') Pcb.render();
@@ -224,6 +225,33 @@ const App = (() => {
       failed.length && `not found in the EasyEDA library: ${failed.join(', ')}`,
       edited.length && `footprint edited here, EasyEDA uses the part's own footprint: ${edited.join(', ')}`].filter(Boolean);
     toast(`EasyEDA schematic saved — ${S.components.length - noCode.length - failed.length}/${S.components.length} parts linked to EasyEDA footprints${notes.length ? ' · ' + notes.join(' · ') : ''}. EasyEDA Standard: File → Open → EasyEDA Source · Pro: File → Import → EasyEDA (Standard)`, 15000);
+  }
+
+  // ---------- cross-probing: what is selected in the schematic is selected on the PCB, and the other way round ----------
+  function syncFromSch() {
+    const P = PcbView.ui, refs = Sch.selected().filter(r => { const c = Model.comp(r); return c && c.pcb; });
+    P.item = null; P.sel = refs[0] || null; P.multi = new Set(refs); P.hlNet = Sch.ui.selNet || null;
+  }
+  function syncFromPcb() {
+    const P = PcbView.ui, refs = PcbView.selected();
+    Sch.ui.sel = refs[0] || null; Sch.ui.multi = new Set(refs); Sch.ui.selNet = refs.length > 1 ? null : (P.hlNet || null);
+  }
+  const unionBox = bs => bs.length ? [Math.min(...bs.map(b => b[0])), Math.min(...bs.map(b => b[1])), Math.max(...bs.map(b => b[2])), Math.max(...bs.map(b => b[3]))] : null;
+  const netParts = net => [...new Set((Model.S.nets[net] || []).map(k => k.slice(0, k.lastIndexOf('.'))))].map(r => Model.comp(r)).filter(Boolean);
+  // after switching tabs, scroll the view to the selection (and open its schematic sheet)
+  function revealSelection(v) {
+    if (v === 'sch') {
+      let cs = Sch.selected().map(r => Model.comp(r)).filter(Boolean);
+      if (!cs.length && Sch.ui.selNet) cs = netParts(Sch.ui.selNet);
+      if (!cs.length) return;
+      if (!cs.some(c => Model.sheetOf(c) === Sch.ui.sheet)) { Sch.ui.sheet = Model.sheetOf(cs[0]); Sch.render(); }
+      Sch.vp.reveal(unionBox(cs.filter(c => Model.sheetOf(c) === Sch.ui.sheet).map(c => Model.bbox(c))), 60);
+    } else if (v === 'pcb') {
+      let cs = PcbView.selected().map(r => Model.comp(r)).filter(c => c && c.pcb);
+      if (!cs.length && PcbView.ui.hlNet && !PcbView.ui.item) cs = netParts(PcbView.ui.hlNet).filter(c => c.pcb);
+      if (!cs.length) return;
+      Pcb.vp.reveal(unionBox(cs.map(c => Pcb.fpBox(c))), 2);
+    }
   }
 
   // ---------- selection actions (schematic + PCB): copy / cut / paste / duplicate, right-click menu ----------
@@ -920,7 +948,7 @@ const App = (() => {
   // ---------- init ----------
   function init() {
     Sch.init($('#schSvg')); Pcb.init($('#pcbSvg')); PcbView.bindBar();
-    Sch.ui.onSelect = () => renderProps(); Pcb.ui.onSelect = () => renderProps();
+    Sch.ui.onSelect = () => { syncFromSch(); renderProps(); }; Pcb.ui.onSelect = () => { syncFromPcb(); renderProps(); };
     Sch.ui.onContext = showCtx; PcbView.ui.onContext = showCtx;
     document.addEventListener('mousedown', e => { if (!e.target.closest('#ctxMenu')) hideCtx(); }, true);
     window.addEventListener('blur', hideCtx); window.addEventListener('resize', hideCtx);
