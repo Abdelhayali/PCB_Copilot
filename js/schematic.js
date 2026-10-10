@@ -2,7 +2,61 @@
 // Schematic renderer + editor (select, drag, rotate, click pin-to-pin to wire).
 const Sch = (() => {
   let svg, world, grid, vp;
-  const ui = { sel: null, selNet: null, pending: null, mouse: { x: 0, y: 0 }, drag: null, pan: null, onSelect: () => { } };
+  const ui = { sel: null, selNet: null, pending: null, mouse: { x: 0, y: 0 }, drag: null, pan: null, onSelect: () => { }, sheet: 0 };
+  // ---------- sheets (multi-page schematic) and the drawing frame ----------
+  const sheets = () => (Model.S.sheets && Model.S.sheets.length ? Model.S.sheets : [{ name: 'Main' }]);
+  const onSheet = c => Model.sheetOf(c) === ui.sheet;
+  function contentBox(sh = ui.sheet) {
+    const cs = Model.S.components.filter(c => Model.sheetOf(c) === sh); if (!cs.length) return [-200, -120, 200, 120];
+    const idx = Model.pinIndex(); let b = [Infinity, Infinity, -Infinity, -Infinity];
+    for (const c of cs) { const a = Model.labelBox(c, idx); b = [Math.min(b[0], a[0]), Math.min(b[1], a[1]), Math.max(b[2], a[2]), Math.max(b[3], a[3])]; }
+    return b;
+  }
+  const frameOn = () => Model.S.schFrame !== false;
+  // landscape A-series sheet around the content, title block bottom-right
+  function frameGeom(sh = ui.sheet) {
+    const b = contentBox(sh), m = 40, bd = 12, tbW = 320, tbH = 78;
+    let w = Math.max(b[2] - b[0] + 2 * m + 2 * bd, tbW + 2 * bd + 120), h = b[3] - b[1] + 2 * m + tbH + 2 * bd;
+    if (w / h < Math.SQRT2) w = h * Math.SQRT2; else h = w / Math.SQRT2;
+    const x0 = (b[0] + b[2]) / 2 - w / 2, y0 = b[1] - m - bd;
+    return { x0, y0, w, h, bd, tbW, tbH, size: w <= 1200 ? 'A4' : w <= 1700 ? 'A3' : w <= 2400 ? 'A2' : 'A1' };
+  }
+  function frameSVG() {
+    const F = frameGeom(), S = Model.S, d = Object.assign({ title: S.name || 'Untitled', company: '', version: '1.0' }, S.doc || {}), sh = sheets();
+    const { x0, y0, w, h, bd, tbW, tbH } = F, ix0 = x0 + bd, iy0 = y0 + bd, ix1 = x0 + w - bd, iy1 = y0 + h - bd;
+    const cols = w > 1700 ? 8 : 6, rows = 4, e = esc;
+    let s = `<g class="frame"><rect class="fo" x="${x0}" y="${y0}" width="${w}" height="${h}"/><rect class="fi" x="${ix0}" y="${iy0}" width="${ix1 - ix0}" height="${iy1 - iy0}"/>`;
+    for (let i = 0; i < cols; i++) { const x = ix0 + (ix1 - ix0) * (i + 0.5) / cols, xl = ix0 + (ix1 - ix0) * i / cols; if (i) s += `<path class="ft" d="M${xl} ${y0}V${iy0}M${xl} ${iy1}V${y0 + h}"/>`; s += `<text class="fz" x="${x}" y="${y0 + bd - 3.5}" text-anchor="middle">${i + 1}</text><text class="fz" x="${x}" y="${y0 + h - 3.5}" text-anchor="middle">${i + 1}</text>`; }
+    for (let j = 0; j < rows; j++) { const y = iy0 + (iy1 - iy0) * (j + 0.5) / rows, yl = iy0 + (iy1 - iy0) * j / rows, L = 'ABCDEFGH'[j]; if (j) s += `<path class="ft" d="M${x0} ${yl}H${ix0}M${ix1} ${yl}H${x0 + w}"/>`; s += `<text class="fz" x="${x0 + bd / 2}" y="${y + 3}" text-anchor="middle">${L}</text><text class="fz" x="${x0 + w - bd / 2}" y="${y + 3}" text-anchor="middle">${L}</text>`; }
+    const tx = ix1 - tbW, ty = iy1 - tbH, r1 = 30, r2 = 24;
+    s += `<rect class="tb" x="${tx}" y="${ty}" width="${tbW}" height="${tbH}"/><path class="fi" d="M${tx} ${ty + r1}H${ix1}M${tx} ${ty + r1 + r2}H${ix1}M${tx + 200} ${ty + r1}V${ty + r1 + r2}M${tx + 120} ${ty + r1 + r2}V${iy1}M${tx + 230} ${ty + r1 + r2}V${iy1}"/>`;
+    const lab = (x, y, t) => `<text class="tbl" x="${x + 4}" y="${y + 8}">${t}</text>`, val = (x, y, t, cls = 'tbv') => `<text class="${cls}" x="${x + 4}" y="${y}">${e(t)}</text>`;
+    s += lab(tx, ty, 'TITLE') + val(tx, ty + 24, d.title, 'tbt');
+    s += lab(tx, ty + r1, 'COMPANY / AUTHOR') + val(tx, ty + r1 + 19, d.company || '—') + lab(tx + 200, ty + r1, 'DOCUMENT') + val(tx + 200, ty + r1 + 19, (S.name || 'design').slice(0, 22));
+    s += lab(tx, ty + r1 + r2, 'SHEET') + val(tx, ty + tbH - 6, `${ui.sheet + 1} of ${sh.length} · ${(sh[ui.sheet] || {}).name || ''}`) + lab(tx + 120, ty + r1 + r2, 'DATE') + val(tx + 120, ty + tbH - 6, d.date || new Date().toISOString().slice(0, 10));
+    s += lab(tx + 230, ty + r1 + r2, 'REV / SIZE') + val(tx + 230, ty + tbH - 6, `${d.version} · ${F.size}`) + '</g>';
+    return s;
+  }
+  function sheetBar() {
+    let bar = document.getElementById('sheetBar');
+    if (!bar) { bar = document.createElement('div'); bar.id = 'sheetBar'; bar.className = 'sheetbar'; svg.parentNode.appendChild(bar); bar.onclick = sheetClick; bar.ondblclick = sheetRename; }
+    const sh = sheets(), n = Model.S.components.filter(c => Model.sheetOf(c) === ui.sheet).length;
+    bar.innerHTML = sh.map((s, i) => `<button data-sheet="${i}" class="${i === ui.sheet ? 'on' : ''}" title="Double-click to rename">${i + 1}: ${esc(s.name || 'Sheet ' + (i + 1))}</button>`).join('') +
+      `<button data-sheet="add" title="Add a sheet">＋</button>${sh.length > 1 && !n ? '<button data-sheet="del" title="Delete this empty sheet">✕</button>' : ''}<label class="sfr"><input type="checkbox" ${frameOn() ? 'checked' : ''} data-sheet="frame"> frame</label>`;
+  }
+  function sheetClick(e) {
+    const b = e.target.closest('[data-sheet]'); if (!b) return;
+    const k = b.dataset.sheet;
+    if (k === 'frame') { Model.mutate(() => { Model.S.schFrame = b.checked; }); return; }
+    if (k === 'add') { Model.mutate(() => { const sh = sheets().slice(); sh.push({ name: 'Sheet ' + (sh.length + 1) }); Model.S.sheets = sh; }); ui.sheet = sheets().length - 1; select(null); render(); fit(); return; }
+    if (k === 'del') { const i = ui.sheet; Model.mutate(() => { const sh = sheets().slice(); sh.splice(i, 1); Model.S.sheets = sh; for (const c of Model.S.components) if (Model.sheetOf(c) > i) c.sheet = Model.sheetOf(c) - 1; }); ui.sheet = Math.max(0, i - 1); render(); fit(); return; }
+    ui.sheet = +k; select(null); render(); fit();
+  }
+  function sheetRename(e) {
+    const b = e.target.closest('[data-sheet]'); if (!b || isNaN(+b.dataset.sheet)) return;
+    const i = +b.dataset.sheet, n = prompt('Sheet name', sheets()[i].name || ''); if (n == null) return;
+    Model.mutate(() => { const sh = sheets().map(s => Object.assign({}, s)); sh[i].name = n.trim() || 'Sheet ' + (i + 1); Model.S.sheets = sh; });
+  }
 
   function init(el) {
     svg = el;
@@ -50,7 +104,10 @@ const Sch = (() => {
   function render() {
     const S = Model.S, out = [], pinPos = {}, boxes = [];
     const idx = Model.pinIndex();
-    for (const c of S.components) {
+    if (ui.sheet >= sheets().length) ui.sheet = sheets().length - 1;
+    const here = S.components.filter(onSheet), elsewhere = new Set(S.components.filter(c => !onSheet(c)).map(c => c.ref));
+    if (frameOn() && here.length) out.push(frameSVG());
+    for (const c of here) {
       boxes.push(Model.bbox(c));
       for (const p of Model.pinsWorld(c)) pinPos[p.key] = p;
     }
@@ -59,6 +116,8 @@ const Sch = (() => {
     const bump = (p) => { const k = p.x + ',' + p.y; junction[k] = (junction[k] || 0) + 1; };
     for (const [net, keys] of Object.entries(S.nets)) {
       const pts = keys.map(k => pinPos[k]).filter(Boolean);
+      if (!pts.length) continue;
+      const offSheet = keys.some(k => elsewhere.has(k.split('.')[0]));   // continues on another sheet → net labels
       const selC = ui.selNet === net ? ' sel' : '';
       if (Model.isPower(net)) {
         const gnd = Model.isGround(net);
@@ -75,9 +134,9 @@ const Sch = (() => {
         }
         continue;
       }
-      if (pts.length < 2) { for (const p of pts) out.push(`<circle class="dangle" cx="${p.x}" cy="${p.y}" r="2.5"/>`); continue; }
-      const E = mst(pts);
-      const useLabels = S.connStyle === 'labels' || (S.connStyle === 'auto' && E.some(([a, b]) => mdist(pts[a], pts[b]) > 320));
+      if (pts.length < 2 && !offSheet) { for (const p of pts) out.push(`<circle class="dangle" cx="${p.x}" cy="${p.y}" r="2.5"/>`); continue; }
+      const E = pts.length >= 2 ? mst(pts) : [];
+      const useLabels = offSheet || S.connStyle === 'labels' || (S.connStyle === 'auto' && E.some(([a, b]) => mdist(pts[a], pts[b]) > 320));
       if (useLabels) {
         for (const p of pts) {
           const ex = p.x + p.dx * 10, ey = p.y + p.dy * 10;
@@ -104,7 +163,7 @@ const Sch = (() => {
     for (const [k, n] of Object.entries(junction)) if (n >= 3) { const [x, y] = k.split(','); out.push(`<circle class="junc" cx="${x}" cy="${y}" r="2.6"/>`); }
 
     // components
-    for (const c of S.components) {
+    for (const c of here) {
       const d = Lib.type(c.type), b = Model.bbox(c), lb = d.box(c);
       out.push(`<g class="comp${ui.sel === c.ref ? ' sel' : ''}" data-ref="${esc(c.ref)}"><g transform="translate(${c.x} ${c.y}) rotate(${c.rot || 0})">` +
         `<rect class="hit" x="${lb[0]}" y="${lb[1]}" width="${lb[2] - lb[0]}" height="${lb[3] - lb[1]}"/>${d.draw(c)}</g>`);
@@ -128,15 +187,16 @@ const Sch = (() => {
       const p = pinPos[ui.pending];
       out.push(`<path class="rubber" d="M${p.x} ${p.y}L${ui.mouse.x} ${p.y}L${ui.mouse.x} ${ui.mouse.y}"/>`);
     }
+    sheetBar();
+    if (!here.length && S.components.length) out.push(`<text class="empty" x="0" y="0" text-anchor="middle">Sheet ${ui.sheet + 1} is empty — add parts here, or move parts to this sheet (Properties → Sheet)</text>`);
     if (!S.components.length) out.push('<text class="empty" x="0" y="0" text-anchor="middle">Add parts from the left panel — or ask the AI Copilot to design a circuit</text>');
     world.innerHTML = out.join('');
   }
 
   function extents() {
-    const S = Model.S; if (!S.components.length) return [-200, -120, 200, 120];
-    let b = [Infinity, Infinity, -Infinity, -Infinity];
-    for (const c of S.components) { const a = Model.bbox(c); b = [Math.min(b[0], a[0]), Math.min(b[1], a[1]), Math.max(b[2], a[2]), Math.max(b[3], a[3])]; }
-    return b;
+    const here = Model.S.components.filter(onSheet); if (!here.length) return [-200, -120, 200, 120];
+    if (frameOn()) { const F = frameGeom(); return [F.x0, F.y0, F.x0 + F.w, F.y0 + F.h]; }
+    return contentBox();
   }
   const fit = () => vp.fit(extents(), 40);
 
@@ -185,13 +245,18 @@ const Sch = (() => {
   }
   function placeNew(type) {
     const vb = vp.vb || [0, 0, 0, 0];
-    const c = Model.mutate(() => Model.addComponent({ type, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2 }));
+    const c = Model.mutate(() => Model.addComponent({ type, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2, sheet: ui.sheet }));
     select(c.ref);
   }
-  function exportSVG() {
-    const b = extents(), pad = 30, w = b[2] - b[0] + 2 * pad, h = b[3] - b[1] + 2 * pad;
-    const css = `.wire{stroke:#0a7a3a;stroke-width:1.5;fill:none}.hitw,.hit,.pinhit{display:none}.comp path,.comp rect,.comp circle{stroke:#9b1b1b;stroke-width:1.5;fill:none}.comp .body{fill:#fff8e6}.comp .fill{fill:#9b1b1b}.comp .thick{stroke-width:2.5}text{font:8px sans-serif;fill:#333}.ref{fill:#1c4a8a;font-weight:600}.val{fill:#555}.pinname,.pinnum{font-size:6px}.netlabel,.netname,.pwrtxt{fill:#0a7a3a;font-weight:600}.junc{fill:#0a7a3a}.dangle,.rubber,.empty{display:none}`;
-    return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${b[0] - pad} ${b[1] - pad} ${w} ${h}" width="${w * 2}" height="${h * 2}"><style>${css}</style><rect x="${b[0] - pad}" y="${b[1] - pad}" width="${w}" height="${h}" fill="#fff"/>${world.innerHTML}</svg>`;
+  // SVG of one sheet (default: the current one) for export / documents
+  function exportSVG(sheet) {
+    const keep = ui.sheet; if (sheet != null && sheet !== ui.sheet) { ui.sheet = sheet; render(); }
+    const b = extents(), pad = frameOn() ? 4 : 30, w = b[2] - b[0] + 2 * pad, h = b[3] - b[1] + 2 * pad;
+    const css = `.frame text{font-family:sans-serif}.fo,.fi,.tb{fill:none;stroke:#333;stroke-width:1}.fo{stroke-width:1.6}.ft{stroke:#333;stroke-width:0.8}.fz{font-size:8px;fill:#333}.tbl{font-size:6px;fill:#555}.tbv{font-size:10px;fill:#111}.tbt{font-size:16px;font-weight:700;fill:#111}` + `.wire{stroke:#0a7a3a;stroke-width:1.5;fill:none}.hitw,.hit,.pinhit{display:none}.comp path,.comp rect,.comp circle{stroke:#9b1b1b;stroke-width:1.5;fill:none}.comp .body{fill:#fff8e6}.comp .fill{fill:#9b1b1b}.comp .thick{stroke-width:2.5}text{font:8px sans-serif;fill:#333}.ref{fill:#1c4a8a;font-weight:600}.val{fill:#555}.pinname,.pinnum{font-size:6px}.netlabel,.netname,.pwrtxt{fill:#0a7a3a;font-weight:600}.junc{fill:#0a7a3a}.dangle,.rubber,.empty{display:none}`;
+    const out = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="${b[0] - pad} ${b[1] - pad} ${w} ${h}" width="${w * 2}" height="${h * 2}"><style>${css}</style><rect x="${b[0] - pad}" y="${b[1] - pad}" width="${w}" height="${h}" fill="#fff"/>${world.innerHTML}</svg>`;
+    if (ui.sheet !== keep) { ui.sheet = keep; render(); }
+    return out;
   }
-  return { init, render, fit, key, select, placeNew, exportSVG, ui, get vp() { return vp; } };
+  const setSheet = i => { ui.sheet = Math.max(0, Math.min(sheets().length - 1, +i || 0)); select(null); render(); fit(); };
+  return { init, render, fit, key, select, placeNew, exportSVG, ui, sheets, setSheet, get vp() { return vp; } };
 })();

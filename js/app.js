@@ -25,6 +25,7 @@ const App = (() => {
     $('#pcb3dView').classList.toggle('hidden', !(v === 'pcb' && Pcb3D.ui.on));
     if (v === 'enc') EncView.show(); else EncView.hide();
     if (v === 'doc') DocView.show(); else DocView.hide();
+    const sb = document.getElementById('sheetBar'); if (sb) sb.classList.toggle('hidden', v !== 'sch');
     renderAll();
     if (v === 'pcb') { Pcb.vp.apply(); if (!showView._pcbFit) { Pcb.fit(); showView._pcbFit = true; } } else if (v === 'sch') Sch.vp.apply();
   }
@@ -140,6 +141,7 @@ const App = (() => {
         <label>Value<input id="pVal" value="${esc(c.value)}"></label>
         ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${Model.S.lib[c.lcsc].custom ? '<span class="muted">Custom part · ' + esc(c.lcsc) + '</span>' : `${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(c.lcsc)}</span>`}${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
         <label>Footprint<select id="pFp">${fps.map(f => `<option ${f === c.footprint ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
+        ${Sch.sheets().length > 1 ? `<label>Sheet<select id="pSheet">${Sch.sheets().map((s, i) => `<option value="${i}" ${Model.sheetOf(c) === i ? 'selected' : ''}>${i + 1}: ${esc(s.name || '')}</option>`).join('')}</select></label>` : ''}
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
         <div class="row"><button id="pRot">⟳ Rotate (R)</button><button id="pDel" class="danger">Delete</button></div>
         ${view === 'pcb' && c.pcb ? `<div class="ph small">Board side</div><div class="row edgebtns"><button data-side="top" class="${Pcb.isBottom(c) ? '' : 'on'}">▲ Top</button><button data-side="bottom" class="${Pcb.isBottom(c) ? 'on' : ''}">▼ Bottom</button></div>` : ''}
@@ -150,6 +152,7 @@ const App = (() => {
       $('#pRef').onchange = e => apply({ new_ref: e.target.value.trim() });
       $('#pVal').onchange = e => apply({ value: e.target.value });
       $('#pFp').onchange = e => apply({ footprint: e.target.value });
+      if ($('#pSheet')) $('#pSheet').onchange = e => { const i = +e.target.value; Model.mutate(() => { const cc = Model.comp(c.ref); if (i) cc.sheet = i; else delete cc.sheet; Model.spaceOut(); }); Sch.setSheet(i); Sch.select(c.ref); };
       if ($('#pPins')) $('#pPins').onchange = e => apply({ pins: e.target.value.split(',').map(s => s.trim()).filter(Boolean) });
       $('#pRot').onclick = () => (view === 'sch' ? Sch : Pcb).key({ key: 'r' });
       $('#pDel').onclick = () => { Sch.select(null); Pcb.ui.sel = null; Model.mutate(() => Model.removeComponent(c.ref)); };

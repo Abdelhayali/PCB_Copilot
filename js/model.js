@@ -66,9 +66,45 @@ const Model = (() => {
     if (!hit.length) throw new Error(`${c.ref} has no pin "${want}". Pins: ${pins.map(p => p.num + ':' + p.name).join(', ')}`);
     return hit.map(p => c.ref + '.' + p.num);
   }
+  const sheetOf = c => c.sheet || 0;
   function overlaps(c, others) {
     const b = bbox(c, 10);
-    return others.some(o => { if (o === c) return false; const a = bbox(o, 10); return !(b[2] < a[0] || b[0] > a[2] || b[3] < a[1] || b[1] > a[3]); });
+    return others.some(o => { if (o === c || sheetOf(o) !== sheetOf(c)) return false; const a = bbox(o, 10); return !(b[2] < a[0] || b[0] > a[2] || b[3] < a[1] || b[1] > a[3]); });
+  }
+  // the space a part really takes on the sheet: symbol + the net labels / power symbols on its pins + ref / value text
+  function labelBox(c, idx = pinIndex()) {
+    const b = bbox(c), out = [b[0], b[1] - 14, b[2], b[3] + 16];
+    for (const p of pinsWorld(c)) {
+      const net = idx[p.key]; if (!net) continue;
+      const len = isGround(net) ? 18 : isPower(net) ? 18 + net.length * 5.2 : 14 + net.length * 5.2;
+      if (p.dx < 0) out[0] = Math.min(out[0], p.x - len); else if (p.dx > 0) out[2] = Math.max(out[2], p.x + len);
+      else if (p.dy < 0) out[1] = Math.min(out[1], p.y - 24); else if (p.dy > 0) out[3] = Math.max(out[3], p.y + 24);
+    }
+    return out;
+  }
+  // push parts apart (per sheet) until their label boxes keep a gap — the schematic stays readable whoever placed it
+  function spaceOut(gap = 24) {
+    const idx = pinIndex();
+    const sheets = [...new Set(S.components.map(sheetOf))];
+    let moved = 0;
+    for (const sh of sheets) {
+      const cs = S.components.filter(c => sheetOf(c) === sh); if (cs.length < 2) continue;
+      for (let it = 0; it < 300; it++) {
+        let any = false;
+        const B = cs.map(c => labelBox(c, idx));
+        for (let i = 0; i < cs.length; i++) for (let j = i + 1; j < cs.length; j++) {
+          const a = B[i], b = B[j], ox = Math.min(a[2], b[2]) - Math.max(a[0], b[0]) + gap, oy = Math.min(a[3], b[3]) - Math.max(a[1], b[1]) + gap;
+          if (ox <= 0 || oy <= 0) continue;
+          any = true;
+          const ca = [(a[0] + a[2]) / 2, (a[1] + a[3]) / 2], cb = [(b[0] + b[2]) / 2, (b[1] + b[3]) / 2];
+          if (ox < oy) { const s = (cb[0] >= ca[0] ? 1 : -1) * Math.ceil(ox / 2 / 10) * 10; cs[i].x -= s; cs[j].x += s; B[i][0] -= s; B[i][2] -= s; B[j][0] += s; B[j][2] += s; }
+          else { const s = (cb[1] >= ca[1] ? 1 : -1) * Math.ceil(oy / 2 / 10) * 10; cs[i].y -= s; cs[j].y += s; B[i][1] -= s; B[i][3] -= s; B[j][1] += s; B[j][3] += s; }
+          moved++;
+        }
+        if (!any) break;
+      }
+    }
+    return moved;
   }
   function nudgeFree(c) {
     if (!overlaps(c, S.components)) return;
@@ -94,6 +130,7 @@ const Model = (() => {
     let ref = spec.ref || nextRef(prefix);
     if (comp(ref)) { if (spec.ref) throw new Error(`Ref ${ref} already exists`); ref = nextRef(prefix); }
     const c = { ref, type: spec.type, value: spec.value != null ? String(spec.value) : (lp ? lp.value || lp.name : d.value), x: 0, y: 0, rot: [0, 90, 180, 270].includes(+spec.rot) ? +spec.rot : 0 };
+    if (+spec.sheet > 0) c.sheet = +spec.sheet;
     if (lp) c.lcsc = lp.lcsc;
     if (d.generic && Array.isArray(spec.pins) && spec.pins.length) c.pins = spec.pins.map(String);
     if (d.generic && !c.pins && typeof spec.pins === 'number') c.pins = Array.from({ length: spec.pins }, (_, i) => String(i + 1));
@@ -104,8 +141,9 @@ const Model = (() => {
     }
     if (spec.x != null && spec.y != null) { c.x = Math.round(+spec.x / 10) * 10; c.y = Math.round(+spec.y / 10) * 10; }
     else {
-      let maxX = -Infinity; for (const o of S.components) maxX = Math.max(maxX, bbox(o)[2]);
-      c.x = S.components.length ? Math.ceil((maxX + 70) / 10) * 10 : 0; c.y = 0;
+      const same = S.components.filter(o => sheetOf(o) === sheetOf(c));
+      let maxX = -Infinity; for (const o of same) maxX = Math.max(maxX, bbox(o)[2]);
+      c.x = same.length ? Math.ceil((maxX + 70) / 10) * 10 : 0; c.y = 0;
     }
     S.components.push(c); nudgeFree(c);
     return c;
@@ -256,8 +294,9 @@ const Model = (() => {
   }
 
   // ---------- schematic auto layout (force-directed + legalize) ----------
-  function autoLayout() {
-    const cs = S.components, n = cs.length; if (!n) return;
+  function autoLayout(sheet) {
+    if (sheet == null) { for (const sh of [...new Set(S.components.map(sheetOf))]) autoLayout(sh); spaceOut(); return; }
+    const cs = S.components.filter(c => sheetOf(c) === sheet), n = cs.length; if (!n) return;
     const id = new Map(cs.map((c, i) => [c.ref, i]));
     const edges = [];
     for (const [net, keys] of Object.entries(S.nets)) {
@@ -315,6 +354,6 @@ const Model = (() => {
     get S() { return S; }, blank, subscribe: f => subs.push(f), emit, begin, mutate, load, undo, redo, snapshot,
     canUndo: () => undoStack.length > 0, canRedo: () => redoStack.length > 0,
     comp, pinsWorld, bbox, pinIndex, netOf, resolvePins, addComponent, removeComponent, updateComponent, connect, disconnect,
-    renameNet, removeNet, clear, setLibPart, fpNameFor, attachDb, erc, autoLayout, summary, isPower, isGround, invalidate, netsOfComp
+    renameNet, removeNet, clear, setLibPart, fpNameFor, attachDb, erc, autoLayout, spaceOut, labelBox, sheetOf, summary, isPower, isGround, invalidate, netsOfComp
   };
 })();

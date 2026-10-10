@@ -388,3 +388,19 @@ ul.cutl li { padding: 2px 0; }
 .dtab { table-layout: fixed; }
 .dtab th, .dtab td { overflow-wrap: anywhere; word-break: break-word; }
 @media (max-width: 700px) { .dtab { font-size: 10.5px; } .dtab th, .dtab td { padding: 3px 4px; } }
+
+/* schematic drawing frame + title block, sheet tabs */
+#schSvg .frame { pointer-events: none; }
+#schSvg .frame .fo, #schSvg .frame .fi, #schSvg .frame .tb { fill: none; stroke: var(--frame, #8a94a6); stroke-width: 1; }
+#schSvg .frame .fo { stroke-width: 1.6; }
+#schSvg .frame .ft { stroke: var(--frame, #8a94a6); stroke-width: 0.7; }
+#schSvg .frame text { font-family: system-ui, sans-serif; fill: var(--frame-text, #b9c1cf); }
+#schSvg .frame .fz { font-size: 8px; }
+#schSvg .frame .tbl { font-size: 6px; opacity: .75; }
+#schSvg .frame .tbv { font-size: 10px; }
+#schSvg .frame .tbt { font-size: 16px; font-weight: 700; }
+[data-theme="light"] #schSvg .frame { --frame: #555; --frame-text: #222; }
+.sheetbar { position: absolute; left: 8px; bottom: 30px; display: flex; gap: 4px; flex-wrap: wrap; z-index: 3; max-width: calc(100% - 16px); }
+.sheetbar button { padding: 3px 9px; font-size: 12px; border-radius: 6px 6px 0 0; background: var(--panel2); }
+.sheetbar button.on { border-color: var(--accent); color: var(--strong); background: var(--on-bg); }
+.sheetbar .sfr { font-size: 11px; color: var(--muted); display: flex; align-items: center; gap: 3px; margin-left: 6px; }

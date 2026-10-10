@@ -62,7 +62,13 @@ const EasyEDA = (() => {
   }
 
   // ---------- schematic export ----------
+  // multi-sheet designs: each sheet gets its own area (3000 units apart) so parts never overlap in the export
   function exportSchematic() {
+    const shifts = Model.S.components.map(c => [c, (Model.sheetOf ? Model.sheetOf(c) : 0) * 3000]);
+    for (const [c, d] of shifts) c.x += d;
+    try { return exportSchematicRaw(); } finally { for (const [c, d] of shifts) c.x -= d; }
+  }
+  function exportSchematicRaw() {
     const S = Model.S, shapes = [];
     let gid = 0; const id = () => 'gge' + (++gid).toString(36) + 'cp';
     const bb = [Infinity, Infinity, -Infinity, -Infinity], grow = (x, y) => { bb[0] = Math.min(bb[0], x); bb[1] = Math.min(bb[1], y); bb[2] = Math.max(bb[2], x); bb[3] = Math.max(bb[3], y); };

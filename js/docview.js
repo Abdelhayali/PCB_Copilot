@@ -84,7 +84,7 @@ const DocView = (() => {
     const key = Model.snapshot().length + ':' + (Model.S.pcb.traces || []).length + ':' + JSON.stringify(Model.S.board) + ':' + (Model.S.enclosure ? JSON.stringify(Model.S.enclosure).length : 0);
     if (!force && key === imgKey && Object.keys(imgs).length) return imgs;
     const out = {}, S = Model.S, step = t => { const el = $('#docStatus'); if (el) el.textContent = t; };
-    try { if (S.components.length) { step('Rendering schematic…'); Sch.render(); out.sch = await svgToPng(Sch.exportSVG(), 2600); } } catch (e) { }
+    try { if (S.components.length) { step('Rendering schematic…'); Sch.render(); out.schs = []; for (let i = 0; i < Sch.sheets().length; i++) { if (!Model.S.components.some(c => Model.sheetOf(c) === i)) continue; out.schs.push(Object.assign(await svgToPng(Sch.exportSVG(i), 2600), { sheet: i + 1, name: Sch.sheets()[i].name || '' })); } out.sch = out.schs[0]; } } catch (e) { }
     if (S.board.w > 0 && Pcb.placed().length) {
       try { step('Rendering PCB layout…'); Pcb.render(); out.pcb2d = await svgToPng(Pcb.exportSVG(), 2200, '#000'); } catch (e) { }
       try { step('Rendering mechanical drawing…'); out.mech = await svgToPng(mechSVG(), 2400); } catch (e) { }
@@ -114,7 +114,7 @@ const DocView = (() => {
       ${d.description ? `<h2>Description</h2><p>${esc2(d.description).replace(/\n/g, '<br>')}</p>` : '<p class="muted">Add a description in the panel on the left (or ✦ Write with AI).</p>'}</div>`;
     if (d.features || d.applications) h += `<div class="dpage">${d.features ? `<h2>Features</h2><ul>${lines(d.features).map(x => `<li>${esc2(x)}</li>`).join('')}</ul>` : ''}${d.applications ? `<h2>Applications</h2><ul>${lines(d.applications).map(x => `<li>${esc2(x)}</li>`).join('')}</ul>` : ''}
       ${D.ics.length ? `<h2>Main components</h2>${tbl(['Ref', 'Part', 'Description'], D.ics.map(i => [i.ref, i.value, i.desc]))}` : ''}</div>`;
-    if (I.sch) h += `<div class="dpage"><h2>Schematic</h2>${img(I.sch)}</div>`;
+    for (const s of I.schs || []) h += `<div class="dpage"><h2>Schematic${(I.schs || []).length > 1 ? ` — sheet ${s.sheet}: ${esc2(s.name)}` : ''}</h2>${img(s)}</div>`;
     if (D.hasPcb) h += `<div class="dpage"><h2>PCB</h2><div class="dgrid">${img(I.pcb3d_top)}${img(I.pcb3d_bottom)}</div><div class="dcap"><span>Top</span><span>Bottom</span></div>${img(I.pcb2d)}<div class="dcap"><span>Copper layout (red: top, blue: bottom)</span></div><h2>PCB specifications</h2>${tbl(['Parameter', 'Value'], D.specs)}</div>`;
     if (D.hasPcb) h += `<div class="dpage"><h2>Mechanical drawing</h2>${img(I.mech)}${D.conns.length ? '<h2>Connector pinout</h2>' + D.conns.map(c => `<h3>${esc2(c.ref)} — ${esc2(c.value)}${c.edge ? ` <span class="muted">(${c.edge} edge)</span>` : ''}</h3>${tbl(['Pin', 'Name', 'Signal'], c.pins.map(p => [p.num, p.name, p.net]))}`).join('') : ''}</div>`;
     if (D.enc) h += `<div class="dpage"><h2>Enclosure</h2><div class="dgrid">${img(I.enc)}${img(I.encx)}</div><div class="dcap"><span>Assembled</span><span>Exploded</span></div><p class="muted">${esc2(D.enc.kind)} — 3D-printable (STL + OpenSCAD in the Enclosure tab).</p>${tbl(D.enc.outer ? ['Dimension', 'Value'] : ['Part', 'Size (W × D × H)', 'Volume'], D.enc.rows)}</div>`;
@@ -168,7 +168,7 @@ const DocView = (() => {
         if (D.power.length) { h2('Power'); para(`Supply rails: ${D.power.join(', ')}. Ground: ${D.nets.filter(n => Model.isGround(n)).join(', ') || 'GND'}.`); }
       }
       // schematic
-      if (I.sch) { newPage(); h2('Schematic'); image(I.sch, CW, PH - 50); }
+      for (const s of I.schs || []) { newPage(); h2((I.schs || []).length > 1 ? `Schematic — sheet ${s.sheet}: ${s.name}` : 'Schematic'); image(s, CW, PH - 50); }
       // pcb
       if (D.hasPcb) {
         newPage(); h2('PCB');

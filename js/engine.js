@@ -46,6 +46,7 @@ const Engine = (() => {
                 x: { type: 'number', description: 'Schematic X (grid 10). Typical spacing between parts 80-160.' },
                 y: { type: 'number', description: 'Schematic Y (down is positive).' },
                 rot: { type: 'number', enum: [0, 90, 180, 270] },
+                sheet: { type: 'number', description: 'schematic sheet number (1 = first sheet; see add_sheet)' },
                 pins: { type: 'array', items: { type: 'string' }, description: 'ONLY for type "ic" or "connector": pin names in pin-number order (index 0 = pin 1).' },
                 footprint: { type: 'string', description: 'Optional footprint: ' + Lib.FOOTPRINT_PATTERNS.join(', ') }
               }
@@ -59,6 +60,8 @@ const Engine = (() => {
     { name: 'connect', description: 'Create connections. Each entry puts the listed pins on the named net (created if needed). If a pin is already on another net, that net is merged in. Name ground "GND" and supply rails like "VCC", "+5V", "+3V3", "+12V", "VBAT" — these are drawn as power symbols.', input_schema: { type: 'object', required: ['connections'], properties: { connections: { type: 'array', items: { type: 'object', required: ['net', 'pins'], properties: { net: { type: 'string' }, pins: pinList } } } } } },
     { name: 'disconnect', description: 'Remove pins from whatever net they are on.', input_schema: { type: 'object', required: ['pins'], properties: { pins: pinList } } },
     { name: 'rename_net', description: 'Rename a net (merges if the new name exists).', input_schema: { type: 'object', required: ['from', 'to'], properties: { from: { type: 'string' }, to: { type: 'string' } } } },
+    { name: 'add_sheet', description: 'Add a schematic sheet (multi-page schematic), e.g. Power, MCU, Sensors, Connectors. Returns its number. Nets connect across sheets by name (shown as net labels).', input_schema: { type: 'object', properties: { name: { type: 'string' } } } },
+    { name: 'move_to_sheet', description: 'Move components to a schematic sheet (1 = first). The sheet is re-arranged and spaced automatically.', input_schema: { type: 'object', required: ['refs', 'sheet'], properties: { refs: { type: 'array', items: { type: 'string' } }, sheet: { type: 'number' } } } },
     { name: 'auto_layout', description: 'Automatically arrange all schematic components based on connectivity.', input_schema: { type: 'object', properties: {} } },
     { name: 'run_erc', ro: true, description: 'Run the electrical rule check: unconnected pins, single-pin nets, missing ground, overlapping symbols.', input_schema: { type: 'object', properties: {} } },
     { name: 'clear_design', description: 'Delete everything in the current project and start an empty design.', input_schema: { type: 'object', properties: {} } },
@@ -198,17 +201,32 @@ const Engine = (() => {
           try { s.dbPart = await loadPart(Lib.dbDefault(s.type, s.value).lcsc); } catch (e) { /* database unavailable → generated footprint */ }
         }
         for (const s of list) if (s.lcsc || s.part) { const m = await loadPart(s.lcsc || s.part); libs[keyOf(m)] = m; s.part = keyOf(m); delete s.lcsc; }
+        // sheet numbers are 1-based for the AI; sheets are created on demand
+        for (const s of list) if (s.sheet != null) { const n = Math.max(1, Math.round(+s.sheet) || 1); s.sheet = n - 1; }
         return Model.mutate(() => {
+          const need = Math.max(0, ...list.map(s => (s.sheet || 0) + 1));
+          if (need > 1) { const sh = (Model.S.sheets && Model.S.sheets.length ? Model.S.sheets : [{ name: 'Main' }]).slice(); while (sh.length < need) sh.push({ name: 'Sheet ' + (sh.length + 1) }); Model.S.sheets = sh; }
           for (const [k, m] of Object.entries(libs)) if (!Model.S.lib[k]) Model.setLibPart(k, m);
-          return list.map(s => { const c = Model.addComponent(s); return { ref: c.ref, type: c.type, value: c.value, x: c.x, y: c.y, footprint: c.footprint, pins: Lib.type(c.type).pins(c).map(p => p.num + ':' + p.name).join(' ') }; });
+          const added = list.map(s => Model.addComponent(s));
+          Model.spaceOut();   // keep room for net labels between parts, whatever coordinates were asked for
+          return added.map(c => ({ ref: c.ref, type: c.type, value: c.value, x: c.x, y: c.y, sheet: Model.sheetOf(c) + 1, footprint: c.footprint, pins: Lib.type(c.type).pins(c).map(p => p.num + ':' + p.name).join(' ') }));
         });
       }
-      case 'update_component': return Model.mutate(() => { const c = Model.updateComponent(input); return { ok: true, ref: c.ref }; });
+      case 'update_component': return Model.mutate(() => { const c = Model.updateComponent(input); Model.spaceOut(); return { ok: true, ref: c.ref }; });
       case 'remove_components': return Model.mutate(() => { (input.refs || []).forEach(Model.removeComponent); return { ok: true }; });
       case 'connect': {
         const list = Array.isArray(input.connections) ? input.connections : [input];
-        return Model.mutate(() => list.map(cn => ({ net: Model.connect(cn.net, cn.pins || []), pins: (cn.pins || []).length })));
+        return Model.mutate(() => { const r = list.map(cn => ({ net: Model.connect(cn.net, cn.pins || []), pins: (cn.pins || []).length })); Model.spaceOut(); return r; });
       }
+      case 'add_sheet': return Model.mutate(() => { const sh = (Model.S.sheets && Model.S.sheets.length ? Model.S.sheets : [{ name: 'Main' }]).slice(); sh.push({ name: String(input.name || 'Sheet ' + (sh.length + 1)) }); Model.S.sheets = sh; return { sheet: sh.length, sheets: sh.map((s, i) => `${i + 1}: ${s.name}`) }; });
+      case 'move_to_sheet': return Model.mutate(() => {
+        const n = Math.max(1, Math.round(+input.sheet) || 1), sh = (Model.S.sheets && Model.S.sheets.length ? Model.S.sheets : [{ name: 'Main' }]).slice();
+        while (sh.length < n) sh.push({ name: 'Sheet ' + (sh.length + 1) }); Model.S.sheets = sh;
+        const moved = [];
+        for (const r of input.refs || []) { const c = Model.comp(r); if (!c) continue; if (n > 1) c.sheet = n - 1; else delete c.sheet; moved.push(c.ref); }
+        Model.autoLayout(n - 1); Model.spaceOut();
+        return { moved, sheet: n, note: 'Nets that continue on another sheet are shown with net labels (connected by name).' };
+      });
       case 'disconnect': return Model.mutate(() => { Model.disconnect(input.pins || []); return { ok: true }; });
       case 'rename_net': return Model.mutate(() => { Model.renameNet(input.from, input.to); return { ok: true }; });
       case 'auto_layout': Model.mutate(() => Model.autoLayout()); env.ui('fit-sch'); return { ok: true };
@@ -375,7 +393,8 @@ const Engine = (() => {
     const S = Model.S;
     if (!S.components.length) return 'CURRENT DESIGN: empty.';
     const sum = Model.summary();
-    let txt = 'CURRENT DESIGN:\n' + sum.components.map(c => `${c.ref} ${c.lcsc ? 'part ' + c.lcsc : c.type} "${c.value}" @(${c.x},${c.y}) rot${c.rot} fp=${c.footprint} | ${c.pins}`).join('\n');
+    const shs = S.sheets && S.sheets.length > 1 ? S.sheets : null, sheetOfRef = r => { const c = Model.comp(r); return c ? Model.sheetOf(c) + 1 : 1; };
+    let txt = 'CURRENT DESIGN:\n' + (shs ? `Sheets: ${shs.map((s, i) => `${i + 1}=${s.name}`).join(', ')}\n` : '') + sum.components.map(c => `${c.ref} ${c.lcsc ? 'part ' + c.lcsc : c.type} "${c.value}" @(${c.x},${c.y})${shs ? ' sheet' + sheetOfRef(c.ref) : ''} rot${c.rot} fp=${c.footprint} | ${c.pins}`).join('\n');
     const st = Pcb.status();
     txt += `\nPCB: ${st.placed ? `board ${st.board.w}x${st.board.h}mm, ${st.routed}/${st.nets} nets routed` : 'not generated'}`;
     if (txt.length > 12000) txt = txt.slice(0, 12000) + '\n…(truncated — call get_design for the rest)';
