@@ -55,6 +55,37 @@ const Model = (() => {
     for (const c of S.components) { const m = re.exec(c.ref); if (m) max = Math.max(max, +m[1]); }
     return prefix + (max + 1);
   }
+  // ---------- clipboard: copy / paste groups of parts ----------
+  // Power nets (GND, +3V3…) stay connected; wiring between the copied parts is kept on fresh nets; wires to parts
+  // outside the copy are left off (the pasted group is a separate circuit block).
+  function copyParts(refs) {
+    const set = new Set(refs), comps = S.components.filter(c => set.has(c.ref)).map(c => JSON.parse(JSON.stringify(c)));
+    const nets = {};
+    for (const [n, keys] of Object.entries(S.nets)) { const k = keys.filter(x => set.has(x.slice(0, x.lastIndexOf('.')))); if (k.length && (isPower(n) || k.length >= 2)) nets[n] = k; }
+    const lib = {}; for (const c of comps) if (c.lcsc && S.lib[c.lcsc]) lib[c.lcsc] = S.lib[c.lcsc]; else if (c.dbfp && S.lib[c.dbfp]) lib[c.dbfp] = S.lib[c.dbfp];
+    return { comps, nets, lib };
+  }
+  // o: { dx, dy } schematic offset, { pdx, pdy } PCB offset (only for copies of placed parts), sheet: target sheet
+  function pasteParts(clip, o = {}) {
+    for (const [k, d] of Object.entries(clip.lib || {})) if (!S.lib[k]) S.lib[k] = d;
+    const map = {};
+    for (const c0 of clip.comps) {
+      const c = JSON.parse(JSON.stringify(c0)), prefix = c0.ref.replace(/\d+$/, '') || 'U';
+      c.ref = nextRef(prefix); map[c0.ref] = c.ref;
+      c.x = Math.round((c0.x + (o.dx || 0)) / 10) * 10; c.y = Math.round((c0.y + (o.dy || 0)) / 10) * 10;
+      if (o.sheet != null) { if (o.sheet > 0) c.sheet = o.sheet; else delete c.sheet; }
+      if (c.pcb && o.pdx != null) { c.pcb.x = +(c0.pcb.x + o.pdx).toFixed(3); c.pcb.y = +(c0.pcb.y + o.pdy).toFixed(3); delete c.pcb.locked; delete c.pcbEdge; }
+      else delete c.pcb;
+      S.components.push(c);
+    }
+    const rk = k => { const i = k.lastIndexOf('.'); return map[k.slice(0, i)] + k.slice(i); };
+    for (const [n, keys] of Object.entries(clip.nets || {})) {
+      let name = n;
+      if (!isPower(n)) { if (/^N\$\d+$/.test(n)) name = autoNetName(); else { let i = 2; while (S.nets[n + '_' + i]) i++; name = n + '_' + i; } }
+      S.nets[name] = [...new Set([...(S.nets[name] || []), ...keys.map(rk)])];
+    }
+    return Object.values(map);
+  }
   function resolvePins(str) {
     const s = String(str).trim(), i = s.indexOf('.');
     if (i < 0) throw new Error(`Bad pin reference "${s}" — use REF.PIN, e.g. R1.1 or U1.VCC`);
@@ -402,6 +433,6 @@ const Model = (() => {
     get S() { return S; }, blank, subscribe: f => subs.push(f), emit, begin, mutate, load, undo, redo, snapshot,
     canUndo: () => undoStack.length > 0, canRedo: () => redoStack.length > 0,
     comp, pinsWorld, bbox, pinIndex, netOf, resolvePins, addComponent, removeComponent, updateComponent, connect, disconnect,
-    renameNet, removeNet, clear, setLibPart, fpNameFor, lcscOf, assignPart, attachDb, erc, autoLayout, spaceOut, labelBox, sheetOf, summary, isPower, isGround, invalidate, netsOfComp
+    renameNet, removeNet, clear, setLibPart, fpNameFor, lcscOf, assignPart, copyParts, pasteParts, attachDb, erc, autoLayout, spaceOut, labelBox, sheetOf, summary, isPower, isGround, invalidate, netsOfComp
   };
 })();

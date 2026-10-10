@@ -137,6 +137,15 @@ const App = (() => {
   function renderProps() {
     const el = $('#props');
     if (el.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON') return;
+    const many = view === 'sch' ? Sch.selected() : view === 'pcb' ? PcbView.selected() : [];
+    if (many.length > 1) {
+      el.innerHTML = `<div class="ph">${many.length} parts selected</div><div class="muted small" style="margin-bottom:6px">${esc(many.join(', '))}</div>
+        <div class="row"><button data-a="rot">⟳ Rotate</button><button data-a="dup">⧉ Duplicate</button>${view === 'pcb' ? '<button data-a="flip">⇅ Flip side</button>' : ''}</div>
+        <div class="row"><button data-a="copy">Copy</button><button data-a="cut">Cut</button><button data-a="del" class="danger">Delete</button></div>
+        <p class="muted small">Drag any selected part to move the group · Shift+click adds or removes a part · drag a box on empty space to select · right-click for more</p>`;
+      el.querySelectorAll('[data-a]').forEach(b => b.onclick = () => act(b.dataset.a));
+      return;
+    }
     if (view === 'pcb' && PcbView.props(el)) return;
     if (view === 'enc' && EncView.props(el)) return;
     if (view === 'doc' && DocView.props(el)) return;
@@ -176,8 +185,8 @@ const App = (() => {
       $('#pNetDel').onclick = () => { Sch.select(null); Model.mutate(() => Model.removeNet(net)); };
     } else {
       el.innerHTML = `<div class="muted help">${view === 'sch'
-        ? '<b>Click</b> a part to select · <b>drag</b> to move · <b>R</b> rotate · <b>Del</b> delete<br><b>Click a pin, then another pin</b> to wire them<br><b>Drag empty space</b> to pan · <b>wheel</b> to zoom'
-        : '<b>Drag</b> footprints to move · <b>R</b> rotate<br>Moving a part un-routes its nets — press <b>Route</b> again<br>Red = top copper · Blue = bottom · Yellow = ratsnest'}</div>`;
+        ? '<b>Click</b> a part to select · <b>drag</b> to move · <b>R</b> rotate · <b>Del</b> delete<br><b>Click a pin, then another pin</b> to wire them<br><b>Drag a box</b> on empty space to select several · <b>Shift+click</b> adds · <b>right-click</b> for Copy / Cut / Paste / Rotate…<br><b>Right- or middle-drag</b> to pan · <b>wheel</b> to zoom'
+        : '<b>Drag</b> footprints to move · <b>R</b> rotate<br><b>Drag a box</b> on empty space to select several · <b>Shift+click</b> adds · <b>right-click</b> for Copy / Paste / Flip / Lock…<br><b>Right- or middle-drag</b> to pan<br>Red = top copper · Blue = bottom · Yellow = ratsnest'}</div>`;
     }
   }
 
@@ -198,6 +207,75 @@ const App = (() => {
       }
     });
   }
+
+  // ---------- selection actions (schematic + PCB): copy / cut / paste / duplicate, right-click menu ----------
+  let clip = null;
+  const SV = () => view === 'sch' ? Sch : PcbView;
+  const nParts = n => `${n} part${n > 1 ? 's' : ''}`;
+  function copySel(cut) {
+    const refs = SV().selected(); if (!refs.length) { toast('Select parts first — click, Shift+click, or drag a box on empty space'); return; }
+    clip = Model.copyParts(refs);
+    if (cut) SV().del();
+    toast(`${cut ? 'Cut' : 'Copied'} ${nParts(refs.length)} — Ctrl+V pastes at the mouse`);
+  }
+  // o.at: world point (schematic units / board mm) for the group's centre; o.offset: shift from the originals instead
+  function pasteClip(c, o = {}) {
+    if (!c || !c.comps.length) { toast('Nothing to paste — copy parts first (Ctrl+C)'); return; }
+    const cs = c.comps, avg = (a, f) => a.reduce((s, x) => s + f(x), 0) / a.length;
+    let p;
+    if (view === 'pcb') {
+      const placed = cs.filter(x => x.pcb), cx = placed.length ? avg(placed, x => x.pcb.x) : 0, cy = placed.length ? avg(placed, x => x.pcb.y) : 0;
+      const at = o.offset ? { x: cx + o.offset, y: cy + o.offset } : o.at || PcbView.ui.cursor || PcbView.ui.mouse || { x: Model.S.board.w / 2, y: Model.S.board.h / 2 };
+      const ys = cs.map(x => x.y);
+      p = { pdx: at.x - cx, pdy: at.y - cy, dx: 0, dy: Math.max(...ys) - Math.min(...ys) + 80 };   // schematic copies go below the originals
+    } else {
+      const cx = avg(cs, x => x.x), cy = avg(cs, x => x.y), at = o.offset ? { x: cx + o.offset * 20, y: cy + o.offset * 20 } : o.at || Sch.ui.mouse;
+      p = { dx: at.x - cx, dy: at.y - cy, sheet: Sch.ui.sheet };   // not placed on the board: ⟳ Update from schematic brings them there
+    }
+    const refs = Model.mutate(() => Model.pasteParts(c, p));
+    SV().setSelection(refs);
+    toast(`Pasted ${nParts(refs.length)}: ${refs.join(', ')}${view === 'sch' && cs.some(x => x.pcb) ? ' — on the PCB tab, ⟳ Update from schematic loads them onto the board' : ''}`, 6000);
+  }
+  function act(a, at) {
+    const V = SV(), refs = V.selected();
+    if (a === 'copy') copySel(false);
+    else if (a === 'cut') copySel(true);
+    else if (a === 'paste') pasteClip(clip, { at });
+    else if (a === 'dup') { if (refs.length) pasteClip(Model.copyParts(refs), { offset: 2 }); else toast('Select parts to duplicate'); }
+    else if (a === 'del') { if (refs.length) V.del(); else if (view === 'sch' && Sch.ui.selNet) { const n = Sch.ui.selNet; Sch.select(null); Model.mutate(() => Model.removeNet(n)); } }
+    else if (a === 'rot') { if (refs.length) V.rotate(); }
+    else if (a === 'flip') { if (refs.length) { try { PcbView.flip(); } catch (e) { toast(e.message); } } }
+    else if (a === 'lock') { const lock = !refs.every(r => Model.comp(r).pcb.locked); Model.mutate(() => { for (const r of refs) Pcb.placeFootprint(r, { lock }); }); toast(`${nParts(refs.length)} ${lock ? 'locked (Optimize and Auto-place keep them in place)' : 'unlocked'}`); }
+    else if (a === 'edit') { if (refs[0]) editComponent(refs[0]); }
+    else if (a === 'props') { const el = $('#props'); renderProps(); el.scrollIntoView({ block: 'start', behavior: 'smooth' }); el.classList.remove('flash'); void el.offsetWidth; el.classList.add('flash'); }
+    else if (a === 'all') V.selectAll();
+    else if (a === 'fit') view === 'sch' ? Sch.fit() : Pcb.fit();
+  }
+  function showCtx(e) {
+    let m = document.getElementById('ctxMenu');
+    if (!m) { m = document.createElement('div'); m.id = 'ctxMenu'; m.className = 'ctxmenu hidden'; document.body.appendChild(m); }
+    const refs = SV().selected(), one = refs.length === 1 && Model.comp(refs[0]), at = view === 'sch' ? Object.assign({}, Sch.ui.mouse) : Object.assign({}, PcbView.ui.mouse);
+    const it = (a, label, keyHint, dis) => `<button data-a="${a}"${dis ? ' disabled' : ''}><span>${label}</span><kbd>${keyHint || ''}</kbd></button>`;
+    const items = [];
+    if (refs.length) {
+      items.push(`<div class="cm-h">${refs.length > 1 ? nParts(refs.length) : esc(refs[0] + ' · ' + (one.value || ''))}</div>`);
+      items.push(it('cut', 'Cut', 'Ctrl+X'), it('copy', 'Copy', 'Ctrl+C'), it('paste', 'Paste', 'Ctrl+V', !clip), it('dup', 'Duplicate', 'Ctrl+D'), '<hr>');
+      items.push(it('rot', 'Rotate 90°', 'R'));
+      if (view === 'pcb') items.push(it('flip', 'Flip to other side', ''), it('lock', refs.every(r => Model.comp(r).pcb.locked) ? 'Unlock position' : 'Lock position', ''));
+      items.push(it('del', 'Delete', 'Del'), '<hr>');
+      if (one) items.push(it('props', 'Properties', ''), it('edit', one.type === 'part' ? 'Edit symbol & footprint…' : 'Make editable part…', ''));
+    } else {
+      if (view === 'sch' && Sch.ui.selNet) items.push(`<div class="cm-h">Net ${esc(Sch.ui.selNet)}</div>`, it('del', 'Delete net', 'Del'), '<hr>');
+      items.push(it('paste', 'Paste', 'Ctrl+V', !clip), it('all', 'Select all', 'Ctrl+A'), it('fit', 'Fit view', 'F'));
+    }
+    while (items[items.length - 1] === '<hr>') items.pop();
+    m.innerHTML = items.join('');
+    m.classList.remove('hidden');
+    const w = m.offsetWidth, h = m.offsetHeight;
+    m.style.left = Math.min(e.x, innerWidth - w - 6) + 'px'; m.style.top = Math.min(e.y, innerHeight - h - 6) + 'px';
+    m.querySelectorAll('[data-a]').forEach(b => b.onclick = () => { hideCtx(); act(b.dataset.a, at); });
+  }
+  function hideCtx() { const m = document.getElementById('ctxMenu'); if (m) m.classList.add('hidden'); }
 
   // ---------- light / dark / system theme ----------
   const THEMES = { system: ['🖥', 'Theme: follows the system — click for Light'], light: ['☀', 'Theme: Light — click for Dark'], dark: ['🌙', 'Theme: Dark — click to follow the system'] };
@@ -738,6 +816,9 @@ const App = (() => {
   function init() {
     Sch.init($('#schSvg')); Pcb.init($('#pcbSvg')); PcbView.bindBar();
     Sch.ui.onSelect = () => renderProps(); Pcb.ui.onSelect = () => renderProps();
+    Sch.ui.onContext = showCtx; PcbView.ui.onContext = showCtx;
+    document.addEventListener('mousedown', e => { if (!e.target.closest('#ctxMenu')) hideCtx(); }, true);
+    window.addEventListener('blur', hideCtx); window.addEventListener('resize', hideCtx);
     let saved = null; try { saved = localStorage.getItem('cp.design'); } catch (e) { }
     if (saved) try { Model.load(saved); } catch (e) { }
     Model.subscribe(kind => { if (kind !== 'move') Pcb.ui.drc = null; if (kind === 'move') { if (view === 'sch') Sch.render(); else if (view === 'pcb') Pcb.render(); } else renderAll(); });
@@ -931,6 +1012,11 @@ const App = (() => {
       if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key.toLowerCase() === 's') { e.preventDefault(); $('#btnSaveAs').click(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') { e.preventDefault(); $('#btnSave').click(); return; }
       if (view === 'enc') return;
+      if (e.key === 'Escape') hideCtx();
+      if ((view === 'sch' || view === 'pcb') && (e.ctrlKey || e.metaKey) && !e.shiftKey && !e.altKey) {
+        const k = e.key.toLowerCase(), a = { c: 'copy', x: 'cut', v: 'paste', d: 'dup', a: 'all' }[k];
+        if (a) { e.preventDefault(); act(a); return; }
+      }
       if (e.key === 'f' || e.key === 'F') { view === 'sch' ? Sch.fit() : Pcb.fit(); return; }
       if ((view === 'sch' ? Sch : Pcb).key(e)) e.preventDefault();
     });

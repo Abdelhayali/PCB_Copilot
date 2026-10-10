@@ -26,7 +26,7 @@ const PcbView = (() => {
   ];
   const GRIDS = [0.05, 0.1, 0.127, 0.254, 0.5, 1.27];
   const ui = {
-    sel: null, item: null, hlNet: null, drc: null, tool: 'select', active: 'F', angle: '45', flip: false, grid: 0.254, width: null, dim: true,
+    sel: null, multi: new Set(), box: null, onContext: () => { }, item: null, hlNet: null, drc: null, tool: 'select', active: 'F', angle: '45', flip: false, grid: 0.254, width: null, dim: true,
     route: null, measure: null, cursor: null, layers: {}, onSelect: () => { }, arc: null, poly: null, outlineR: 0,
   };
   LAYERS.forEach(l => ui.layers[l.id] = { on: !l.off, color: l.color });
@@ -35,15 +35,15 @@ const PcbView = (() => {
   const vis = id => ui.layers[id].on, col = id => ui.layers[id].color;
   const LNAME = { F: 'TopLayer', B: 'BottomLayer' };
 
-  let svg, world, grid, vp, overlay, cache = { pads: [] };
+  let svg, world, grid, vp, overlay, boxEl, cache = { pads: [] };
   const $ = s => document.querySelector(s);
   const G = Pcb.geom;
 
   // ---------- setup ----------
   function init(el) {
     svg = el;
-    svg.innerHTML = `<defs><pattern id="pgrid" width="2.54" height="2.54" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="0.07" fill="#3a3a3a"/></pattern></defs><rect id="pgridr" fill="url(#pgrid)"/><g id="pworld"></g>`;
-    world = svg.querySelector('#pworld'); grid = svg.querySelector('#pgridr');
+    svg.innerHTML = `<defs><pattern id="pgrid" width="2.54" height="2.54" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="0.07" fill="#3a3a3a"/></pattern></defs><rect id="pgridr" fill="url(#pgrid)"/><g id="pworld"></g><rect id="pbox" class="boxsel" style="display:none"/>`;
+    world = svg.querySelector('#pworld'); grid = svg.querySelector('#pgridr'); boxEl = svg.querySelector('#pbox');
     vp = new Viewport(svg, { min: 2, max: 400, scale: 10, onChange: vb => { grid.setAttribute('x', vb[0]); grid.setAttribute('y', vb[1]); grid.setAttribute('width', vb[2]); grid.setAttribute('height', vb[3]); } });
     svg.addEventListener('mousedown', down); svg.addEventListener('dblclick', dbl);
     window.addEventListener('mousemove', move); window.addEventListener('mouseup', up);
@@ -283,9 +283,18 @@ const PcbView = (() => {
 
   // ---------- mouse ----------
   let drag = null, pan = null, rdown = null;
+  // part selection: ui.sel is the primary part (Properties), ui.multi every selected part
+  const isSel = ref => ui.sel === ref || ui.multi.has(ref);
+  function selected() { if (!ui.sel) return []; const r = ui.multi.size ? [...ui.multi] : [ui.sel]; return r.filter(x => { const c = Model.comp(x); return c && c.pcb; }); }
+  function setSelection(refs) { ui.multi = new Set(refs); ui.sel = refs[0] || null; ui.item = null; ui.hlNet = null; ui.onSelect(ui.sel); render(); }
+  function drawBox() {
+    const b = ui.box; if (!b) { boxEl.style.display = 'none'; return; }
+    boxEl.style.display = ''; boxEl.setAttribute('x', Math.min(b.x0, b.x1)); boxEl.setAttribute('y', Math.min(b.y0, b.y1));
+    boxEl.setAttribute('width', Math.abs(b.x1 - b.x0)); boxEl.setAttribute('height', Math.abs(b.y1 - b.y0));
+  }
   function down(e) {
     const pt = vp.toWorld(e.clientX, e.clientY);
-    if (e.button === 2) { rdown = { x: e.clientX, y: e.clientY }; pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
+    if (e.button === 2) { const el = e.target.closest('[data-ref],[data-pref]'); rdown = { x: e.clientX, y: e.clientY, ref: el ? el.dataset.ref || el.dataset.pref : null }; pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
     if (e.button === 1) { pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
     if (ui.tool === 'track') {
       const sp = snapPoint(pt, ui.route ? ui.route.layer : null);
@@ -334,10 +343,20 @@ const PcbView = (() => {
     if (el && el.dataset.k === 'v') { const v = Model.S.pcb.vias[+el.dataset.i]; selectItem({ k: 'v', i: +el.dataset.i }); drag = { kind: 'via', i: +el.dataset.i, ox: pt.x - v.x, oy: pt.y - v.y, moved: false }; return; }
     const ref = el && (el.dataset.ref || el.dataset.pref);
     if (ref) {
-      const c = Model.comp(ref); ui.item = null; ui.sel = c.ref; ui.hlNet = el.dataset.net || null; ui.onSelect(c.ref);
-      drag = { kind: 'fp', ref: c.ref, ox: pt.x - c.pcb.x, oy: pt.y - c.pcb.y, moved: false }; render(); return;
+      const c = Model.comp(ref); ui.item = null;
+      if (e.shiftKey || e.ctrlKey || e.metaKey) { // add to / remove from the selection
+        const m = new Set(selected()); if (m.has(c.ref)) m.delete(c.ref); else m.add(c.ref);
+        setSelection([...m].sort((a, b) => (a === c.ref ? -1 : b === c.ref ? 1 : 0))); return;
+      }
+      if (!(ui.multi.size > 1 && ui.multi.has(c.ref))) ui.multi = new Set([c.ref]);   // otherwise keep the group
+      ui.sel = c.ref; ui.hlNet = el.dataset.net || null; ui.onSelect(c.ref);
+      drag = { kind: 'fp', x0: pt.x, y0: pt.y, orig: selected().map(r => { const o = Model.comp(r); return [o, o.pcb.x, o.pcb.y]; }), moved: false }; render(); return;
     }
-    ui.sel = null; ui.item = null; ui.hlNet = null; ui.onSelect(null); pan = { x: e.clientX, y: e.clientY }; render();
+    // drag on empty space: selection box (Shift adds to the selection)
+    const keep = e.shiftKey ? selected() : [];
+    if (!e.shiftKey) { ui.sel = null; ui.multi = new Set(); }
+    ui.item = null; ui.hlNet = null; ui.onSelect(ui.sel); render();
+    ui.box = { x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y, add: keep }; drawBox();
   }
   function selectItem(it) {
     ui.sel = null; ui.item = it;
@@ -352,11 +371,15 @@ const PcbView = (() => {
     if (!svg || svg.classList.contains('hidden')) return;
     if (pan) { vp.panBy(e.clientX - pan.x, e.clientY - pan.y); pan = { x: e.clientX, y: e.clientY }; return; }
     const pt = vp.toWorld(e.clientX, e.clientY);
+    if (ui.box) { ui.box.x1 = pt.x; ui.box.y1 = pt.y; drawBox(); return; }
     if (drag) {
       if (drag.kind === 'fp') {
-        const c = Model.comp(drag.ref); if (!c) return;
-        const g = Math.max(ui.grid, 0.05), nx = +(Math.round((pt.x - drag.ox) / g) * g).toFixed(4), ny = +(Math.round((pt.y - drag.oy) / g) * g).toFixed(4);
-        if (nx !== c.pcb.x || ny !== c.pcb.y) { if (!drag.moved) { Model.begin(); drag.moved = true; } c.pcb.x = nx; c.pcb.y = ny; Model.emit('move'); }
+        const g = Math.max(ui.grid, 0.05), dx = Math.round((pt.x - drag.x0) / g) * g, dy = Math.round((pt.y - drag.y0) / g) * g, [c0, x0, y0] = drag.orig[0] || [];
+        if (c0 && c0.pcb && (Math.abs(c0.pcb.x - (x0 + dx)) > 1e-6 || Math.abs(c0.pcb.y - (y0 + dy)) > 1e-6)) {
+          if (!drag.moved) { Model.begin(); drag.moved = true; }
+          for (const [c, x, y] of drag.orig) if (c.pcb) { c.pcb.x = +(x + dx).toFixed(4); c.pcb.y = +(y + dy).toFixed(4); }
+          Model.emit('move');
+        }
       } else if (drag.kind === 'seg' || drag.kind === 'vertex') {
         const t = Model.S.pcb.traces[drag.i]; if (!t) return;
         const dx = snapG(pt.x - drag.x0), dy = snapG(pt.y - drag.y0); if (!dx && !dy && !drag.moved) return;
@@ -387,9 +410,24 @@ const PcbView = (() => {
     coord();
   }
   function up(e) {
+    if (ui.box) {
+      const b = ui.box, x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1), y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1);
+      ui.box = null; drawBox();
+      if (x1 - x0 > 0.2 || y1 - y0 > 0.2) {
+        const hit = Pcb.placed().filter(c => { const q = Pcb.fpBox(c); return q[0] < x1 && q[2] > x0 && q[1] < y1 && q[3] > y0; }).map(c => c.ref);
+        setSelection([...new Set([...b.add, ...hit])]);
+      }
+    }
     if (rdown && e.button === 2) {
-      const moved = Math.hypot(e.clientX - rdown.x, e.clientY - rdown.y) > 4; rdown = null;
-      if (!moved) { if (ui.route) finishRoute(); else if (ui.tool !== 'select') setTool('select'); }
+      const moved = Math.hypot(e.clientX - rdown.x, e.clientY - rdown.y) > 4, r = rdown; rdown = null;
+      if (!moved) {
+        if (ui.route) finishRoute(); else if (ui.tool !== 'select') setTool('select');
+        else { // context menu
+          if (r.ref && !isSel(r.ref)) setSelection([r.ref]);
+          ui.mouse = vp.toWorld(e.clientX, e.clientY);
+          ui.onContext({ x: e.clientX, y: e.clientY, ref: r.ref });
+        }
+      }
     }
     if (drag && drag.moved) Model.emit('change');
     drag = null; pan = null;
@@ -414,10 +452,16 @@ const PcbView = (() => {
     if (k === 'Backspace' && ui.poly) { ui.poly.pts.pop(); if (!ui.poly.pts.length) ui.poly = null; renderLive(); return true; }
     if (k === 'Escape') { if (ui.route) finishRoute(); else if (ui.measure) { ui.measure = null; render(); } else if (ui.tool !== 'select') setTool('select'); else { ui.sel = null; ui.item = null; ui.hlNet = null; ui.onSelect(null); render(); } return true; }
     if ((k === 'Delete' || k === 'Backspace') && ui.item) { deleteItem(); return true; }
-    if (k === 'r' && ui.sel) { const c = Model.comp(ui.sel); if (c && c.pcb) Model.mutate(() => { c.pcb.rot = ((c.pcb.rot || 0) + 90) % 360; }); return true; }
+    if (k === 'r' && selected().length) { rotate(); return true; }
+    if ((k === 'Delete' || k === 'Backspace') && selected().length) { del(); return true; }
     if ((k === '+' || k === '=' || k === '-') && ui.tool === 'track') { const w = Math.max(0.05, +((ui.width || curWidth(ui.route && ui.route.net)) + (k === '-' ? -0.05 : 0.05)).toFixed(3)); ui.width = w; $('#pWidth').value = w; if (ui.route) ui.route.w = w; renderLive(); coord(); return true; }
     return false;
   }
+  function rotate() { const refs = selected(); Model.mutate(() => { for (const r of refs) { const c = Model.comp(r); c.pcb.rot = ((c.pcb.rot || 0) + 90) % 360; } }); }
+  // a part is one object in schematic and PCB: deleting it on the board removes it from the design
+  function del() { const refs = selected(); ui.sel = null; ui.multi = new Set(); ui.onSelect(null); Model.mutate(() => { for (const r of refs) if (Model.comp(r)) Model.removeComponent(r); }); }
+  function flip() { const refs = selected(); Model.mutate(() => { for (const r of refs) Pcb.placeFootprint(r, { side: Pcb.isBottom(Model.comp(r)) ? 'top' : 'bottom' }); }); }
+  const selectAll = () => setSelection(Pcb.placed().map(c => c.ref));
   function deleteItem() {
     const it = ui.item; if (!it) return; ui.item = null; ui.hlNet = null;
     Model.mutate(() => {
@@ -498,7 +542,7 @@ const PcbView = (() => {
     if (vis('RA')) for (const r of Pcb.ratsnest()) out.push(`<line x1="${r.a.x}" y1="${r.a.y}" x2="${r.b.x}" y2="${r.b.y}" stroke="${col('RA')}" stroke-width="0.08" pointer-events="none"><title>${esc(r.net)}</title></line>`);
     if (vis('DRC') && ui.drc) for (const v of ui.drc.violations) if (v.x != null) out.push(`<g class="drcmark" transform="translate(${v.x} ${v.y})" stroke="${v.severity === 'error' ? col('DRC') : '#f0b429'}"><circle r="0.9" fill="none" stroke-width="0.12"/><path d="M-0.45 -0.45L0.45 0.45M0.45 -0.45L-0.45 0.45" stroke-width="0.14"/><title>${esc(v.msg)}</title></g>`);
     // selection outlines
-    if (ui.sel) { const c = Model.comp(ui.sel); if (c && c.pcb) { const b = Pcb.fpBox(c, 0.2); out.push(`<rect class="selbox" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`); } }
+    for (const r of new Set([...ui.multi, ...(ui.sel ? [ui.sel] : [])])) { const c = Model.comp(r); if (c && c.pcb) { const b = Pcb.fpBox(c, 0.2); out.push(`<rect class="selbox" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`); } }
     if (ui.item && ui.item.k === 'h') { const h = (S.pcb.holes || [])[ui.item.i]; if (h) out.push(`<circle class="selbox" cx="${h.x}" cy="${h.y}" r="${h.d / 2 + 0.4}"/>`); }
     if (ui.item && ui.item.k !== 'pour' && ui.item.k !== 'h') {
       if (ui.item.k === 'v') { const v = S.pcb.vias[ui.item.i]; if (v) out.push(`<circle class="selbox" cx="${v.x}" cy="${v.y}" r="${v.d / 2 + 0.15}"/>`); }
@@ -629,8 +673,9 @@ const PcbView = (() => {
     const S = Model.S;
     if (ui.item && ((ui.item.k === 'v' && !S.pcb.vias[ui.item.i]) || (ui.item.k === 'pour' && !(S.pcb.pours || [])[ui.item.i]) || (ui.item.k === 'h' && !(S.pcb.holes || [])[ui.item.i]) || (!['v', 'pour', 'h'].includes(ui.item.k) && !S.pcb.traces[ui.item.i]))) ui.item = null;
     if (ui.sel && !Model.comp(ui.sel)) ui.sel = null;
+    for (const r of [...ui.multi]) if (!Model.comp(r)) ui.multi.delete(r);
   }
-  return { init, render: () => { validate(); render(); coord(); }, fit, key, ui, exportSVG, setVisible, bindBar, props, setTool, LAYERS, drawOutline: r => { ui.outlineR = +r || 0; setTool('outline'); App.toast('Click the outline corners; click the first corner to close'); }, get vp() { return vp; } };
+  return { init, render: () => { validate(); render(); coord(); }, fit, key, ui, selected, setSelection, selectAll, rotate, del, flip, exportSVG, setVisible, bindBar, props, setTool, LAYERS, drawOutline: r => { ui.outlineR = +r || 0; setTool('outline'); App.toast('Click the outline corners; click the first corner to close'); }, get vp() { return vp; } };
 })();
 // Expose the editor through the Pcb namespace used by the rest of the app.
 Object.assign(Pcb, { init: PcbView.init, render: PcbView.render, fit: PcbView.fit, key: PcbView.key, exportSVG: PcbView.exportSVG, ui: PcbView.ui });

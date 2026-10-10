@@ -1,8 +1,8 @@
 'use strict';
 // Schematic renderer + editor (select, drag, rotate, click pin-to-pin to wire).
 const Sch = (() => {
-  let svg, world, grid, vp;
-  const ui = { sel: null, selNet: null, pending: null, mouse: { x: 0, y: 0 }, drag: null, pan: null, onSelect: () => { }, sheet: 0 };
+  let svg, world, grid, vp, boxEl;
+  const ui = { sel: null, multi: new Set(), selNet: null, pending: null, mouse: { x: 0, y: 0 }, drag: null, pan: null, box: null, rdown: null, onSelect: () => { }, onContext: () => { }, sheet: 0 };
   // ---------- sheets (multi-page schematic) and the drawing frame ----------
   const sheets = () => (Model.S.sheets && Model.S.sheets.length ? Model.S.sheets : [{ name: 'Main' }]);
   const onSheet = c => Model.sheetOf(c) === ui.sheet;
@@ -61,8 +61,8 @@ const Sch = (() => {
   function init(el) {
     svg = el;
     svg.innerHTML = `<defs><pattern id="sgrid" width="10" height="10" patternUnits="userSpaceOnUse"><circle cx="0" cy="0" r="0.7" class="griddot"/></pattern></defs>
-      <rect id="sgridr" fill="url(#sgrid)"/><g id="sworld"></g>`;
-    world = svg.querySelector('#sworld'); grid = svg.querySelector('#sgridr');
+      <rect id="sgridr" fill="url(#sgrid)"/><g id="sworld"></g><rect id="sbox" class="boxsel" style="display:none"/>`;
+    world = svg.querySelector('#sworld'); grid = svg.querySelector('#sgridr'); boxEl = svg.querySelector('#sbox');
     vp = new Viewport(svg, { min: 0.3, max: 12, scale: 2, onChange: vb => { grid.setAttribute('x', vb[0]); grid.setAttribute('y', vb[1]); grid.setAttribute('width', vb[2]); grid.setAttribute('height', vb[3]); } });
     svg.addEventListener('mousedown', down);
     window.addEventListener('mousemove', move);
@@ -165,7 +165,7 @@ const Sch = (() => {
     // components
     for (const c of here) {
       const d = Lib.type(c.type), b = Model.bbox(c), lb = d.box(c);
-      out.push(`<g class="comp${ui.sel === c.ref ? ' sel' : ''}" data-ref="${esc(c.ref)}"><g transform="translate(${c.x} ${c.y}) rotate(${c.rot || 0})">` +
+      out.push(`<g class="comp${isSel(c.ref) ? ' sel' : ''}" data-ref="${esc(c.ref)}"><g transform="translate(${c.x} ${c.y}) rotate(${c.rot || 0})">` +
         `<rect class="hit" x="${lb[0]}" y="${lb[1]}" width="${lb[2] - lb[0]}" height="${lb[3] - lb[1]}"/>${d.draw(c)}</g>`);
       const cx = (b[0] + b[2]) / 2, cy = (b[1] + b[3]) / 2;
       if ((c.rot === 90 || c.rot === 270) && !d.generic && b[3] - b[1] > b[2] - b[0])
@@ -201,11 +201,21 @@ const Sch = (() => {
   const fit = () => vp.fit(extents(), 40);
 
   // ---------- interaction ----------
-  function select(ref, net) { ui.sel = ref || null; ui.selNet = net || null; ui.onSelect(ui.sel, ui.selNet); render(); }
+  // selection: ui.sel is the primary part (Properties), ui.multi every selected part
+  const isSel = ref => ui.sel === ref || ui.multi.has(ref);
+  function selected() { const r = ui.multi.size ? [...ui.multi] : ui.sel ? [ui.sel] : []; return r.filter(x => Model.comp(x)); }
+  function setSelection(refs) { ui.multi = new Set(refs); ui.sel = refs[0] || null; ui.selNet = null; ui.onSelect(ui.sel, null); render(); }
+  function select(ref, net) { ui.sel = ref || null; ui.multi = new Set(ref ? [ref] : []); ui.selNet = net || null; ui.onSelect(ui.sel, ui.selNet); render(); }
+  function drawBox() {
+    const b = ui.box; if (!b) { boxEl.style.display = 'none'; return; }
+    boxEl.style.display = ''; boxEl.setAttribute('x', Math.min(b.x0, b.x1)); boxEl.setAttribute('y', Math.min(b.y0, b.y1));
+    boxEl.setAttribute('width', Math.abs(b.x1 - b.x0)); boxEl.setAttribute('height', Math.abs(b.y1 - b.y0));
+  }
   function down(e) {
     const pt = vp.toWorld(e.clientX, e.clientY);
-    if (e.button === 1 || e.button === 2) { ui.pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
     const pinEl = e.target.closest('[data-pin]'), compEl = e.target.closest('[data-ref]'), netEl = e.target.closest('[data-net]');
+    if (e.button === 2) { ui.rdown = { x: e.clientX, y: e.clientY, ref: compEl ? compEl.dataset.ref : null, net: !compEl && netEl ? netEl.dataset.net : null }; ui.pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
+    if (e.button === 1) { ui.pan = { x: e.clientX, y: e.clientY }; e.preventDefault(); return; }
     if (pinEl) {
       const k = pinEl.dataset.pin;
       if (ui.pending && ui.pending !== k) {
@@ -217,32 +227,65 @@ const Sch = (() => {
     if (ui.pending) { ui.pending = null; render(); }
     if (compEl) {
       const c = Model.comp(compEl.dataset.ref);
-      select(c.ref);
-      ui.drag = { ref: c.ref, ox: pt.x - c.x, oy: pt.y - c.y, moved: false };
+      if (e.shiftKey || e.ctrlKey || e.metaKey) { // add to / remove from the selection
+        const m = new Set(selected()); if (m.has(c.ref)) m.delete(c.ref); else m.add(c.ref);
+        setSelection([...m].sort((a, b) => (a === c.ref ? -1 : b === c.ref ? 1 : 0))); return;
+      }
+      if (ui.multi.size > 1 && ui.multi.has(c.ref)) { ui.sel = c.ref; ui.onSelect(c.ref, null); render(); }   // keep the group
+      else select(c.ref);
+      ui.drag = { x0: pt.x, y0: pt.y, orig: selected().map(r => { const o = Model.comp(r); return [o, o.x, o.y]; }), moved: false };
     } else if (netEl) select(null, netEl.dataset.net);
-    else { select(null); ui.pan = { x: e.clientX, y: e.clientY }; }
+    else { // drag on empty space: selection box (Shift adds to the selection)
+      if (!e.shiftKey) select(null);
+      ui.box = { x0: pt.x, y0: pt.y, x1: pt.x, y1: pt.y, add: e.shiftKey ? selected() : [] }; drawBox();
+    }
   }
   function move(e) {
     if (!svg || svg.classList.contains('hidden')) return;
     if (ui.pan) { vp.panBy(e.clientX - ui.pan.x, e.clientY - ui.pan.y); ui.pan = { x: e.clientX, y: e.clientY }; return; }
     const pt = vp.toWorld(e.clientX, e.clientY); ui.mouse = pt;
+    if (ui.box) { ui.box.x1 = pt.x; ui.box.y1 = pt.y; drawBox(); return; }
     if (ui.drag) {
-      const c = Model.comp(ui.drag.ref); if (!c) return;
-      const nx = Math.round((pt.x - ui.drag.ox) / 10) * 10, ny = Math.round((pt.y - ui.drag.oy) / 10) * 10;
-      if (nx !== c.x || ny !== c.y) { if (!ui.drag.moved) { Model.begin(); ui.drag.moved = true; } c.x = nx; c.y = ny; Model.emit('move'); }
+      const dx = Math.round((pt.x - ui.drag.x0) / 10) * 10, dy = Math.round((pt.y - ui.drag.y0) / 10) * 10, [c0, x0, y0] = ui.drag.orig[0] || [];
+      if (c0 && (c0.x !== x0 + dx || c0.y !== y0 + dy)) {
+        if (!ui.drag.moved) { Model.begin(); ui.drag.moved = true; }
+        for (const [c, x, y] of ui.drag.orig) { c.x = x + dx; c.y = y + dy; }
+        Model.emit('move');
+      }
     } else if (ui.pending) render();
   }
-  function up() { if (ui.drag && ui.drag.moved) Model.emit('change'); ui.drag = null; ui.pan = null; }
+  function up(e) {
+    if (ui.box) {
+      const b = ui.box, x0 = Math.min(b.x0, b.x1), x1 = Math.max(b.x0, b.x1), y0 = Math.min(b.y0, b.y1), y1 = Math.max(b.y0, b.y1);
+      ui.box = null; drawBox();
+      if (x1 - x0 > 3 || y1 - y0 > 3) {
+        const hit = Model.S.components.filter(onSheet).filter(c => { const q = Model.bbox(c); return q[0] < x1 && q[2] > x0 && q[1] < y1 && q[3] > y0; }).map(c => c.ref);
+        setSelection([...new Set([...b.add, ...hit])]);
+      }
+    }
+    if (ui.rdown && e && e.button === 2) {
+      const r = ui.rdown; ui.rdown = null;
+      if (Math.hypot(e.clientX - r.x, e.clientY - r.y) <= 4) {   // right click (not a pan): context menu
+        if (r.ref && !isSel(r.ref)) select(r.ref); else if (r.net) select(null, r.net);
+        ui.mouse = vp.toWorld(e.clientX, e.clientY);
+        ui.onContext({ x: e.clientX, y: e.clientY, ref: r.ref, net: r.net });
+      }
+    }
+    if (ui.drag && ui.drag.moved) Model.emit('change'); ui.drag = null; ui.pan = null;
+  }
 
   function key(e) {
     if (e.key === 'Escape') { ui.pending = null; select(null); return true; }
-    if ((e.key === 'r' || e.key === 'R') && ui.sel) { Model.mutate(() => { const c = Model.comp(ui.sel); c.rot = ((c.rot || 0) + 90) % 360; }); return true; }
+    if ((e.key === 'r' || e.key === 'R') && selected().length) { rotate(); return true; }
     if ((e.key === 'Delete' || e.key === 'Backspace')) {
-      if (ui.sel) { const r = ui.sel; select(null); Model.mutate(() => Model.removeComponent(r)); return true; }
+      if (selected().length) { del(); return true; }
       if (ui.selNet) { const n = ui.selNet; select(null); Model.mutate(() => Model.removeNet(n)); return true; }
     }
     return false;
   }
+  function rotate() { const refs = selected(); Model.mutate(() => { for (const r of refs) { const c = Model.comp(r); c.rot = ((c.rot || 0) + 90) % 360; } }); }
+  function del() { const refs = selected(); select(null); Model.mutate(() => { for (const r of refs) if (Model.comp(r)) Model.removeComponent(r); }); }
+  const selectAll = () => setSelection(Model.S.components.filter(onSheet).map(c => c.ref));
   function placeNew(type) {
     const vb = vp.vb || [0, 0, 0, 0];
     const c = Model.mutate(() => Model.addComponent({ type, x: vb[0] + vb[2] / 2, y: vb[1] + vb[3] / 2, sheet: ui.sheet }));
@@ -258,5 +301,5 @@ const Sch = (() => {
     return out;
   }
   const setSheet = i => { ui.sheet = Math.max(0, Math.min(sheets().length - 1, +i || 0)); select(null); render(); fit(); };
-  return { init, render, fit, key, select, placeNew, exportSVG, ui, sheets, setSheet, get vp() { return vp; } };
+  return { init, render, fit, key, select, selected, setSelection, selectAll, rotate, del, placeNew, exportSVG, ui, sheets, setSheet, onSheet, get vp() { return vp; } };
 })();
