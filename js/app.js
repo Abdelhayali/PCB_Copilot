@@ -513,7 +513,7 @@ const App = (() => {
   function fillRules() {
     $('#rPreset').value = rDraft.preset;
     $$('#rulesModal [data-r]').forEach(el => { const v = rDraft[el.dataset.r]; if (el.type === 'checkbox') el.checked = !!v; else el.value = v; });
-    $('#rNets').innerHTML = Object.entries(rDraft.netWidths).map(([n, w]) => `<div class="nr"><b>${esc(n)}</b><span>${w} mm</span><button data-rm="${esc(n)}" class="danger">✕</button></div>`).join('') || '<div class="muted small">No per-net widths — power/GND nets use the power width.</div>';
+    $('#rNets').innerHTML = Object.entries(rDraft.netWidths).map(([n, w]) => `<div class="nr"><b>${esc(n)}</b><span>${w} mm</span><button data-rm="${esc(n)}" class="danger">✕</button></div>`).join('') || (rDraft.powerWider ? '<div class="muted small">No per-net widths — power/GND nets use the power width.</div>' : '<div class="muted small">No per-net widths — every net uses the trace width.</div>');
     $('#rNetSel').innerHTML = Object.keys(Model.S.nets).sort().map(n => `<option>${esc(n)}</option>`).join('');
     const w = Pcb.ruleWarnings(rDraft); $('#rWarn').innerHTML = w.map(x => '⚠ ' + esc(x)).join('<br>');
   }

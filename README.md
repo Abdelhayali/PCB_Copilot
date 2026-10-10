@@ -196,14 +196,15 @@ curl -H "Authorization: Bearer <password>" -X POST http://127.0.0.1:5174/tools/s
 | Rule | Default (JLCPCB 2-layer, recommended) | JLCPCB minimum |
 |---|---|---|
 | Trace width | 0.25 mm | 0.127 mm (5 mil) |
-| Power / GND trace width | 0.5 mm | — |
+| Power / GND trace width (only with *Wider tracks for power / GND nets*) | 0.5 mm | — |
 | Clearance (copper–copper) | 0.2 mm | 0.127 mm (5 mil) |
 | Via diameter / drill | 0.6 / 0.3 mm | 0.5 / 0.3 mm, annular ring 0.13 mm |
 | Copper to board edge | 0.3 mm | 0.3 mm |
 | Hole to hole | — | 0.5 mm |
 
 - Presets: **JLCPCB recommended**, **JLCPCB minimum (5/5 mil)**, **JLCPCB power/robust**, **Home etching / CNC (1 layer)** — then tweak any value.
-- **Per-net widths** (e.g. `+5V` 0.8 mm, `MOTOR` 1.2 mm); power and ground nets automatically use the power width.
+- **One width by default**: every net is routed with the trace width; tick *Wider tracks for power / GND nets* in Rules to give power and ground the power width. **Per-net widths** (e.g. `+5V` 0.8 mm, `MOTOR` 1.2 mm) override both.
+- **Changing widths after routing**: click a track — its whole net lights up (the rest is dimmed), the net name shows on the board, and Properties lists the net's tracks, vias and pins. Set the width for that track, the whole net, or every track (DRC reports at once if something no longer fits); *Reset wide tracks to rule width* brings wider tracks back to the rule.
 - **Neck-down**: when a wide trace can't reach a fine-pitch pad, the router narrows it (power width → trace width → fab minimum) and reports which nets were necked down.
 - Clearance is computed against the real pad shapes, so traces escape fine-pitch QFN/USB-C pads at JLCPCB clearances. Vias are allowed inside a net's own large pads (e.g. module ground pads).
 - **DRC** uses exact geometry: shorts and clearance, trace width, via drill and annular ring, hole-to-hole spacing, copper-to-edge, unrouted nets, and rules set below the fab minimums. Click a violation to zoom to it.

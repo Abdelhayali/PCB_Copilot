@@ -488,6 +488,7 @@ const PcbView = (() => {
     cache.pads = allPads();
     if (!cs.length || !S.board.w) { world.innerHTML = '<text x="0" y="0" text-anchor="middle" fill="#888" style="font-size:2.4px">No PCB yet — click “Generate PCB”, or ask the Copilot to make the board</text>'; renderLiveLayer(); return; }
     const out = [], hl = ui.hlNet;
+    svg.classList.toggle('hlmode', !!hl);   // highlighted net: everything else is dimmed
     // footprint hit areas (bottom), so copper on top stays clickable
     for (const c of cs) { const b = Pcb.fpBox(c); out.push(`<rect class="fphit" data-ref="${esc(c.ref)}" x="${b[0]}" y="${b[1]}" width="${b[2] - b[0]}" height="${b[3] - b[1]}"/>`); }
     const R0 = Pcb.rules(), bpoly = Pcb.boardPoly(), bpath = 'M' + bpoly.map(q => q.join(' ')).join('L') + 'Z';
@@ -546,7 +547,7 @@ const PcbView = (() => {
     if (ui.item && ui.item.k === 'h') { const h = (S.pcb.holes || [])[ui.item.i]; if (h) out.push(`<circle class="selbox" cx="${h.x}" cy="${h.y}" r="${h.d / 2 + 0.4}"/>`); }
     if (ui.item && ui.item.k !== 'pour' && ui.item.k !== 'h') {
       if (ui.item.k === 'v') { const v = S.pcb.vias[ui.item.i]; if (v) out.push(`<circle class="selbox" cx="${v.x}" cy="${v.y}" r="${v.d / 2 + 0.15}"/>`); }
-      else { const t = S.pcb.traces[ui.item.i]; if (t) { const pts = ui.item.k === 'T' ? t.pts : [t.pts[ui.item.s - 1], t.pts[ui.item.s]]; out.push(`<polyline class="selline" points="${pts.map(p => p.join(',')).join(' ')}" stroke-width="${t.w + 0.2}"/>`); } }
+      else { const t = S.pcb.traces[ui.item.i]; if (t) { const pts = ui.item.k === 'T' ? t.pts : [t.pts[ui.item.s - 1], t.pts[ui.item.s]]; out.push(`<polyline class="selline" points="${pts.map(p => p.join(',')).join(' ')}" stroke-width="${t.w + 0.2}"/>`); const a = pts[0], b = pts[pts.length - 1], fs = Math.min(1.2, Math.max(0.5, 14 / (vp.s || 10))); if (t.net) out.push(`<text class="netlabel-pcb" x="${(a[0] + b[0]) / 2}" y="${(a[1] + b[1]) / 2 - t.w / 2 - fs * 0.4}" text-anchor="middle" style="font-size:${fs}px">${esc(t.net)} · ${t.w} mm</text>`); } }
     }
     out.push('<g id="pcbLive"></g>');
     world.innerHTML = out.join('');
@@ -648,16 +649,32 @@ const PcbView = (() => {
     } else {
       const t = S.pcb.traces[it.i]; if (!t) return false;
       let len = 0; for (let i = 1; i < t.pts.length; i++) len += Math.hypot(t.pts[i][0] - t.pts[i - 1][0], t.pts[i][1] - t.pts[i - 1][1]);
-      el.innerHTML = `<div class="ph">Track ${it.k === 'T' ? '' : `<span class="muted">segment ${it.s}</span>`}</div><label>Net${netSel(t.net)}</label>
+      const R = Pcb.rules(), netT = t.net ? S.pcb.traces.filter(q => q.net === t.net) : [t], netV = t.net ? S.pcb.vias.filter(v => v.net === t.net).length : 0;
+      const pins = t.net ? (S.nets[t.net] || []) : [], widths = [...new Set(netT.map(q => q.w))].sort((a, b) => a - b);
+      el.innerHTML = `<div class="ph">Net <span class="pnet">${esc(t.net || '(no net)')}</span></div>
+        <div class="muted small">${netT.length} track${netT.length > 1 ? 's' : ''}${netV ? ` · ${netV} via${netV > 1 ? 's' : ''}` : ''} · ${pins.length} pin${pins.length === 1 ? '' : 's'}${widths.length > 1 ? ` · widths ${widths.join(' / ')} mm` : ''}</div>
+        ${pins.length ? `<div class="pinlist">${pins.map(k => `<span>${esc(k)}</span>`).join('')}</div>` : ''}
+        <div class="ph small">This track ${it.k === 'T' ? '' : `<span class="muted">· segment ${it.s}</span>`}</div>
+        <label>Net${netSel(t.net)}</label>
         <label>Layer<select id="ppL"><option value="F" ${t.layer === 'F' ? 'selected' : ''}>TopLayer</option><option value="B" ${t.layer === 'B' ? 'selected' : ''}>BottomLayer</option></select></label>
-        <label>Width (mm)<input id="ppW" type="number" step="0.05" value="${t.w}"></label>
-        <div class="muted small">Length ${len.toFixed(2)} mm · ${t.pts.length - 1} segments${t.manual ? ' · hand-routed' : ' · autorouted'}</div>
-        <div class="row"><button id="ppDel" class="danger">Delete ${it.k === 'T' ? 'track' : 'segment'} (Del)</button></div>
-        <div class="muted small">Double-click a track to select all of it.</div>`;
+        <label>Width (mm) <span class="muted">· rule ${R.traceWidth}, fab min ${R.minTraceWidth}</span><input id="ppW" type="number" step="0.05" min="${R.minTraceWidth}" value="${t.w}"></label>
+        <div class="row"><button id="ppWNet" title="Set every track of ${esc(t.net || 'this net')} to this width">Width → whole net</button><button id="ppWAll" title="Set every track on the board to this width">Width → all tracks</button></div>
+        <div class="row"><button id="ppWRule" title="Tracks wider than the rule (${R.traceWidth} mm, or the per-net width from Rules) go back to it; necked-down tracks stay">Reset wide tracks to rule width</button></div>
+        <div class="muted small">Length ${len.toFixed(2)} mm · ${t.pts.length - 1} segments${t.manual ? ' · hand-routed' : ' · autorouted'} · double-click a track to select all of it</div>
+        <div class="row"><button id="ppDel" class="danger">Delete ${it.k === 'T' ? 'track' : 'segment'} (Del)</button></div>`;
       const upd = f => Model.mutate(() => f(Model.S.pcb.traces[it.i]));
+      const wOk = () => { const w = +$('#ppW').value; if (!(w >= 0.05)) { App.toast('Enter a width in mm'); return 0; } if (w < R.minTraceWidth) App.toast(`${w} mm is below the fab minimum ${R.minTraceWidth} mm`); return +w.toFixed(3); };
+      const setW = (pick, what) => { const w = wOk(); if (!w) return; let n = 0; Model.mutate(() => { for (const q of Model.S.pcb.traces) if (pick(q)) { q.w = w; n++; } }); const cl = Pcb.drc().violations.filter(v => /^Clearance|short/i.test(v.msg)).length; App.toast(`${n} track${n === 1 ? '' : 's'} (${what}) set to ${w} mm${cl ? ` · ⚠ ${cl} clearance problem${cl > 1 ? 's' : ''} — a track no longer fits somewhere (Ctrl+Z to undo, or Route again)` : ' · clearances OK'}`, 8000); };
       $('#ppNet').onchange = e => upd(t => t.net = e.target.value || null);
       $('#ppL').onchange = e => upd(t => t.layer = e.target.value);
-      $('#ppW').onchange = e => upd(t => t.w = Math.max(0.05, +e.target.value));
+      $('#ppW').onchange = e => { const w = wOk(); if (w) upd(t => t.w = w); };
+      $('#ppWNet').onclick = () => setW(q => t.net ? q.net === t.net : q === t, t.net || 'this track');
+      $('#ppWAll').onclick = () => setW(() => true, 'all');
+      $('#ppWRule').onclick = () => {
+        // wider tracks go back to the rule width; tracks the router necked down between tight pads stay as they are
+        let n = 0, neck = 0; Model.mutate(() => { for (const q of Model.S.pcb.traces) { const w = Pcb.netWidth(q.net); if (q.w > w + 1e-9) { q.w = w; n++; } else if (q.w < w - 1e-9) neck++; } });
+        App.toast(`${n ? `${n} track${n === 1 ? '' : 's'} set to the rule width` : 'No track is wider than the rule'}${neck ? ` · ${neck} stay narrower: the router necked them down where the full width does not fit (e.g. between fine-pitch pins)` : ''}`, 8000);
+      };
     }
     $('#ppDel').onclick = deleteItem;
     return true;

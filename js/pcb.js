@@ -521,7 +521,8 @@ const Pcb = (() => {
     const r = Model.S.rules || {}, p = RULE_PRESETS[r.preset] || RULE_PRESETS.jlcpcb;
     return Object.assign({ preset: 'jlcpcb', netWidths: {}, routeTime: 90 }, p.values, r, { netWidths: Object.assign({}, r.netWidths || {}) });
   }
-  const netWidth = (R, net) => +(R.netWidths[net] || (Model.isPower(net) ? R.powerTraceWidth : R.traceWidth));
+  // every net uses the rule's trace width; power / GND nets get the power width only when powerWider is on
+  const netWidth = (R, net) => +(R.netWidths[net] || (R.powerWider && Model.isPower(net) ? R.powerTraceWidth : R.traceWidth));
   // Rules that violate the fab minimums (returned as warnings by setRules / DRC).
   function ruleWarnings(R) {
     const w = [];
@@ -544,6 +545,7 @@ const Pcb = (() => {
     for (const k of NUM_KEYS) if (u[k] != null && u[k] !== '') { const v = +u[k]; if (!(v > 0 && v < 20)) throw new Error(`${k} must be a positive number in mm`); next[k] = v; }
     if (u.layers != null) { if (![1, 2].includes(+u.layers)) throw new Error('layers must be 1 or 2'); next.layers = +u.layers; }
     if (u.neckDown != null) next.neckDown = !!u.neckDown;
+    if (u.powerWider != null) next.powerWider = !!u.powerWider;
     if (u.viaInPad != null) next.viaInPad = !!u.viaInPad;
     if (u.routeTime != null && u.routeTime !== '') { const v = +u.routeTime; if (!(v >= 5 && v <= 1800)) throw new Error('routeTime must be 5…1800 seconds'); next.routeTime = v; }
     if (u.netWidths) {
