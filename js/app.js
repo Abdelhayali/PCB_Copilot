@@ -239,17 +239,54 @@ const App = (() => {
 
   async function jlcBom() {
     toast('Matching JLCPCB parts for every value…', 20000);
-    const r = await Engine.matchJlcpcb(false), S = Model.S;
-    const g = {};
+    const r = await Engine.matchJlcpcb(false);
+    download(fname('-BOM-JLCPCB.csv'), bomCsv(), 'text/csv');
+    toast(`JLCPCB BOM: ${r.matched}/${r.total} parts have LCSC numbers${r.matched < r.total ? ' — the rest need a part chosen (connectors / custom ICs)' : ''}`, 7000);
+  }
+  function bomCsv() {
+    const S = Model.S, g = {};
     for (const c of S.components) {
       const lib = (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && S.lib[c.dbfp]), fpn = (lib && lib.footprint && lib.footprint.name) || c.footprint;
       const code = c.type === 'part' ? c.lcsc : c.lcscPart || '';
       const k = [c.value, fpn, code].join('|'); (g[k] = g[k] || []).push(c.ref);
     }
     const q = s => '"' + String(s).replace(/"/g, '""') + '"';
-    const csv = 'Comment,Designator,Footprint,LCSC Part #\n' + Object.entries(g).map(([k, refs]) => { const [v, f, code] = k.split('|'); return [q(v), q(refs.join(',')), q(f), q(code)].join(','); }).join('\n');
-    download(fname('-BOM-JLCPCB.csv'), csv, 'text/csv');
-    toast(`JLCPCB BOM: ${r.matched}/${r.total} parts have LCSC numbers${r.matched < r.total ? ' — the rest need a part chosen (connectors / custom ICs)' : ''}`, 7000);
+    return 'Comment,Designator,Footprint,LCSC Part #\n' + Object.entries(g).map(([k, refs]) => { const [v, f, code] = k.split('|'); return [q(v), q(refs.join(',')), q(f), q(code)].join(','); }).join('\n');
+  }
+  // pick-and-place file in JLCPCB's CPL format: Gerber coordinates (origin bottom-left, mm), part centre = centre of its pads
+  function cplCsv() {
+    const S = Model.S, idx = Model.pinIndex(), H = S.board.h, f = v => (Math.round(v * 1000) / 1000).toFixed(3) + 'mm';
+    const rows = Pcb.placed().map(c => {
+      const pads = Pcb.padsOf(c, idx), x = pads.length ? pads.reduce((a, p) => a + p.x, 0) / pads.length : c.pcb.x, y = pads.length ? pads.reduce((a, p) => a + p.y, 0) / pads.length : c.pcb.y;
+      return [c.ref, f(x), f(H - y), Pcb.isBottom(c) ? 'Bottom' : 'Top', ((c.pcb.rot || 0) % 360 + 360) % 360].join(',');
+    });
+    return 'Designator,Mid X,Mid Y,Layer,Rotation\n' + rows.join('\n');
+  }
+  // ---------- one-click order at JLCPCB: DRC → Gerbers + BOM + CPL → quote page ----------
+  // The tab is opened inside the click (popup blockers) and sent to JLCPCB once the files are saved.
+  let orderAfter = false, orderTab = null;
+  const JLC_QUOTE = 'https://cart.jlcpcb.com/quote';
+  function closeOrderTab() { orderAfter = false; try { if (orderTab && !orderTab.closed) orderTab.close(); } catch (e) { } orderTab = null; }
+  async function orderPcb() {
+    if (!Model.S.board.w || !Pcb.placed().length) { toast('No PCB yet — Generate PCB first'); return; }
+    closeOrderTab();
+    orderTab = window.open('', '_blank');
+    try { orderTab.opener = null; orderTab.document.title = 'Preparing JLCPCB order…'; orderTab.document.body.innerHTML = '<p style="font:16px system-ui;padding:2em">Preparing your Gerber, BOM and pick-and-place files in CircuitPilot… this tab opens the JLCPCB quote page when they are saved.</p>'; } catch (e) { }
+    orderAfter = true;
+    toast('Matching JLCPCB parts for the assembly BOM…', 20000);
+    try { await Engine.matchJlcpcb(false); } catch (e) { }
+    if (!orderAfter) return;
+    gerberCheck();
+    if (orderAfter && !$('#gerberModal').classList.contains('hidden')) toast('Fix or accept the DRC items, then Download — the JLCPCB page opens after the files are saved', 8000);
+  }
+  function orderFinish() {
+    orderAfter = false;
+    const asm = Model.S.components.some(c => c.lcsc || c.lcscPart);
+    if (asm) { download(fname('-BOM-JLCPCB.csv'), bomCsv(), 'text/csv'); download(fname('-CPL-JLCPCB.csv'), cplCsv(), 'text/csv'); }
+    if (orderTab && !orderTab.closed) orderTab.location.href = JLC_QUOTE; else window.open(JLC_QUOTE, '_blank', 'noopener');
+    orderTab = null;
+    const b = Model.S.board;
+    toast(`Files saved to Downloads. On JLCPCB click “Add gerber file” and choose ${fname('-gerbers.zip')} (board ${b.w}×${b.h} mm, layers detected automatically).${asm ? ' For assembly turn on “PCB Assembly” and upload the BOM and CPL .csv files — check part rotations in the preview.' : ''}`, 20000);
   }
 
   // ---------- placement optimiser ----------
@@ -336,12 +373,13 @@ const App = (() => {
     download(fname('-gerbers.zip'), makeZip(Pcb.gerbers()));
     $('#gerberModal').classList.add('hidden');
     toast('Gerbers, drill, paste & silkscreen exported — upload the zip to your PCB fab');
+    if (orderAfter) orderFinish();
   }
   function gerberCheck() {
     const S = Model.S;
-    if (!S.board.w || !Pcb.placed().length) { toast('No PCB yet — Generate PCB first'); return; }
+    if (!S.board.w || !Pcb.placed().length) { closeOrderTab(); toast('No PCB yet — Generate PCB first'); return; }
     const d = showDrc(), v = d.violations;
-    if (!v.length) { gerberDownload(); toast('✓ DRC passed — Gerbers exported'); return; }
+    if (!v.length) { const o = orderAfter; gerberDownload(); if (!o) toast('✓ DRC passed — Gerbers exported'); return; }
     $('#gbSummary').innerHTML = `<p><b class="${d.errors ? 'bad' : 'warn'}">${esc(d.summary)}</b> — ${d.errors ? 'the board has errors that a fab may reject or that would make it not work.' : 'only warnings; the board can be manufactured.'}</p><p class="muted small">Click an item to see it on the board.</p>`;
     $('#gbList').innerHTML = v.map((x, i) => `<li class="${x.severity === 'error' ? 'error' : 'warn'}" data-v="${i}">${esc(x.msg)}</li>`).join('');
     $('#gbList').querySelectorAll('[data-v]').forEach(li => li.onclick = () => { const x = v[+li.dataset.v]; $('#gerberModal').classList.add('hidden'); showView('pcb'); showDrc(); if (x.x != null) Pcb.vp.fit([x.x - 3, x.y - 3, x.x + 3, x.y + 3], 1); });
@@ -350,9 +388,9 @@ const App = (() => {
     $('#gerberModal').classList.remove('hidden');
   }
   function initGerberCheck() {
-    $('#gbClose').onclick = () => $('#gerberModal').classList.add('hidden');
+    $('#gbClose').onclick = () => { closeOrderTab(); $('#gerberModal').classList.add('hidden'); };
     $('#gbDownload').onclick = gerberDownload;
-    $('#gbFix').onclick = () => { $('#gerberModal').classList.add('hidden'); showView('pcb'); showDrc(true); };
+    $('#gbFix').onclick = () => { closeOrderTab(); $('#gerberModal').classList.add('hidden'); showView('pcb'); showDrc(true); };
     $('#gbRoute').onclick = async () => { $('#gerberModal').classList.add('hidden'); try { await runRouter({ opt: {} }); } catch (e) { toast(e.message); } gerberCheck(); };
     $('#gbOpt').onclick = async () => { $('#gerberModal').classList.add('hidden'); await runOptimize(); gerberCheck(); };
   }
@@ -767,6 +805,7 @@ const App = (() => {
     $('#boardW').onchange = setBoard; $('#boardH').onchange = setBoard;
     $$('[data-layer]').forEach(cb => cb.onchange = () => { Pcb.ui.show[cb.dataset.layer] = cb.checked; Pcb.render(); });
     $('#btnGerber').onclick = () => exportAs('gerber');
+    $('#btnOrderPcb').onclick = orderPcb;
 
     $('#btnUndo').onclick = () => Model.undo(); $('#btnRedo').onclick = () => Model.redo();
     $('#btnProjects').onclick = () => Projects.show();

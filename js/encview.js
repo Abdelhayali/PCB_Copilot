@@ -45,6 +45,14 @@ const EncView = (() => {
     $('#encPcb').onclick = () => { ui.pcb = !ui.pcb; $('#encPcb').classList.toggle('on', ui.pcb); place(); };
     $('#encXray').onclick = () => { ui.xray = !ui.xray; $('#encXray').classList.toggle('on', ui.xray); place(); };
     $('#encStl').onclick = () => exportAll('stl'); $('#encScad').onclick = () => exportAll('scad'); $('#encZip').onclick = () => exportAll('zip');
+    $('#encOrder').onclick = () => {
+      // open the quote page inside the click (popup blockers), then build + download the STLs
+      window.open('https://jlc3dp.com/3d-printing-quote', '_blank', 'noopener');
+      (async () => {
+        if (Enclosure.mode() === 'custom' && !(ui.custom && ui.custom.r)) { App.toast('Building the 3D model…', 20000); try { await runScript(Enclosure.script()); } catch (e) { } }
+        return exportAll('stl');
+      })().then(ok => ok && App.toast('STL files saved to Downloads — on JLC3DP click “Add 3D files”, upload them and pick a material (SLA resin for fine detail, PA12 nylon or TPU for wearables)', 20000));
+    };
     ['encLid', 'encPcb'].forEach(id => $('#' + id).classList.add('on'));
     Model.subscribe(kind => { if (kind === 'move') return; dirty = true; if (active) { clearTimeout(timer); timer = setTimeout(() => rebuild(false), 500); } });
   }
@@ -338,8 +346,8 @@ const EncView = (() => {
   // ---------- exports ----------
   function exportAll(kind) {
     if (Enclosure.mode() === 'custom') return exportCustom(kind);
-    if (kind !== 'scad') { App.toast('Building high-resolution STL for printing…', 20000); setTimeout(() => exportBox(kind), 30); return; }
-    exportBox(kind);
+    if (kind !== 'scad') { App.toast('Building high-resolution STL for printing…', 20000); return new Promise(res => setTimeout(() => res(exportBox(kind)), 30)); }
+    return exportBox(kind);
   }
   function exportBox(kind) {
     try {
@@ -350,8 +358,8 @@ const EncView = (() => {
       if (kind === 'stl') { for (const n of names.filter(n => n.endsWith('.stl'))) App.download(n, new Blob([files[n]], { type: 'model/stl' })); }
       else if (kind === 'scad') { const n = names.find(n => n.endsWith('.scad')); App.download(n, files[n], 'text/plain'); }
       else App.download((Model.S.name || 'board').replace(/[^\w.-]+/g, '_') + '-enclosure.zip', makeZip(files));
-      App.toast(`Enclosure ${info.outer_mm.join(' × ')} mm exported`);
-    } catch (e) { App.toast(e.message); }
+      App.toast(`Enclosure ${info.outer_mm.join(' × ')} mm exported`); return true;
+    } catch (e) { App.toast(e.message); return false; }
   }
   // high-resolution rebuild of the script for the STL files (own worker; the preview stays as it is)
   let hqBusy = false;
@@ -365,10 +373,10 @@ const EncView = (() => {
   }
   async function exportCustom(kind) {
     const prev = ui.custom && ui.custom.r;
-    if (!prev) { App.toast(ui.running ? 'Still building the 3D model…' : 'Run the 3D script first'); return; }
+    if (!prev) { App.toast(ui.running ? 'Still building the 3D model — try again when it is shown' : 'Run the 3D script first'); return false; }
     let r = prev;
     if (kind !== 'scad') {
-      if (hqBusy) { App.toast('High-resolution build already running…'); return; }
+      if (hqBusy) { App.toast('High-resolution build already running…'); return false; }
       hqBusy = true; const t0 = Date.now();
       const tick = setInterval(() => App.toast(`Building high-resolution STL for printing… ${Math.round((Date.now() - t0) / 1000)} s`, 2000), 1000);
       try { r = await buildHQ(Enclosure.script()); }
@@ -386,6 +394,7 @@ const EncView = (() => {
     else if (kind === 'scad') App.download(base + '-enclosure.scad', r.scad, 'text/plain');
     else App.download(base + '-enclosure.zip', makeZip(files));
     App.toast(`Exported ${r.parts.length} part${r.parts.length > 1 ? 's' : ''}${r !== prev ? ` · high resolution (${r.parts.reduce((a, p) => a + p.triangles, 0).toLocaleString()} triangles)` : ''}`, 6000);
+    return true;
   }
   // PNG of the enclosure for documents (off-screen, light background); o.explode lifts the lid / covers
   async function snapshot(o = {}) {
