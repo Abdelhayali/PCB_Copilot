@@ -63,12 +63,14 @@ const EasyEDA = (() => {
 
   // ---------- schematic export ----------
   // multi-sheet designs: each sheet gets its own area (3000 units apart) so parts never overlap in the export
-  function exportSchematic() {
+  // ids: { LCSC number: { uuid, puuid, package } } from the EasyEDA library — with them EasyEDA links each part to its
+  // library symbol and footprint (otherwise "Footprints Verification: can't find this footprint on the server").
+  function exportSchematic(ids = {}) {
     const shifts = Model.S.components.map(c => [c, (Model.sheetOf ? Model.sheetOf(c) : 0) * 3000]);
     for (const [c, d] of shifts) c.x += d;
-    try { return exportSchematicRaw(); } finally { for (const [c, d] of shifts) c.x -= d; }
+    try { return exportSchematicRaw(ids); } finally { for (const [c, d] of shifts) c.x -= d; }
   }
-  function exportSchematicRaw() {
+  function exportSchematicRaw(ids) {
     const S = Model.S, shapes = [];
     let gid = 0; const id = () => 'gge' + (++gid).toString(36) + 'cp';
     const bb = [Infinity, Infinity, -Infinity, -Infinity], grow = (x, y) => { bb[0] = Math.min(bb[0], x); bb[1] = Math.min(bb[1], y); bb[2] = Math.max(bb[2], x); bb[3] = Math.max(bb[3], y); };
@@ -78,8 +80,8 @@ const EasyEDA = (() => {
       const tf = (x, y) => { const [rx, ry] = Lib.rot(x, y, c.rot || 0); return [n2(c.x + rx), n2(c.y + ry)]; };
       const lib = c.lcsc && S.lib[c.lcsc];
       const fp = (lib && lib.footprint && lib.footprint.name) || c.footprint || '';
-      const lcsc = Model.lcscOf(c);
-      const para = ['package', fp, 'pre', (c.ref.replace(/\d+$/, '') || d.prefix || 'U') + '?', 'Contributor', 'CircuitPilot', 'Supplier', lcsc ? 'LCSC' : '', 'Supplier Part', lcsc, 'Manufacturer Part', (lib && lib.mfr_part) || c.value || '', 'Manufacturer', (lib && lib.manufacturer) || ''];
+      const lcsc = Model.lcscOf(c), link = (lcsc && ids[lcsc]) || null;
+      const para = ['package', link && link.puuid && link.package ? link.package : fp, 'pre', (c.ref.replace(/\d+$/, '') || d.prefix || 'U') + '?', 'Contributor', 'CircuitPilot', 'Supplier', lcsc ? 'LCSC' : '', 'Supplier Part', lcsc, 'Manufacturer Part', (lib && lib.mfr_part) || c.value || '', 'Manufacturer', (lib && lib.manufacturer) || ''];
       const sub = [];
       // graphics
       let svg = '';
@@ -102,7 +104,9 @@ const EasyEDA = (() => {
       const b = Model.bbox(c);
       sub.unshift(`T~N~${n2(b[0])}~${n2(b[3] + 10)}~0~#000080~Arial~~~~~comment~${String(c.value || '').replace(/~/g, '-')}~1~start~${id()}~0~`);
       sub.unshift(`T~P~${n2(b[0])}~${n2(b[1] - 4)}~0~#000080~Arial~~~~~comment~${c.ref}~1~start~${id()}~0~`);
-      shapes.push([`LIB~${n2(c.x)}~${n2(c.y)}~${para.join('`')}\`~${c.rot || 0}~0~${id()}~~~0~~yes~yes`, ...sub].join('#@$'));
+      // LIB tail as EasyEDA writes it: rotation ~ importFlag ~ id ~ footprint uuid (puuid) ~ symbol uuid ~ 0 ~ ~ yes ~ yes
+      const hex = v => /^[0-9a-f]{16,40}$/i.test(v || '') ? v : '';
+      shapes.push([`LIB~${n2(c.x)}~${n2(c.y)}~${para.join('`')}\`~${c.rot || 0}~0~${id()}~${hex(link && link.puuid)}~${hex(link && link.uuid)}~0~~yes~yes`, ...sub].join('#@$'));
       // nets: a short stub wire and a net label at every connected pin (labels with the same name are connected)
       for (const p of pins) {
         const net = idx[p.key]; if (!net) continue;

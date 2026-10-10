@@ -208,6 +208,24 @@ const App = (() => {
     });
   }
 
+  // EasyEDA schematic: each part with an LCSC number is linked to its EasyEDA library symbol + footprint (uuid / puuid)
+  async function easyedaExport() {
+    const S = Model.S, codes = [...new Set(S.components.map(c => Model.lcscOf(c)).filter(Boolean))], ids = {}, failed = [];
+    toast(`Linking ${codes.length} parts to the EasyEDA library…`, 20000);
+    await Promise.all(codes.map(async code => {
+      try { const p = await Engine.partsApi('get/' + encodeURIComponent(code)); if (p && p.puuid) ids[code] = { uuid: p.uuid, puuid: p.puuid, package: p.package || (p.footprint && p.footprint.name) }; else failed.push(code); }
+      catch (e) { failed.push(code); }
+    }));
+    download(fname('-schematic.easyeda.json'), EasyEDA.exportSchematic(ids), 'application/json');
+    const sz = t => (String(t || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1];
+    const noCode = S.components.filter(c => !Model.lcscOf(c)).map(c => c.ref);
+    const edited = S.components.filter(c => { const k = Model.lcscOf(c), l = c.type === 'part' ? S.lib[c.lcsc] : null, a = sz(l && l.footprint && l.footprint.name), b = sz(ids[k] && ids[k].package); return a && b && a !== b; }).map(c => c.ref);
+    const notes = [noCode.length && `no LCSC part (choose the footprint in EasyEDA): ${noCode.join(', ')}`,
+      failed.length && `not found in the EasyEDA library: ${failed.join(', ')}`,
+      edited.length && `footprint edited here, EasyEDA uses the part's own footprint: ${edited.join(', ')}`].filter(Boolean);
+    toast(`EasyEDA schematic saved — ${S.components.length - noCode.length - failed.length}/${S.components.length} parts linked to EasyEDA footprints${notes.length ? ' · ' + notes.join(' · ') : ''}. EasyEDA Standard: File → Open → EasyEDA Source · Pro: File → Import → EasyEDA (Standard)`, 15000);
+  }
+
   // ---------- selection actions (schematic + PCB): copy / cut / paste / duplicate, right-click menu ----------
   let clip = null;
   const SV = () => view === 'sch' ? Sch : PcbView;
@@ -791,8 +809,8 @@ const App = (() => {
       if (kind === 'svg') download(fname('-schematic.svg'), Sch.exportSVG(), 'image/svg+xml');
       if (kind === 'easyeda') {
         if (!S.components.length) throw new Error('The schematic is empty');
-        download(fname('-schematic.easyeda.json'), EasyEDA.exportSchematic(), 'application/json');
-        toast('EasyEDA schematic saved — EasyEDA Standard: File → Open → EasyEDA Source · EasyEDA Pro: File → Import → EasyEDA (Standard)', 8000);
+        easyedaExport();
+        return;
       }
       if (kind === 'pcbsvg') { if (!S.board.w) throw new Error('No PCB yet'); if (view !== 'pcb') Pcb.render(); download(fname('-pcb.svg'), Pcb.exportSVG(), 'image/svg+xml'); }
       if (kind === 'bomjlc') { jlcBom(); return; }

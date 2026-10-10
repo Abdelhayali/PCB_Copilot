@@ -173,7 +173,18 @@ def get_part(lcsc):
     with _lock, _db() as con:
         row = con.execute("SELECT json FROM models WHERE lcsc=?", (lcsc,)).fetchone()
     if row:
-        return json.loads(row[0])
+        m = json.loads(row[0])
+        if m.get("uuid") or m.get("no_uuid"):
+            return m
+        # cached before the EasyEDA library ids were kept: fetch once more (fall back to the cached copy offline)
+        try:
+            return _fetch_part(lcsc)
+        except Exception:
+            return m
+    return _fetch_part(lcsc)
+
+
+def _fetch_part(lcsc):
     j = _http(f"https://easyeda.com/api/products/{lcsc}/components")
     r = j.get("result") if j.get("success") else None
     if not r:
@@ -198,7 +209,11 @@ def get_part(lcsc):
         "value": para.get("Value") or para.get("Manufacturer Part") or r.get("title"),
         "pins": uniq, "footprint": fp, "datasheet": ((r.get("packageDetail") or {}).get("dataStr") or {}).get("head", {}).get("c_para", {}).get("link"),
         "source": SOURCE,
+        # EasyEDA library ids: symbol (uuid) and footprint (puuid) — exported schematics link parts with them
+        "uuid": r.get("uuid"), "puuid": head.get("puuid") or (r.get("packageDetail") or {}).get("uuid"),
     }
+    if not model["uuid"]:
+        model["no_uuid"] = True
     with _lock, _db() as con:
         con.execute("INSERT OR REPLACE INTO models VALUES(?,?,?)", (lcsc, json.dumps(model), time.time()))
     return model

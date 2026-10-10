@@ -291,7 +291,7 @@ Enclosure **STL ⤓** files are always rebuilt at high resolution (≈0.4 mm cur
 
 ## EasyEDA interchange
 
-- **Export → Schematic for EasyEDA (.json)** writes the schematic as an EasyEDA Standard document (symbols, pins, net labels, LCSC part numbers). Open it in EasyEDA Standard with *File → Open → EasyEDA Source*, or in EasyEDA Pro with *File → Import → EasyEDA (Standard)*.
+- **Export → Schematic for EasyEDA (.json)** writes the schematic as an EasyEDA Standard document (symbols, pins, net labels, LCSC part numbers). Open it in EasyEDA Standard with *File → Open → EasyEDA Source*, or in EasyEDA Pro with *File → Import → EasyEDA (Standard)*. Every part with an LCSC number is linked to its EasyEDA library symbol and footprint, so EasyEDA's *Footprints Verification* finds them (parts without an LCSC number get their footprint chosen in EasyEDA).
 - **Projects → Import .json / EasyEDA PCB** opens an EasyEDA Standard PCB (*File → Export → EasyEDA Source* in EasyEDA) as a new project: footprints become library parts (LCSC numbers kept), with placement (top/bottom, rotation), nets, tracks, vias, holes, copper areas and the board outline; a schematic is generated from the nets.
 
 ## Data sources & licenses
