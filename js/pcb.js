@@ -927,8 +927,8 @@ const Pcb = (() => {
       const islandCells = isl => new Set(isl.flatMap(q => q.cells));
       const terms = job.islands.map(isl => ({ pads: isl, x: isl.reduce((a, q) => a + q.x, 0) / isl.length, y: isl.reduce((a, q) => a + q.y, 0) / isl.length, w: Math.max(...isl.map(q => q.w)), h: Math.max(...isl.map(q => q.h)), cells: [...islandCells(isl)] }));
       // kept tracks/vias of this net extend the terminal they touch
-      for (const t of st.tcells) if (t.id === id && t.fixed) { const tc = t.cells.map(c => t.l * N + c), hit = terms.find(T => tc.some(c => T.cells.includes(c))); if (hit) hit.cells.push(...tc); }
-      if (job.pourCells) terms[0].cells.push(...job.pourCells);
+      for (const t of st.tcells) if (t.id === id && t.fixed) { const tc = t.cells.map(c => t.l * N + c), hit = terms.find(T => tc.some(c => T.cells.includes(c))); if (hit) for (const c of tc) hit.cells.push(c); }
+      if (job.pourCells) { const tc = terms[0].cells; for (const c of job.pourCells) tc.push(c); }   // (no spread: pours can be 100k+ cells)
       const tree = new Set(terms[0].cells), done = [terms[0]], rest = terms.slice(1), segs = [], vs = [];
       let ok = true, mapW = null, necked = false;
       const widths = [job.w];
