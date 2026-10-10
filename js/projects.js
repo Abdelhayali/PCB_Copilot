@@ -125,6 +125,7 @@ const Projects = (() => {
         const d = await api('GET', '/api/projects/' + Model.S.id);
         if (Model.snapshot() !== lastSaved) return;
         serverUpdated = m.updated; Model.load(d, true); lastSaved = Model.snapshot(); setStatus('saved');
+        if (window.Sch && Sch.offscreen && Sch.offscreen()) Sch.fit();   // parts moved out of view (e.g. auto-layout from Claude Code)
         App.toast('Project updated by an external tool');
       } else if (!serverUpdated) serverUpdated = m.updated;
     } catch (e) { }

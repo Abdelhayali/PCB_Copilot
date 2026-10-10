@@ -384,20 +384,32 @@ const Model = (() => {
       const w = 1 / Math.max(1, refs.length - 1);
       for (let a = 0; a < refs.length; a++) for (let b = a + 1; b < refs.length; b++) edges.push([refs[a], refs[b], w]);
     }
+    // Power nets (GND, +3V3…) are left out above, so parts that only touch power (decoupling caps, pull-ups) had
+    // nothing holding them and drifted thousands of units away. Tie them weakly to the biggest part on that net.
+    const pinCount = c => { try { return Lib.type(c.type).pins(c).length; } catch (e) { return 2; } };
+    for (const [net, keys] of Object.entries(S.nets)) {
+      if (!isPower(net)) continue;
+      const refs = [...new Set(keys.map(k => k.split('.')[0]))].map(r => id.get(r)).filter(v => v != null);
+      if (refs.length < 2) continue;
+      const hub = refs.reduce((a, b) => pinCount(cs[b]) > pinCount(cs[a]) ? b : a);
+      for (const r of refs) if (r !== hub) edges.push([hub, r, 0.25]);
+    }
     const cols = Math.ceil(Math.sqrt(n));
-    const P = cs.map((c, i) => ({ x: (i % cols) * 160, y: Math.floor(i / cols) * 160, vx: 0, vy: 0 }));
+    const P = cs.map((c, i) => ({ x: (i % cols - (cols - 1) / 2) * 160, y: (Math.floor(i / cols) - (Math.ceil(n / cols) - 1) / 2) * 160, vx: 0, vy: 0 }));
     const K = 150;
     for (let it = 0; it < 500; it++) {
       const t = 30 * (1 - it / 500) + 1;
       for (const p of P) { p.vx = 0; p.vy = 0; }
       for (let i = 0; i < n; i++) for (let j = i + 1; j < n; j++) {
         let dx = P[i].x - P[j].x, dy = P[i].y - P[j].y, d = Math.hypot(dx, dy) || 0.1;
+        if (d > 4 * K) continue;   // only nearby parts push each other apart
         const f = K * K / d / d; P[i].vx += dx * f; P[i].vy += dy * f; P[j].vx -= dx * f; P[j].vy -= dy * f;
       }
       for (const [a, b, w] of edges) {
         const dx = P[a].x - P[b].x, dy = P[a].y - P[b].y, d = Math.hypot(dx, dy) || 0.1, f = d / K * w;
         P[a].vx -= dx * f; P[a].vy -= dy * f; P[b].vx += dx * f; P[b].vy += dy * f;
       }
+      for (const p of P) { p.vx -= p.x * 0.05; p.vy -= p.y * 0.05; }   // gentle pull to the centre: nothing can drift away
       for (const p of P) { const v = Math.hypot(p.vx, p.vy) || 1, s = Math.min(v, t) / v; p.x += p.vx * s; p.y += p.vy * s; }
     }
     // left-to-right order hint: connectors/batteries first

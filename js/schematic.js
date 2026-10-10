@@ -199,6 +199,11 @@ const Sch = (() => {
     return contentBox();
   }
   const fit = () => vp.fit(extents(), 40);
+  // true when some part on this sheet lies completely outside the visible area (e.g. after an external tool moved it)
+  function offscreen() {
+    const vb = vp && vp.vb; if (!vb || !vb[2]) return false;
+    return Model.S.components.filter(onSheet).some(c => { const b = Model.bbox(c); return b[2] < vb[0] || b[0] > vb[0] + vb[2] || b[3] < vb[1] || b[1] > vb[1] + vb[3]; });
+  }
 
   // ---------- interaction ----------
   // selection: ui.sel is the primary part (Properties), ui.multi every selected part
@@ -301,5 +306,5 @@ const Sch = (() => {
     return out;
   }
   const setSheet = i => { ui.sheet = Math.max(0, Math.min(sheets().length - 1, +i || 0)); select(null); render(); fit(); };
-  return { init, render, fit, key, select, selected, setSelection, selectAll, rotate, del, placeNew, exportSVG, ui, sheets, setSheet, onSheet, get vp() { return vp; } };
+  return { init, render, fit, offscreen, key, select, selected, setSelection, selectAll, rotate, del, placeNew, exportSVG, ui, sheets, setSheet, onSheet, get vp() { return vp; } };
 })();
