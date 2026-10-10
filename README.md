@@ -110,6 +110,8 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 
 The web version is the same app: when it is not served by `server.py`, `js/static-backend.js` answers the app's requests in the browser.
 
+**Privacy:** API keys and designs stay in your browser. The public website (pcbgo.site) counts anonymous visits with [Cloudflare Web Analytics](https://www.cloudflare.com/web-analytics/): no cookies, no personal data, only page views, country and referrer. Copies you run yourself (desktop version, forks) send nothing.
+
 **Local models in the web version** need the model server to accept requests from the web page (CORS): Ollama with `OLLAMA_ORIGINS=https://pcbgo.site`, LM Studio with *Enable CORS* in the server settings, llama.cpp's `llama-server` allows it by default. Your browser may ask for permission to reach devices on your local network.
 
 ## Run

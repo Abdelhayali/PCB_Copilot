@@ -333,5 +333,14 @@
 <script src="js/projects.js?v=202610101411"></script>
 <script src="js/editor.js?v=202610101411"></script>
 <script src="js/app.js?v=202610101411"></script>
+<!-- Cloudflare Web Analytics: anonymous visit counts (no cookies, no personal data), only on the public website -->
+<script>
+  if (/^(www\.)?pcbgo\.site$/.test(location.hostname)) {
+    var cfb = document.createElement('script');
+    cfb.defer = true; cfb.src = 'https://static.cloudflareinsights.com/beacon.min.js';
+    cfb.setAttribute('data-cf-beacon', '{"token": "10d403c85d9e4318b281a5c936aba7c6"}');
+    document.body.appendChild(cfb);
+  }
+</script>
 </body>
 </html>
