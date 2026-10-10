@@ -183,7 +183,7 @@ const Model = (() => {
       if (!Lib.footprint(u.footprint)) throw new Error(`Unknown footprint "${u.footprint}". Known: ${Lib.FOOTPRINT_PATTERNS.join(', ')}`);
       if (c.type !== 'part' && c.pinMap && !/^(LCSC|LIB):/.test(u.footprint)) detachDb(c, u.footprint);
       else if (c.type !== 'part' && c.dbfp && u.footprint === 'LCSC:' + c.dbfp && !c.pinMap && S.lib[c.dbfp]) attachDb(c, S.lib[c.dbfp]);
-      else c.footprint = u.footprint;
+      else { c.footprint = u.footprint; if (c.type !== 'part' && c.lcscPart && u.footprint !== 'LCSC:' + c.lcscPart) delete c.lcscPart; } // part number is re-matched for the new package
       invalidate(netsOfComp(c.ref));
     }
     if (u.new_ref && u.new_ref !== c.ref) {

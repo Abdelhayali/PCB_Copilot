@@ -1562,6 +1562,88 @@ const Pcb = (() => {
     for (const c of placed()) { c.pcb.x = +(Math.round(c.pcb.x / 0.05) * 0.05).toFixed(3); c.pcb.y = +(Math.round(c.pcb.y / 0.05) * 0.05).toFixed(3); }
     return { overlaps: overlaps(placed(), 0).map(([a, b]) => `${a.ref}/${b.ref}`), outside: placed().filter(c => !boxInside(c, boardPoly(), -0.05)).map(c => c.ref) };
   }
+  // Update the board after schematic edits. Placed parts and still-valid copper stay as they are: copper of nets that no
+  // longer exist is removed, new parts go to the nearest free spot next to the parts they connect to (away from existing
+  // tracks when possible), and parts that now overlap (e.g. after a footprint change) are moved to a free spot nearby.
+  // The caller then routes the nets left incomplete.
+  function syncFromSchematic() {
+    const S = Model.S, R = rules();
+    if (!S.board.w || !placed().length) throw new Error('Generate the PCB first');
+    const nets = new Set(Object.keys(S.nets)), n0 = S.pcb.traces.length + S.pcb.vias.length;
+    S.pcb.traces = S.pcb.traces.filter(t => !t.net || nets.has(t.net));
+    S.pcb.vias = S.pcb.vias.filter(v => !v.net || nets.has(v.net));
+    if (S.pcb.pours) S.pcb.pours = S.pcb.pours.filter(p => !p.net || nets.has(p.net));
+    for (const n of Object.keys(S.pcb.routed || {})) if (!nets.has(n)) delete S.pcb.routed[n];
+    const removed = n0 - S.pcb.traces.length - S.pcb.vias.length;
+    const netsOf = c => Object.keys(S.nets).filter(n => S.nets[n].some(k => k.startsWith(c.ref + '.')));
+    const rip = new Set(), drop = ns => { for (const n of ns) { rip.add(n); delete S.pcb.routed[n]; } S.pcb.traces = S.pcb.traces.filter(t => !ns.includes(t.net)); S.pcb.vias = S.pcb.vias.filter(v => !ns.includes(v.net)); };
+
+    const fresh = S.components.filter(c => !c.pcb && Lib.footprint(c.footprint));
+    const noFp = S.components.filter(c => !c.pcb && !Lib.footprint(c.footprint)).map(c => c.ref);
+    // overlapping placed parts: move the smaller, free one of each pair
+    const area = c => { const b = fpBox(c); return (b[2] - b[0]) * (b[3] - b[1]); }, pinned = c => c.pcb.locked || c.pcbEdge || edgeInfo(c);
+    const move = new Set();
+    for (const [a, b] of overlaps(placed(), 0)) {
+      if (move.has(a) || move.has(b)) continue;
+      const pick = pinned(a) && pinned(b) ? null : pinned(a) ? b : pinned(b) ? a : area(a) <= area(b) ? a : b;
+      if (pick) move.add(pick);
+    }
+    for (const c of placed()) if (!pinned(c) && !boxInside(c, boardPoly(), 0)) move.add(c);   // pushed off the board by a bigger footprint
+    const fixed = new Set(placed().filter(c => !move.has(c)));
+    const gap = Math.max(0.3, R.clearance), m = Math.max(R.edgeClearance + 0.3, 0.6), poly = boardPoly(), W = S.board.w, H = S.board.h;
+    const copperHits = (c, own) => {
+      const b = fpBox(c), hit = new Set();
+      for (const t of S.pcb.traces) {
+        if (own.includes(t.net) || hit.has(t.net)) continue;
+        const e = t.w / 2 + R.clearance;
+        for (let i = 1; i < t.pts.length && !hit.has(t.net); i++) {
+          const [ax, ay] = t.pts[i - 1], [bx, by] = t.pts[i], n = Math.max(1, Math.ceil(Math.hypot(bx - ax, by - ay) / 0.2));
+          for (let k = 0; k <= n; k++) { const x = ax + (bx - ax) * k / n, y = ay + (by - ay) * k / n; if (x > b[0] - e && x < b[2] + e && y > b[1] - e && y < b[3] + e) { hit.add(t.net); break; } }
+        }
+      }
+      for (const v of S.pcb.vias) { const e = v.d / 2 + R.clearance; if (!own.includes(v.net) && v.x > b[0] - e && v.x < b[2] + e && v.y > b[1] - e && v.y < b[3] + e) hit.add(v.net); }
+      return [...hit];
+    };
+    const spot = c => {
+      const own = netsOf(c), pts = [];
+      for (const n of own) for (const k of S.nets[n]) { const o = Model.comp(k.slice(0, k.lastIndexOf('.'))); if (o && o !== c && fixed.has(o)) pts.push([o.pcb.x, o.pcb.y]); }
+      const tx = c.pcb && move.has(c) ? c.pcb.x : pts.length ? pts.reduce((a, p) => a + p[0], 0) / pts.length : W / 2;
+      const ty = c.pcb && move.has(c) ? c.pcb.y : pts.length ? pts.reduce((a, p) => a + p[1], 0) / pts.length : H / 2;
+      const cand = [];
+      for (let x = 0; x <= W; x += 0.5) for (let y = 0; y <= H; y += 0.5) cand.push([x, y, (x - tx) ** 2 + (y - ty) ** 2]);
+      cand.sort((a, b) => a[2] - b[2]);
+      const side = c.pcb && c.pcb.side, rot0 = (c.pcb ? c.pcb.rot : c.rot) || 0, others = [...fixed].map(o => fpBox(o, gap / 2));
+      let best = null;
+      // nearest spot clear of parts and copper; otherwise (after a further 400 spots) the one crossing the fewest nets
+      search: for (let i = 0, lastHit = -1; i < cand.length; i++) {
+        if (best && i - lastHit > 400) break;
+        const [x, y] = cand[i];
+        for (const rot of [rot0, (rot0 + 90) % 360]) {
+          c.pcb = { x, y, rot }; if (side === 'B') c.pcb.side = 'B';
+          if (!boxInside(c, poly, m)) continue;
+          const b = fpBox(c, gap / 2);
+          if (others.some(o => b[0] < o[2] && o[0] < b[2] && b[1] < o[3] && o[1] < b[3])) continue;
+          const hits = copperHits(c, own);
+          if (!hits.length) { best = { x, y, rot, hits }; break search; }
+          if (!best) lastHit = i;
+          if (!best || hits.length < best.hits.length) best = { x, y, rot, hits };
+        }
+      }
+      return best;
+    };
+    const added = [], moved = [], noRoom = [];
+    for (const c of [...move, ...fresh].sort((a, b) => area(b) - area(a))) {
+      const was = !!c.pcb, side = c.pcb && c.pcb.side;
+      if (was) drop(netsOf(c));
+      const s = spot(c);
+      if (s) { c.pcb = { x: +s.x.toFixed(3), y: +s.y.toFixed(3), rot: s.rot }; if (side === 'B') c.pcb.side = 'B'; if (s.hits.length) drop(s.hits); }
+      else { // no room: park it beside the board
+        const b0 = Lib.footprint(c.footprint).box; c.pcb = { x: +(W + 2 - b0[0] + noRoom.length * 4).toFixed(3), y: +(H / 2).toFixed(3), rot: 0 }; noRoom.push(c.ref);
+      }
+      fixed.add(c); (was ? moved : added).push(c.ref);
+    }
+    return { added, moved, no_room: noRoom, no_footprint: noFp, removed_copper: removed, ripped_nets: [...rip] };
+  }
   // Move parts until every net routes (and, with opt.shrink, make the board smaller while it still routes).
   // Each round: give the parts on unrouted nets more room and pull, re-anneal locally from the best placement,
   // legalise, route with rip-up; keep the best (fewest unrouted, then smallest board, then shortest copper).
@@ -1638,7 +1720,7 @@ const Pcb = (() => {
     return { iterations: it, routed: st.routed, total: st.nets, unrouted: st.unrouted, trace_length_mm: st.trace_length_mm, board: S.board, seconds: +((Date.now() - t0) / 1000).toFixed(1), history };
   }
 
-  return { addMountingHoles, autoPlace, placeFootprint, optimize, anneal, legalisePlacement, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
+  return { addMountingHoles, autoPlace, placeFootprint, syncFromSchematic, optimize, anneal, legalisePlacement, setBoardShape, boardPoly, isRectBoard, addPour, pourPoly, pourRaster, isBottom, padCu, inPoly, edgeInfo, route, status, gerbers, padsOf, fpBox, placed, rules, setRules, ruleWarnings, drc, RULE_PRESETS, connectivity, ratsnest, netWidth: n => netWidth(rules(), n), geom: { shapeDist, padShape, ptSeg, padDist, segSegDist } };
 })();
 
 // Minimal ZIP (store, no compression) writer.

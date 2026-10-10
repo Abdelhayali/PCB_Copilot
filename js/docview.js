@@ -13,7 +13,7 @@ const DocView = (() => {
   // ---------- data ----------
   function collect() {
     const S = Model.S, idx = Model.pinIndex(), R = Pcb.rules(), placed = Pcb.placed(), hasPcb = S.board.w > 0 && placed.length > 0;
-    const libOf = c => (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && S.lib[c.dbfp]) || null;
+    const libOf = c => (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && c.footprint === 'LCSC:' + c.dbfp && S.lib[c.dbfp]) || null;
     const g = {};
     for (const c of S.components) {
       const lib = libOf(c), fp = (lib && lib.footprint && lib.footprint.name) || c.footprint || '';

@@ -84,6 +84,7 @@ const Engine = (() => {
     { name: 'remove_copper_pour', description: 'Remove copper pours (all, or by index / net).', input_schema: { type: 'object', properties: { index: { type: 'number' }, net: { type: 'string' } } } },
     { name: 'set_board_shape', description: 'Board outline: rect, rounded (corner_radius), ellipse (a circle when width = height) or polygon (points [[x,y],...] in mm, corner_radius rounds every corner).', input_schema: { type: 'object', required: ['shape'], properties: { shape: { type: 'string', enum: ['rect', 'rounded', 'ellipse', 'polygon'] }, width: { type: 'number' }, height: { type: 'number' }, corner_radius: { type: 'number' }, points: { type: 'array', items: { type: 'array', items: { type: 'number' } } } } } },
     { name: 'place_footprint', description: 'Move / rotate a footprint on the PCB, flip it to the bottom side (side = bottom), or put it on a board edge. edge = left | right | top | bottom puts connectors on that edge (USB / jacks / RF / SD: opening facing outward, flush with the edge; headers just inside) and is remembered for future generate_pcb runs. generate_pcb already puts connectors on the nearest edge automatically. Re-run route_pcb afterwards.', input_schema: { type: 'object', required: ['ref'], properties: { ref: { type: 'string' }, side: { type: 'string', enum: ['top', 'bottom'], description: 'board side; bottom mirrors the part and puts its SMD pads on BottomLayer' }, lock: { type: 'boolean', description: 'keep optimize_pcb from moving it' }, edge: { type: 'string', enum: ['left', 'right', 'top', 'bottom'] }, along: { type: 'number', description: 'mm along the edge (optional, with edge)' }, x: { type: 'number', description: 'mm' }, y: { type: 'number', description: 'mm' }, rot: { type: 'number', enum: [0, 90, 180, 270] } } } },
+    { name: 'update_pcb_from_schematic', description: 'After schematic edits on a board that already exists (new parts, deleted parts or nets, changed footprints): keeps the placement and all still-valid tracks, places new parts next to what they connect to, moves parts that now overlap, removes copper of deleted nets, then routes only the incomplete nets. Prefer this over generate_pcb, which re-places everything.', input_schema: { type: 'object', properties: {} } },
     { name: 'route_pcb', description: 'Re-run the autorouter on the current placement (follows the design rules). It keeps ripping up and re-routing until every net is connected or the time budget runs out (design rule routeTime, default 90 s), keeping the best result. If nets stay unrouted, use optimize_pcb (moves parts) rather than repeating route_pcb.', input_schema: { type: 'object', properties: { time_limit_s: { type: 'number', description: 'max seconds (default: design rule routeTime, 90)' } } } },
     { name: 'get_design_rules', ro: true, description: 'Current PCB design rules (trace widths, clearance, vias, edge clearance, layers, per-net widths) and the fab minimums they are checked against. Defaults follow JLCPCB 2-layer capabilities. Lists available presets.', input_schema: { type: 'object', properties: {} } },
     { name: 'set_design_rules', description: 'Change PCB design rules (mm). The autorouter follows them and DRC checks them. Use preset to load a profile, net_widths for per-net trace widths (0 removes an override). Returns warnings for values below the fab minimums.', input_schema: { type: 'object', properties: { preset: { type: 'string', description: 'jlcpcb | jlcpcb_min | jlcpcb_power | home' }, traceWidth: { type: 'number' }, powerTraceWidth: { type: 'number', description: 'Width for power/ground nets' }, clearance: { type: 'number' }, viaDiameter: { type: 'number' }, viaDrill: { type: 'number' }, edgeClearance: { type: 'number' }, layers: { type: 'number', enum: [1, 2] }, neckDown: { type: 'boolean', description: 'Allow narrowing a trace when the full width does not fit' }, routeTime: { type: 'number', description: 'Autorouter effort: max seconds of rip-up and reroute (default 90)' }, viaInPad: { type: 'boolean', description: 'Allow vias on SMD pins (default false: vias go beside pins; thermal vias inside large exposed pads are always allowed)' }, net_widths: { type: 'object', additionalProperties: { type: 'number' }, description: 'e.g. {"+5V": 0.8, "MOTOR": 1.2}' } } } },
@@ -305,6 +306,22 @@ const Engine = (() => {
         const d = Pcb.drc();
         return Object.assign({}, r, { drc: { summary: d.summary, top: d.violations.filter(v => v.severity === 'error').slice(0, 8).map(v => v.msg) } });
       }
+      case 'update_pcb_from_schematic': {
+        const sync = Model.mutate(() => Pcb.syncFromSchematic()), todo = Pcb.status().unrouted;
+        let r = null;
+        const routeWith = async opt => env.route ? env.route({ place: null, opt }) : Model.mutate(() => ({ routing: Pcb.route(opt) }));
+        if (todo.length) {
+          r = await routeWith({ keep: true, keepAll: true, onlyNets: todo });
+          if (Pcb.status().unrouted.length) { // boxed in by existing tracks: full re-route on the same placement, keep the better one
+            const before = JSON.stringify(Model.S.pcb), n0 = Pcb.status().unrouted.length;
+            r = await routeWith({});
+            if (Pcb.status().unrouted.length > n0) Model.mutate(() => { Model.S.pcb = JSON.parse(before); });
+          }
+        }
+        env.ui('show-pcb');
+        const st = Pcb.status(), d = Pcb.drc();
+        return Object.assign(sync, { rerouted: todo, routed: st.routed, total: st.nets, unrouted: st.unrouted, drc: d.summary });
+      }
       case 'place_footprint': { const r = Model.mutate(() => Pcb.placeFootprint(input.ref, input)); env.ui('show-pcb'); return Object.assign(r, { note: 'Tracks are kept; run route_pcb to connect anything left unrouted.' }); }
       case 'get_design_rules': {
         const R = Pcb.rules();
@@ -359,7 +376,7 @@ const Engine = (() => {
   // value → JLCPCB part number for the BOM (keeps the footprint; prefers in-stock Basic parts in the same package)
   async function matchJlcpcb(overwrite) {
     const S = Model.S, out = [];
-    const pkgOf = c => { const l = c.dbfp && S.lib[c.dbfp]; const t = [(l && l.package) || '', (l && l.footprint && l.footprint.name) || '', c.footprint].join(' ').toUpperCase(); const m = t.match(/\b(0201|0402|0603|0805|1206|1210|2512|SOD-?123F?|SOD-?323|SMA|SMB|SOT-?23(-\d)?|SOT-?223|SOIC-?\d+|SOP-?\d+|TSSOP-?\d+|QFN-?\d+)\b/); return m ? m[1] : ''; };
+    const pkgOf = c => { const l = c.dbfp && c.footprint === 'LCSC:' + c.dbfp && S.lib[c.dbfp]; const t = [(l && l.package) || '', (l && l.footprint && l.footprint.name) || '', c.footprint].join(' ').toUpperCase(); const m = t.match(/\b(0201|0402|0603|0805|1206|1210|2512|SOD-?123F?|SOD-?323|SMA|SMB|SOT-?23(-\d)?|SOT-?223|SOIC-?\d+|SOP-?\d+|TSSOP-?\d+|QFN-?\d+)\b/); return m ? m[1] : ''; };
     const norm = (t, v) => { v = String(v).trim(); if (t === 'resistor' && /^[\d.]+[kKmMR]?$/.test(v)) return v.replace(/R$/, '') + (/[kKmM]$/.test(v) ? 'Ω' : 'Ω'); if (/capacitor/.test(t) && /^[\d.]+[pnuμ]$/.test(v)) return v.replace('u', 'µ') + 'F'; if (t === 'inductor' && /^[\d.]+[nuμ]$/.test(v)) return v.replace('u', 'µ') + 'H'; return v; };
     for (const c of S.components) {
       if (c.type === 'part') { out.push({ ref: c.ref, lcsc: c.lcsc, source: 'database part' }); continue; }

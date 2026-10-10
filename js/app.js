@@ -125,6 +125,12 @@ const App = (() => {
   }
 
   // ---------- properties ----------
+  // "LCSC:C25804" → "0603 · JLCPCB C25804" (the package of the database part behind the footprint)
+  function fpLabel(f) {
+    const m = /^(LCSC|LIB):(.+)$/.exec(f); if (!m) return f;
+    const l = Model.S.lib[m[2]], pkg = l && (String(l.package || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1] || (l && (l.package || (l.footprint && l.footprint.name)));
+    return pkg ? `${pkg} · ${m[1] === 'LCSC' ? 'JLCPCB ' : ''}${m[2]}` : f;
+  }
   function renderProps() {
     const el = $('#props');
     if (el.contains(document.activeElement) && document.activeElement.tagName !== 'BUTTON') return;
@@ -140,7 +146,7 @@ const App = (() => {
         <label>Reference<input id="pRef" value="${esc(c.ref)}"></label>
         <label>Value<input id="pVal" value="${esc(c.value)}"></label>
         ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${Model.S.lib[c.lcsc].custom ? '<span class="muted">Custom part · ' + esc(c.lcsc) + '</span>' : `${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(c.lcsc)}</span>`}${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
-        <label>Footprint<select id="pFp">${fps.map(f => `<option ${f === c.footprint ? 'selected' : ''}>${esc(f)}</option>`).join('')}</select></label>
+        <label>Footprint<select id="pFp">${fps.map(f => `<option value="${esc(f)}" ${f === c.footprint ? 'selected' : ''}>${esc(fpLabel(f))}</option>`).join('')}</select></label>
         ${Sch.sheets().length > 1 ? `<label>Sheet<select id="pSheet">${Sch.sheets().map((s, i) => `<option value="${i}" ${Model.sheetOf(c) === i ? 'selected' : ''}>${i + 1}: ${esc(s.name || '')}</option>`).join('')}</select></label>` : ''}
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
         <div class="row"><button id="pRot">⟳ Rotate (R)</button><button id="pDel" class="danger">Delete</button></div>
@@ -246,7 +252,7 @@ const App = (() => {
   function bomCsv() {
     const S = Model.S, g = {};
     for (const c of S.components) {
-      const lib = (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && S.lib[c.dbfp]), fpn = (lib && lib.footprint && lib.footprint.name) || c.footprint;
+      const lib = (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && c.footprint === 'LCSC:' + c.dbfp && S.lib[c.dbfp]), fpn = (lib && lib.footprint && lib.footprint.name) || c.footprint;
       const code = c.type === 'part' ? c.lcsc : c.lcscPart || '';
       const k = [c.value, fpn, code].join('|'); (g[k] = g[k] || []).push(c.ref);
     }
@@ -366,6 +372,37 @@ const App = (() => {
       clearInterval(tick); busy.classList.add('hidden');
       if (ctl.signal.aborted) report('**AI place** stopped.'); else await quick(why).catch(() => { });
     } finally { clearInterval(tick); aiPlacing = false; aiPlaceCtl = null; if (!worker) busy.classList.add('hidden'); }
+  }
+
+  // ---------- update the board from schematic edits (placement and valid copper kept) ----------
+  async function updateFromSchematic() {
+    showView('pcb');
+    if (!Model.S.board.w || !Pcb.placed().length) { toast('No PCB yet — use Generate PCB first'); return; }
+    let r; try { r = Model.mutate(() => Pcb.syncFromSchematic()); } catch (e) { toast(e.message); return; }
+    if (r.no_room.length) Pcb.fit();
+    const todo = Pcb.status().unrouted;
+    let full = false;
+    if (todo.length) {
+      try {
+        await runRouter({ opt: { keep: true, keepAll: true, onlyNets: todo } });
+        // boxed in by the existing tracks: re-route the whole board on the same placement, keep the better result
+        if (Pcb.status().unrouted.length) {
+          const before = JSON.stringify(Model.S.pcb), n0 = Pcb.status().unrouted.length;
+          await runRouter({ opt: {} }); full = true;
+          if (Pcb.status().unrouted.length > n0) { Model.mutate(() => { Model.S.pcb = JSON.parse(before); }); full = false; }
+        }
+      } catch (e) { toast(e.message); }
+    }
+    const st = Pcb.status(), pl = n => n > 1 ? 's' : '';
+    const what = [r.added.length && `placed ${r.added.length} new part${pl(r.added.length)} (${r.added.join(', ')})`,
+      r.moved.length && `moved ${r.moved.join(', ')} to clear overlaps`,
+      r.removed_copper && `removed ${r.removed_copper} track${pl(r.removed_copper)}/vias of deleted nets`,
+      todo.length && (full ? 'tracks re-routed on the same placement' : `re-routed ${todo.length} net${pl(todo.length)}`)].filter(Boolean);
+    const warn = [r.no_room.length && `no room on the board for ${r.no_room.join(', ')} — parked beside it: enlarge the board or use ✨ Optimize`,
+      r.no_footprint.length && `${r.no_footprint.join(', ')} have no footprint`,
+      st.unrouted.length && `still unrouted: ${st.unrouted.join(', ')} — try Route or ✨ Optimize`].filter(Boolean);
+    toast(`Updated from schematic: ${what.join(' · ') || 'board already matches the schematic'} · ${st.routed}/${st.nets} nets routed${warn.length ? ' · ' + warn.join(' · ') : ''}`, warn.length ? 15000 : 8000);
+    showDrc();
   }
 
   // ---------- Gerber export: DRC first, then download or fix ----------
@@ -762,6 +799,7 @@ const App = (() => {
     $('#btnPlace').onclick = () => {};   // menu: AI place / quick place
     $$('[data-place]').forEach(b => b.onclick = () => { document.activeElement && document.activeElement.blur(); if (b.dataset.place === 'ai') aiPlace(); else runPcb(boardWH(), true); });
     $('#btnRoute').onclick = () => runPcb(null, false);
+    $('#btnSync').onclick = updateFromSchematic;
     $('#btnRules').onclick = openRules; $('#btnDrc').onclick = () => showDrc(true);
     $('#btnOptimize').onclick = () => {};
     $$('[data-opt]').forEach(b => b.onclick = () => { document.activeElement && document.activeElement.blur(); runOptimize({ shrink: b.dataset.opt !== 'route', allow_bottom: b.dataset.opt === 'bottom' }); });

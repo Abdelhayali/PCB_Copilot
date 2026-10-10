@@ -212,6 +212,10 @@ Values follow JLCPCB's published capabilities; check [jlcpcb.com/capabilities](h
 
 ## PCB editor
 
+**⟳ Update from schematic** brings schematic edits to an existing board without starting over: placement and every still-valid track are kept, new parts go to the nearest free spot next to the parts they connect to (away from existing tracks), parts that now overlap or stick out after a footprint change are moved to a free spot nearby, copper of deleted nets is removed, and only the incomplete nets are routed (with a full re-route on the same placement if they get boxed in). The copilot uses the same step (`update_pcb_from_schematic`).
+
+**Footprints for passives**: resistors, capacitors, inductors and LEDs can be switched between the JLCPCB part's own footprint (shown as e.g. *0603 · JLCPCB C25804*) and standard 0402 / 0603 / 0805 / 1206 / THT footprints in Properties; the assembly BOM then matches an LCSC part in the new package.
+
 | Action | How |
 |---|---|
 | Layers | **Layers** panel: eye = show/hide, swatch = colour, click a copper layer = make it active; **All / None / Top / Bot** quick views; *Dim inactive copper* |

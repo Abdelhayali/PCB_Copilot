@@ -13,22 +13,22 @@ const Lib = (() => {
 
   // ---------- passives ----------
   def('resistor', {
-    name: 'Resistor', cat: 'Passive', prefix: 'R', value: '10k', fps: ['0805', '1206', 'THT_P10.16'],
+    name: 'Resistor', cat: 'Passive', prefix: 'R', value: '10k', fps: ['0603', '0805', '1206', '0402', 'THT_P10.16'],
     pins: two(30), box: () => [-30, -8, 30, 8],
     draw: () => '<path d="M-30 0H-15M15 0H30"/><rect class="body" x="-15" y="-6" width="30" height="12"/>'
   });
   def('capacitor', {
-    name: 'Capacitor', cat: 'Passive', prefix: 'C', value: '100n', fps: ['0805', '1206', 'THT_P5.08'],
+    name: 'Capacitor', cat: 'Passive', prefix: 'C', value: '100n', fps: ['0603', '0805', '1206', '0402', 'THT_P5.08'],
     pins: two(20), box: () => [-20, -10, 20, 10],
     draw: () => '<path d="M-20 0H-3M3 0H20"/><path class="thick" d="M-3 -10V10M3 -10V10"/>'
   });
   def('capacitor_polarized', {
-    name: 'Electrolytic cap', cat: 'Passive', prefix: 'C', value: '10u', fps: ['THT_P2.54', '1206'],
+    name: 'Electrolytic cap', cat: 'Passive', prefix: 'C', value: '10u', fps: ['THT_P2.54', '1206', '0805'],
     pins: two(20, '+', '-'), box: () => [-20, -10, 20, 10],
     draw: () => '<path d="M-20 0H-3M5 0H20M-12 -9V-3M-15 -6H-9"/><path class="thick" d="M-3 -10V10"/><path class="thick" d="M6 -10Q2 0 6 10"/>'
   });
   def('inductor', {
-    name: 'Inductor', cat: 'Passive', prefix: 'L', value: '10u', fps: ['1206', '0805', 'THT_P10.16'],
+    name: 'Inductor', cat: 'Passive', prefix: 'L', value: '10u', fps: ['0603', '0805', '1206', 'THT_P10.16'],
     pins: two(30), box: () => [-30, -8, 30, 4],
     draw: () => '<path d="M-30 0H-20a5 5 0 0 1 10 0a5 5 0 0 1 10 0a5 5 0 0 1 10 0a5 5 0 0 1 10 0H30"/>'
   });
@@ -39,7 +39,7 @@ const Lib = (() => {
     draw: () => '<path d="M-30 0H-15M15 0H30M0 -30V-11"/><rect class="body" x="-15" y="-6" width="30" height="12"/><path class="fill" d="M0 -6L-3 -11H3Z"/>'
   });
   def('fuse', {
-    name: 'Fuse', cat: 'Passive', prefix: 'F', value: '500mA', fps: ['1206', 'THT_P10.16'],
+    name: 'Fuse', cat: 'Passive', prefix: 'F', value: '500mA', fps: ['1206', '0805', '0603', 'THT_P10.16'],
     pins: two(30), box: () => [-30, -6, 30, 6],
     draw: () => '<rect class="body" x="-15" y="-5" width="30" height="10"/><path d="M-30 0H30"/>'
   });
@@ -65,7 +65,7 @@ const Lib = (() => {
     pins: diodePins, box: () => [-20, -9, 20, 9], draw: () => diodeBase + '<path class="thick" d="M4 -8H7V8H10"/>'
   });
   def('led', {
-    name: 'LED', cat: 'Semiconductor', prefix: 'D', value: 'Red', fps: ['0805', 'THT_P2.54'],
+    name: 'LED', cat: 'Semiconductor', prefix: 'D', value: 'Red', fps: ['0603', '0805', '1206', 'THT_P2.54'],
     pins: diodePins, box: () => [-20, -17, 20, 9],
     draw: () => diodeBase + '<path class="thick" d="M7 -8V8"/><path d="M-1 -10L5 -16M2 -16H5V-13M6 -8L12 -14M9 -14H12V-11"/>'
   });
@@ -189,6 +189,8 @@ const Lib = (() => {
       return (cache[name] = { name, pads: f.pads, box: [b[0] - 0.3, b[1] - 0.3, b[2] + 0.3, b[3] + 0.3], body: null, lcsc: m[1] });
     }
     switch (name) {
+      case '0402': pads = smd2(0.51, 0.54, 0.64); break;
+      case '0603': pads = smd2(0.825, 0.8, 0.95); break;
       case '0805': pads = smd2(0.95, 1.0, 1.3); break;
       case '1206': pads = smd2(1.5, 1.15, 1.8); break;
       case 'SOD123': pads = smd2(1.65, 0.9, 1.2); break;
@@ -236,7 +238,7 @@ const Lib = (() => {
     const fp = { name, pads, box: [Math.min(x0, body ? body[0] : x0) - 0.4, Math.min(y0, body ? body[1] : y0) - 0.4, Math.max(x1, body ? body[2] : x1) + 0.4, Math.max(y1, body ? body[3] : y1) + 0.4], body };
     return (cache[name] = fp);
   }
-  const FOOTPRINT_PATTERNS = ['0805', '1206', 'SOD123', 'SOT23', 'SOT223', 'TO92', 'TO220', 'Pot_THT', 'THT_P2.54', 'THT_P5.08', 'THT_P7.62', 'THT_P10.16', 'DIP-<n>', 'SOIC-<n>', 'TSSOP-<n>', 'QFN-<n>', 'QFN-<n>-EP', 'PinHeader_1x<n>'];
+  const FOOTPRINT_PATTERNS = ['0402', '0603', '0805', '1206', 'SOD123', 'SOT23', 'SOT223', 'TO92', 'TO220', 'Pot_THT', 'THT_P2.54', 'THT_P5.08', 'THT_P7.62', 'THT_P10.16', 'DIP-<n>', 'SOIC-<n>', 'TSSOP-<n>', 'QFN-<n>', 'QFN-<n>-EP', 'PinHeader_1x<n>'];
   const clearCache = name => { if (name) delete cache[name]; else for (const k in cache) if (/^(LCSC|LIB):/.test(k)) delete cache[k]; };
   const drawPart = d => { const g = partGeoDef(d); return { g, svg: `<rect class="body" x="${-g.hw}" y="${-g.hh}" width="${2 * g.hw}" height="${2 * g.hh}" rx="2"/>` + '<path d="' + g.pins.map(p => `M${p.x} ${p.y}H${p.x - p.dx * p.len}`).join('') + '"/>' }; };
 
