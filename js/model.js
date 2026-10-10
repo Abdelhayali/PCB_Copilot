@@ -148,6 +148,35 @@ const Model = (() => {
     S.components.push(c); nudgeFree(c);
     return c;
   }
+  // Remove only the copper touching some pads of a placed part (the rest of those nets stays routed).
+  // Returns false when that cannot be worked out (no PCB code loaded) — callers then fall back to invalidate().
+  function pruneCopper(ref, nums) {
+    const c = comp(ref);
+    if (!c || !c.pcb) return true;
+    if (typeof Pcb === 'undefined' || !Pcb.padsOf) return false;
+    const pads = Pcb.padsOf(c, null).filter(p => !nums || nums.includes(String(p.num)));
+    if (!pads.length) return true;
+    const near = (x, y, e, l) => pads.some(p => (!l || !p.layer || p.layer === l) && Math.abs(x - p.x) <= p.w / 2 + e && Math.abs(y - p.y) <= p.h / 2 + e);
+    const hits = t => {
+      for (let i = 0; i < t.pts.length; i++) {
+        if (near(t.pts[i][0], t.pts[i][1], t.w / 2, t.layer || 'F')) return true;
+        if (i) { const [ax, ay] = t.pts[i - 1], [bx, by] = t.pts[i], n = Math.ceil(Math.hypot(bx - ax, by - ay) / 0.1); for (let k = 1; k < n; k++) if (near(ax + (bx - ax) * k / n, ay + (by - ay) * k / n, t.w / 2, t.layer || 'F')) return true; }
+      }
+      return false;
+    };
+    const gone = new Set();
+    S.pcb.traces = S.pcb.traces.filter(t => { if (hits(t)) { gone.add(t.net); return false; } return true; });
+    S.pcb.vias = S.pcb.vias.filter(v => { if (near(v.x, v.y, v.d / 2)) { gone.add(v.net); return false; } return true; });
+    for (const n of gone) if (S.pcb.routed) delete S.pcb.routed[n];
+    return true;
+  }
+  // a net was merged into / renamed to another: its copper now belongs to the new net
+  function renameCopper(from, to) {
+    for (const t of S.pcb.traces) if (t.net === from) t.net = to;
+    for (const v of S.pcb.vias) if (v.net === from) v.net = to;
+    for (const p of S.pcb.pours || []) if (p.net === from) p.net = to;
+    if (S.pcb.routed) { delete S.pcb.routed[from]; delete S.pcb.routed[to]; }
+  }
   function invalidate(nets) {
     const set = new Set(nets);
     for (const n of set) delete S.pcb.routed[n];
@@ -161,7 +190,7 @@ const Model = (() => {
       const k2 = keys.filter(k => !k.startsWith(c.ref + '.'));
       if (k2.length !== keys.length) { touched.push(n); if (k2.length) S.nets[n] = k2; else delete S.nets[n]; }
     }
-    invalidate(touched);
+    if (!pruneCopper(c.ref)) invalidate(touched);
     S.components = S.components.filter(o => o !== c);
   }
   function updateComponent(u) {
@@ -181,10 +210,11 @@ const Model = (() => {
     }
     if (u.footprint != null) {
       if (!Lib.footprint(u.footprint)) throw new Error(`Unknown footprint "${u.footprint}". Known: ${Lib.FOOTPRINT_PATTERNS.join(', ')}`);
+      const pruned = u.footprint === c.footprint || pruneCopper(c.ref);   // only the tracks on this part's old pads
       if (c.type !== 'part' && c.pinMap && !/^(LCSC|LIB):/.test(u.footprint)) detachDb(c, u.footprint);
       else if (c.type !== 'part' && c.dbfp && u.footprint === 'LCSC:' + c.dbfp && !c.pinMap && S.lib[c.dbfp]) attachDb(c, S.lib[c.dbfp]);
       else { c.footprint = u.footprint; if (c.type !== 'part' && c.lcscPart && u.footprint !== 'LCSC:' + c.lcscPart) delete c.lcscPart; } // part number is re-matched for the new package
-      invalidate(netsOfComp(c.ref));
+      if (!pruned) invalidate(netsOfComp(c.ref));
     }
     if (u.new_ref && u.new_ref !== c.ref) {
       if (comp(u.new_ref)) throw new Error(`Ref ${u.new_ref} already exists`);
@@ -199,13 +229,14 @@ const Model = (() => {
     const key = part.key || part.lcsc, d0 = Lib.DB_DEFAULTS[c.type] || {};
     const m = Lib.matchPins(c.type, part.pins || [], d0.lcsc === key || (d0.byValue && Object.values(d0.byValue).includes(key)) ? d0.map : null);
     if (!m || !part.footprint) return false;
+    const pruned = pruneCopper(c.ref);
     const old = c.pinMap || null;
     if (!S.lib[key]) S.lib[key] = Object.assign({}, part, { key });
     Lib.clearCache && Lib.clearCache('LCSC:' + key);
     renumber(c, old, m.map);
     c.pinMap = m.map; if (Object.keys(m.alias).length) c.pinAlias = m.alias; else delete c.pinAlias;
     c.dbfp = key; c.footprint = 'LCSC:' + key; c.lcscPart = key;
-    invalidate(netsOfComp(c.ref));
+    if (!pruned) invalidate(netsOfComp(c.ref));
     return true;
   }
   function detachDb(c, footprint) {
@@ -247,16 +278,16 @@ const Model = (() => {
     if (!net) net = keys.map(k => idx[k]).find(Boolean) || autoNetName();
     net = String(net).trim();
     if (!S.nets[net]) S.nets[net] = [];
-    const touched = [net];
+    // adding pins keeps the net's copper (the new pins just show as ratsnest); a merged net's copper joins this net
     for (const k of keys) {
       const cur = idx[k];
       if (cur && cur !== net) { // merge whole net
         if (!S.nets[cur]) continue;
-        S.nets[net].push(...S.nets[cur]); delete S.nets[cur]; touched.push(cur);
+        S.nets[net].push(...S.nets[cur]); delete S.nets[cur]; renameCopper(cur, net);
       } else if (!cur) S.nets[net].push(k);
     }
     S.nets[net] = [...new Set(S.nets[net])];
-    invalidate(touched);
+    if (S.pcb.routed) delete S.pcb.routed[net];
     return net;
   }
   function disconnect(pinRefs) {
@@ -265,13 +296,15 @@ const Model = (() => {
       const k2 = ks.filter(k => !keys.has(k));
       if (k2.length !== ks.length) { touched.push(n); if (k2.length) S.nets[n] = k2; else delete S.nets[n]; }
     }
-    invalidate(touched);
+    // only the tracks on the disconnected pads go
+    const byRef = {}; for (const k of keys) { const i = k.lastIndexOf('.'); (byRef[k.slice(0, i)] = byRef[k.slice(0, i)] || []).push(k.slice(i + 1)); }
+    if (!Object.entries(byRef).every(([r, nums]) => pruneCopper(r, nums))) invalidate(touched);
   }
   function renameNet(from, to) {
     if (!S.nets[from]) throw new Error(`No net "${from}"`);
     to = String(to).trim(); if (!to || to === from) return;
     S.nets[to] = [...new Set([...(S.nets[to] || []), ...S.nets[from]])]; delete S.nets[from];
-    invalidate([from, to]);
+    renameCopper(from, to);
   }
   function removeNet(n) { delete S.nets[n]; invalidate([n]); }
   function clear() { const name = S.name, id = S.id; S = blank(); S.name = name; if (id) S.id = id; }

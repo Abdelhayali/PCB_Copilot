@@ -374,35 +374,20 @@ const App = (() => {
     } finally { clearInterval(tick); aiPlacing = false; aiPlaceCtl = null; if (!worker) busy.classList.add('hidden'); }
   }
 
-  // ---------- update the board from schematic edits (placement and valid copper kept) ----------
-  async function updateFromSchematic() {
+  // ---------- update the board from schematic edits: load only (no auto placement / routing) ----------
+  // New parts are lined up beside the board with their ratsnest, changed footprints take effect in place,
+  // copper of deleted nets is removed. Placing and routing stay with the user (drag, Route, Auto-place, Optimize).
+  function updateFromSchematic() {
     showView('pcb');
     if (!Model.S.board.w || !Pcb.placed().length) { toast('No PCB yet — use Generate PCB first'); return; }
-    let r; try { r = Model.mutate(() => Pcb.syncFromSchematic()); } catch (e) { toast(e.message); return; }
-    if (r.no_room.length) Pcb.fit();
-    const todo = Pcb.status().unrouted;
-    let full = false;
-    if (todo.length) {
-      try {
-        await runRouter({ opt: { keep: true, keepAll: true, onlyNets: todo } });
-        // boxed in by the existing tracks: re-route the whole board on the same placement, keep the better result
-        if (Pcb.status().unrouted.length) {
-          const before = JSON.stringify(Model.S.pcb), n0 = Pcb.status().unrouted.length;
-          await runRouter({ opt: {} }); full = true;
-          if (Pcb.status().unrouted.length > n0) { Model.mutate(() => { Model.S.pcb = JSON.parse(before); }); full = false; }
-        }
-      } catch (e) { toast(e.message); }
-    }
+    let r; try { r = Model.mutate(() => Pcb.syncFromSchematic({ place: false })); } catch (e) { toast(e.message); return; }
+    if (r.added.length) Pcb.fit();
     const st = Pcb.status(), pl = n => n > 1 ? 's' : '';
-    const what = [r.added.length && `placed ${r.added.length} new part${pl(r.added.length)} (${r.added.join(', ')})`,
-      r.moved.length && `moved ${r.moved.join(', ')} to clear overlaps`,
-      r.removed_copper && `removed ${r.removed_copper} track${pl(r.removed_copper)}/vias of deleted nets`,
-      todo.length && (full ? 'tracks re-routed on the same placement' : `re-routed ${todo.length} net${pl(todo.length)}`)].filter(Boolean);
-    const warn = [r.no_room.length && `no room on the board for ${r.no_room.join(', ')} — parked beside it: enlarge the board or use ✨ Optimize`,
-      r.no_footprint.length && `${r.no_footprint.join(', ')} have no footprint`,
-      st.unrouted.length && `still unrouted: ${st.unrouted.join(', ')} — try Route or ✨ Optimize`].filter(Boolean);
-    toast(`Updated from schematic: ${what.join(' · ') || 'board already matches the schematic'} · ${st.routed}/${st.nets} nets routed${warn.length ? ' · ' + warn.join(' · ') : ''}`, warn.length ? 15000 : 8000);
-    showDrc();
+    const what = [r.added.length && `${r.added.length} new part${pl(r.added.length)} loaded beside the board (${r.added.join(', ')}) — drag ${r.added.length > 1 ? 'them' : 'it'} into place`,
+      r.removed_copper && `removed ${r.removed_copper} track${pl(r.removed_copper)}/vias of deleted nets`].filter(Boolean);
+    const warn = [r.overlaps.length && `overlapping after footprint changes: ${r.overlaps.join(', ')}`,
+      r.no_footprint.length && `${r.no_footprint.join(', ')} have no footprint`].filter(Boolean);
+    toast(`Updated from schematic: ${what.join(' · ') || 'footprints and nets are up to date'} · ${st.routed}/${st.nets} nets routed${warn.length ? ' · ' + warn.join(' · ') : ''}`, warn.length || r.added.length ? 12000 : 6000);
   }
 
   // ---------- Gerber export: DRC first, then download or fix ----------

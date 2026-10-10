@@ -1566,7 +1566,8 @@ const Pcb = (() => {
   // longer exist is removed, new parts go to the nearest free spot next to the parts they connect to (away from existing
   // tracks when possible), and parts that now overlap (e.g. after a footprint change) are moved to a free spot nearby.
   // The caller then routes the nets left incomplete.
-  function syncFromSchematic() {
+  // opt.place === false: load only — new parts are lined up beside the board for manual placement, nothing is moved.
+  function syncFromSchematic(opt = {}) {
     const S = Model.S, R = rules();
     if (!S.board.w || !placed().length) throw new Error('Generate the PCB first');
     const nets = new Set(Object.keys(S.nets)), n0 = S.pcb.traces.length + S.pcb.vias.length;
@@ -1580,6 +1581,17 @@ const Pcb = (() => {
 
     const fresh = S.components.filter(c => !c.pcb && Lib.footprint(c.footprint));
     const noFp = S.components.filter(c => !c.pcb && !Lib.footprint(c.footprint)).map(c => c.ref);
+    if (opt.place === false) {
+      // column(s) to the right of the board, 1 mm apart, top to bottom
+      let x = S.board.w + 3, y = 0, colW = 0;
+      for (const c of fresh) {
+        const b = Lib.rotBox(Lib.footprint(c.footprint).box, c.rot || 0), w = b[2] - b[0], h = b[3] - b[1];
+        if (y > 0 && y + h > Math.max(S.board.h, 10)) { x += colW + 2; y = 0; colW = 0; }
+        c.pcb = { x: +(x - b[0]).toFixed(3), y: +(y - b[1]).toFixed(3), rot: c.rot || 0 };
+        y += h + 1; colW = Math.max(colW, w);
+      }
+      return { added: fresh.map(c => c.ref), parked: true, overlaps: overlaps(placed().filter(c => !fresh.includes(c)), 0).map(([a, b]) => `${a.ref}/${b.ref}`), no_footprint: noFp, removed_copper: removed };
+    }
     // overlapping placed parts: move the smaller, free one of each pair
     const area = c => { const b = fpBox(c); return (b[2] - b[0]) * (b[3] - b[1]); }, pinned = c => c.pcb.locked || c.pcbEdge || edgeInfo(c);
     const move = new Set();
