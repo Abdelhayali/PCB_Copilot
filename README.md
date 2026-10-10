@@ -4,7 +4,7 @@ An AI copilot for electronics design: describe a circuit in plain language and i
 
 ![CircuitPilot — ESP32-C3 board schematic](docs/media/schematic.png)
 
-**▶ Try it online: [abdelhayali.github.io/CircuitPilot](https://abdelhayali.github.io/CircuitPilot/)**: nothing to install. Open ⚙ Settings, paste an API key (Claude, OpenAI, Gemini, Ollama Cloud, OpenRouter…) and describe your circuit. Projects are saved in your browser. For local models, knowledge folders and Claude Code control, run the desktop version (below).
+**▶ Try it online: [bodynet.net/CircuitPilot](https://bodynet.net/CircuitPilot/)**: nothing to install. Open ⚙ Settings, paste an API key (Claude, OpenAI, Gemini, Ollama Cloud, OpenRouter…) and describe your circuit. Projects are saved in your browser. For local models, knowledge folders and Claude Code control, run the desktop version (below).
 
 ## See it in action
 
@@ -110,7 +110,7 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 
 The web version is the same app: when it is not served by `server.py`, `js/static-backend.js` answers the app's requests in the browser.
 
-**Local models in the web version** need the model server to accept requests from the web page (CORS): Ollama with `OLLAMA_ORIGINS=https://abdelhayali.github.io`, LM Studio with *Enable CORS* in the server settings, llama.cpp's `llama-server` allows it by default. Your browser may ask for permission to reach devices on your local network.
+**Local models in the web version** need the model server to accept requests from the web page (CORS): Ollama with `OLLAMA_ORIGINS=https://bodynet.net`, LM Studio with *Enable CORS* in the server settings, llama.cpp's `llama-server` allows it by default. Your browser may ask for permission to reach devices on your local network.
 
 ## Run
 
