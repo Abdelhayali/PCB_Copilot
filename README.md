@@ -173,7 +173,7 @@ Only document-type files inside the chosen folder are read (no `..` escapes, hid
 
 ## Control from Claude Code (MCP) and other tools
 
-`mcp/circuitpilot-mcp.mjs` exposes all 29 design tools — projects, parts database, schematic editing, ERC, custom parts, knowledge, PCB generation, Gerber export — through the **Model Context Protocol**. It runs the same engine as the browser app and talks to the running `server.py`, so every change shows up live in the browser.
+`mcp/circuitpilot-mcp.mjs` exposes all 49 design tools — projects, parts database, schematic editing, ERC, custom parts, knowledge, PCB generation, Gerber export — through the **Model Context Protocol**. It runs the same engine as the browser app and talks to the running `server.py`, so every change shows up live in the browser.
 
 **Claude Code** — this repo ships a `.mcp.json`, so just open the folder in Claude Code (with `server.py` running) and approve the `circuitpilot` server. Or add it globally:
 
