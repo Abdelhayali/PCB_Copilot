@@ -123,7 +123,7 @@ const Enclosure = (() => {
         // arc around the corner
         let a1 = Math.atan2(n1[1], n1[0]), a2 = Math.atan2(n2[1], n2[0]);
         if (d > 0) { while (a2 < a1) a2 += 2 * Math.PI; } else { while (a2 > a1) a2 -= 2 * Math.PI; }
-        const steps = Math.max(1, Math.ceil(Math.abs(a2 - a1) / (Math.PI / 16)));
+        const steps = Math.max(1, Math.ceil(Math.abs(a2 - a1) / (HQ ? Math.PI / 64 : Math.PI / 16)));
         for (let k = 0; k <= steps; k++) { const a = a1 + (a2 - a1) * k / steps; out.push([B[0] + Math.cos(a) * Math.abs(d) * Math.sign(d), B[1] + Math.sin(a) * Math.abs(d) * Math.sign(d)]); }
       } else {
         // mitre (limited)
@@ -134,7 +134,10 @@ const Enclosure = (() => {
     }
     return dedupe(out);
   }
-  const circle = (cx, cy, r, n = 28) => Array.from({ length: n }, (_, k) => [cx + r * Math.cos(k / n * 2 * Math.PI), cy + r * Math.sin(k / n * 2 * Math.PI)]);
+  // quality: 'preview' (fast) or 'high' (fine segments for the STLs sent to a print service)
+  let HQ = false;
+  const setQuality = q => { HQ = q === 'high'; };
+  const circle = (cx, cy, r, n = 28) => { if (HQ) n = Math.max(n, Math.min(160, Math.ceil(2 * Math.PI * r / 0.35)), 48); return Array.from({ length: n }, (_, k) => [cx + r * Math.cos(k / n * 2 * Math.PI), cy + r * Math.sin(k / n * 2 * Math.PI)]); };
   const rect = (x0, y0, x1, y1) => [[x0, y0], [x1, y0], [x1, y1], [x0, y1]];
   function earcut(P) { // ear clipping for a simple CCW polygon → triangles (index triples)
     const idx = P.map((_, i) => i), tris = [];
@@ -555,7 +558,7 @@ const Enclosure = (() => {
     return { pos, nor, triangles: tris.length };
   }
   // CSG kernel, shared with the script modeller (shape3d.js)
-  const csg = { guard, V, Plane, Poly, union, subtract, intersect, repair, zipSeams, fillHoles, earcut, ccw, dedupe, offset, area, triangles, stl, meshArrays };
-  return { DEFAULTS, mode, script, params, setParams, addCutout, layout, build, exportFiles, describe, meshArrays, partHeight, stl, offset, csg };
+  const csg = { setQuality, get HQ() { return HQ; }, guard, V, Plane, Poly, union, subtract, intersect, repair, zipSeams, fillHoles, earcut, ccw, dedupe, offset, area, triangles, stl, meshArrays };
+  return { DEFAULTS, setQuality, mode, script, params, setParams, addCutout, layout, build, exportFiles, describe, meshArrays, partHeight, stl, offset, csg };
 })();
 if (typeof module !== 'undefined') module.exports = Enclosure;

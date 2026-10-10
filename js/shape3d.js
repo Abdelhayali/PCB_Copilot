@@ -6,7 +6,9 @@
 const Shape3D = (() => {
   const K = () => Enclosure.csg;
   let FN = 0; // global resolution override (segments per full circle); 0 = adaptive
-  const fnFor = (r, fn) => Math.max(3, Math.round(fn || FN || Math.max(12, Math.min(48, Math.ceil(2 * Math.PI * r / 1.2)))));
+  let HQ3 = false;   // high quality (fabrication STL): ~0.4 mm curve segments, never fewer than 32 per circle
+  const fnFor = (r, fn) => HQ3 ? Math.max(3, Math.round(Math.max(fn || 0, FN || 0, Math.min(144, Math.max(32, Math.ceil(2 * Math.PI * r / 0.4))))))
+    : Math.max(3, Math.round(fn || FN || Math.max(12, Math.min(48, Math.ceil(2 * Math.PI * r / 1.2)))));
   const num = (v, name) => { const n = +v; if (!isFinite(n)) throw new Error(`${name} must be a number (got ${JSON.stringify(v)})`); return n; };
   const vec3 = (v, name = 'vector', def = 0) => {
     if (typeof v === 'number') return [v, v, v];
@@ -586,6 +588,7 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
   function run(code, ctx = {}, opts = {}) {
     const t0 = Date.now(), parts = [], logs = [];
     budget = t0 + (opts.timeLimitMs || 90000); K().guard.deadline = budget;
+    HQ3 = opts.quality === 'high'; K().setQuality(HQ3 ? 'high' : 'preview');
     FN = 0;
     const pcb = ctx.pcb || null;
     const lib = {
@@ -624,13 +627,13 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     K2.outlineAround = (style, e, m = 2, r = 3) => {
       const X = e.w / 2 + m, Y = e.l / 2 + m; let s;
       switch (style) {
-        case 'oval': s = api2.ellipse(X * Math.SQRT2, Y * Math.SQRT2, { fn: 96 }); break;
-        case 'circle': { const R = Math.hypot(X, Y); s = api2.circle(R, { fn: 96 }); break; }
-        case 'pill': { const long = X >= Y, A = long ? X : Y, B = long ? Y : X, R = B * 1.18, c = Math.max(0, A - Math.sqrt(R * R - B * B)); s = api2.roundedRect(long ? 2 * (c + R) : 2 * R, long ? 2 * R : 2 * (c + R), R * 0.9, { fn: 64 }); break; }   // r < R: no µm-short straight edge at the ends
+        case 'oval': s = api2.ellipse(X * Math.SQRT2, Y * Math.SQRT2, { fn: HQ3 ? 192 : 96 }); break;
+        case 'circle': { const R = Math.hypot(X, Y); s = api2.circle(R, { fn: HQ3 ? 192 : 96 }); break; }
+        case 'pill': { const long = X >= Y, A = long ? X : Y, B = long ? Y : X, R = B * 1.18, c = Math.max(0, A - Math.sqrt(R * R - B * B)); s = api2.roundedRect(long ? 2 * (c + R) : 2 * R, long ? 2 * R : 2 * (c + R), R * 0.9, { fn: HQ3 ? 128 : 64 }); break; }   // r < R: no µm-short straight edge at the ends
         case 'hex': { const Rc = Math.max(X + Y / Math.sqrt(3), 2 * Y / Math.sqrt(3)) + 0.01; s = api2.polygon([0, 60, 120, 180, 240, 300].map(a => [Rc * Math.cos(a * Math.PI / 180), Rc * Math.sin(a * Math.PI / 180)])); break; }
         case 'octagon': { const k = Math.min(X, Y) * 0.32, ax = X + k, ay = Y + k, c = 2 * k + 0.01; s = api2.polygon([[ax, ay - c], [ax - c, ay], [-ax + c, ay], [-ax, ay - c], [-ax, -ay + c], [-ax + c, -ay], [ax - c, -ay], [ax, -ay + c]]); break; }
-        case 'squircle': { const a = X * Math.pow(2, 0.25), b = Y * Math.pow(2, 0.25), n = 96, pts = []; for (let k = 0; k < n; k++) { const t = k / n * 2 * Math.PI, c = Math.cos(t), si = Math.sin(t); pts.push([a * Math.sign(c) * Math.sqrt(Math.abs(c)), b * Math.sign(si) * Math.sqrt(Math.abs(si))]); } s = api2.polygon(pts); break; }
-        default: s = api2.roundedRect(2 * X, 2 * Y, Math.min(r, X - 0.01, Y - 0.01), { fn: 48 });
+        case 'squircle': { const a = X * Math.pow(2, 0.25), b = Y * Math.pow(2, 0.25), n = HQ3 ? 192 : 96, pts = []; for (let k = 0; k < n; k++) { const t = k / n * 2 * Math.PI, c = Math.cos(t), si = Math.sin(t); pts.push([a * Math.sign(c) * Math.sqrt(Math.abs(c)), b * Math.sign(si) * Math.sqrt(Math.abs(si))]); } s = api2.polygon(pts); break; }
+        default: s = api2.roundedRect(2 * X, 2 * Y, Math.min(r, X - 0.01, Y - 0.01), { fn: HQ3 ? 128 : 48 });
       }
       return s.translate([e.cx, e.cy]);
     };
@@ -745,7 +748,7 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
     } catch (e) {
       const m = String(e && e.stack || '').match(/<anonymous>:(\d+):(\d+)/);
       const err = new Error((e && e.message || String(e)) + (m ? ` (script line ${+m[1] - 3})` : ''));
-      err.line = m ? +m[1] - 3 : null; err.logs = logs; budget = null; K().guard.deadline = 0; throw err;
+      err.line = m ? +m[1] - 3 : null; err.logs = logs; budget = null; K().guard.deadline = 0; HQ3 = false; K().setQuality('preview'); throw err;
     }
     // fit report: shells must not cut into the board or the components
     const report = { collisions: [], warnings: [] };
@@ -832,7 +835,7 @@ part('lid', union(intersection(shell, cube([400, 400, 200]).translate([-200, -20
       }
       report.outside = out;
     }
-    budget = null; K().guard.deadline = 0;
+    budget = null; K().guard.deadline = 0; HQ3 = false; K().setQuality('preview');
     // outputs
     const { V } = K();
     const out = parts.map(p => {

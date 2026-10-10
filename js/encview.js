@@ -338,8 +338,14 @@ const EncView = (() => {
   // ---------- exports ----------
   function exportAll(kind) {
     if (Enclosure.mode() === 'custom') return exportCustom(kind);
+    if (kind !== 'scad') { App.toast('Building high-resolution STL for printing…', 20000); setTimeout(() => exportBox(kind), 30); return; }
+    exportBox(kind);
+  }
+  function exportBox(kind) {
     try {
-      const { files, info } = Enclosure.exportFiles();
+      // STLs for a print service: rebuilt with fine curve segments (the preview uses a coarser, faster mesh)
+      let out; Enclosure.setQuality('high'); try { out = Enclosure.exportFiles(); } finally { Enclosure.setQuality('preview'); }
+      const { files, info } = out;
       const names = Object.keys(files);
       if (kind === 'stl') { for (const n of names.filter(n => n.endsWith('.stl'))) App.download(n, new Blob([files[n]], { type: 'model/stl' })); }
       else if (kind === 'scad') { const n = names.find(n => n.endsWith('.scad')); App.download(n, files[n], 'text/plain'); }
@@ -347,9 +353,28 @@ const EncView = (() => {
       App.toast(`Enclosure ${info.outer_mm.join(' × ')} mm exported`);
     } catch (e) { App.toast(e.message); }
   }
-  function exportCustom(kind) {
-    const r = ui.custom && ui.custom.r;
-    if (!r) { App.toast(ui.running ? 'Still building the 3D model…' : 'Run the 3D script first'); return; }
+  // high-resolution rebuild of the script for the STL files (own worker; the preview stays as it is)
+  let hqBusy = false;
+  function buildHQ(code) {
+    return new Promise((res, rej) => {
+      const w = new Worker('js/shape-worker.js'), t = setTimeout(() => { w.terminate(); rej(new Error('high-resolution build took longer than 6 minutes')); }, 360000);
+      w.onmessage = e => { clearTimeout(t); w.terminate(); e.data.ok ? res(e.data.r) : rej(new Error(e.data.error)); };
+      w.onerror = e => { clearTimeout(t); w.terminate(); rej(new Error(e.message || 'worker error')); };
+      w.postMessage({ id: 1, code, ctx: scriptCtx(), opts: { quality: 'high', mesh: false, check: false, timeLimitMs: 340000 } });
+    });
+  }
+  async function exportCustom(kind) {
+    const prev = ui.custom && ui.custom.r;
+    if (!prev) { App.toast(ui.running ? 'Still building the 3D model…' : 'Run the 3D script first'); return; }
+    let r = prev;
+    if (kind !== 'scad') {
+      if (hqBusy) { App.toast('High-resolution build already running…'); return; }
+      hqBusy = true; const t0 = Date.now();
+      const tick = setInterval(() => App.toast(`Building high-resolution STL for printing… ${Math.round((Date.now() - t0) / 1000)} s`, 2000), 1000);
+      try { r = await buildHQ(Enclosure.script()); }
+      catch (e) { App.toast('High-resolution build failed (' + e.message + ') — exporting the preview mesh instead', 7000); r = prev; }
+      finally { clearInterval(tick); hqBusy = false; }
+    }
     const base = (Model.S.name || 'design').replace(/[^\w.-]+/g, '_'), files = {};
     for (const p of r.parts) files[`${base}-${p.name}.stl`] = p.stl;
     files[base + '-enclosure.scad'] = r.scad;
@@ -360,7 +385,7 @@ const EncView = (() => {
     if (kind === 'stl') { for (const n of Object.keys(files).filter(n => n.endsWith('.stl'))) App.download(n, new Blob([files[n]], { type: 'model/stl' })); }
     else if (kind === 'scad') App.download(base + '-enclosure.scad', r.scad, 'text/plain');
     else App.download(base + '-enclosure.zip', makeZip(files));
-    App.toast(`Exported ${r.parts.length} part${r.parts.length > 1 ? 's' : ''}`);
+    App.toast(`Exported ${r.parts.length} part${r.parts.length > 1 ? 's' : ''}${r !== prev ? ` · high resolution (${r.parts.reduce((a, p) => a + p.triangles, 0).toLocaleString()} triangles)` : ''}`, 6000);
   }
   return { init, show, hide, props, ui, rebuild: () => rebuild(true), runScript };
 })();
