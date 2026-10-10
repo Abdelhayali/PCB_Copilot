@@ -320,9 +320,11 @@ Enclosure **STL ⤓** files are always rebuilt at high resolution (≈0.4 mm cur
 
 ## License and credit
 
-CircuitPilot is open source under the [MIT License](LICENSE), © 2026 Abdelhay Ali. You can use, change and share it, including commercially, as long as the copyright notice stays with the code.
+CircuitPilot is open source under the [Apache License 2.0](LICENSE), © 2026 Abdelhay Ali. You can use, change and share it, including commercially.
 
-If CircuitPilot helps your project, please credit it, for example:
+If you redistribute CircuitPilot or build on its code, keep the [NOTICE](NOTICE) file: it credits CircuitPilot by Abdelhay Ali, and the Apache License requires that credit to be passed on with your version (in your NOTICE file, documentation or "about" screen).
+
+If CircuitPilot helps your project, please credit it too, for example:
 
 > Designed with [CircuitPilot](https://github.com/Abdelhayali/CircuitPilot) by Abdelhay Ali
 
