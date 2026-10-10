@@ -17,7 +17,7 @@ const DocView = (() => {
     const g = {};
     for (const c of S.components) {
       const lib = libOf(c), fp = (lib && lib.footprint && lib.footprint.name) || c.footprint || '';
-      const lcsc = c.type === 'part' ? (/^C\d+$/.test(c.lcsc || '') ? c.lcsc : '') : (c.lcscPart || '');
+      const lcsc = Model.lcscOf(c);
       const desc = (lib && (lib.mfr_part || lib.name)) || ((Lib.type(c.type) || {}).name) || c.type;
       const k = [c.value || '', fp, lcsc, desc].join('|'); (g[k] = g[k] || []).push(c.ref);
     }

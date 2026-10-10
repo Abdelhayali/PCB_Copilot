@@ -131,7 +131,8 @@ const App = (() => {
     // size from the footprint itself (it may have been edited), then from the part's package
     const l = Model.S.lib[m[2]], sz = t => (String(t || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1];
     const fs = l && l.footprint && sz(l.footprint.name), ps = l && sz(l.package), pkg = fs || ps || (l && (l.package || (l.footprint && l.footprint.name)));
-    return pkg ? `${pkg} · ${m[1] === 'LCSC' ? 'JLCPCB ' : ''}${m[2]}${fs && ps && fs !== ps ? ` (part is ${ps})` : ''}` : f;
+    const num = l && /^C\d+$/.test(l.lcsc || '') ? 'JLCPCB ' + l.lcsc + (l.lcsc !== m[2] ? ', own copy' : '') : m[1] === 'LCSC' ? 'JLCPCB ' + m[2] : m[2];
+    return pkg ? `${pkg} · ${num}${fs && ps && fs !== ps ? ` (part is ${ps})` : ''}` : f;
   }
   function renderProps() {
     const el = $('#props');
@@ -147,7 +148,7 @@ const App = (() => {
       el.innerHTML = `<div class="ph">${esc(c.ref)} <span class="muted">${esc(d.name)}</span></div>
         <label>Reference<input id="pRef" value="${esc(c.ref)}"></label>
         <label>Value<input id="pVal" value="${esc(c.value)}"></label>
-        ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${Model.S.lib[c.lcsc].custom ? '<span class="muted">Custom part · ' + esc(c.lcsc) + '</span>' : `${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(c.lcsc)}</span>`}${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
+        ${c.lcsc && Model.S.lib[c.lcsc] ? `<div class="lcscinfo"><b>${esc(Model.S.lib[c.lcsc].name)}</b><br>${Model.S.lib[c.lcsc].custom ? '<span class="muted">Custom part · ' + esc(c.lcsc) + '</span>' : `${esc(Model.S.lib[c.lcsc].manufacturer || '')} · <span class="muted">${esc(Model.lcscOf(c) || c.lcsc)}</span>`}${Model.S.lib[c.lcsc].datasheet ? ` · <a href="${esc(Model.S.lib[c.lcsc].datasheet)}" target="_blank" rel="noopener">datasheet</a>` : ''}</div>` : ''}
         <label>Footprint<select id="pFp">${fps.map(f => `<option value="${esc(f)}" ${f === c.footprint ? 'selected' : ''}>${esc(fpLabel(f))}</option>`).join('')}</select></label>
         ${Sch.sheets().length > 1 ? `<label>Sheet<select id="pSheet">${Sch.sheets().map((s, i) => `<option value="${i}" ${Model.sheetOf(c) === i ? 'selected' : ''}>${i + 1}: ${esc(s.name || '')}</option>`).join('')}</select></label>` : ''}
         ${d.generic ? `<label>Pins (comma separated, pin 1 first)<textarea id="pPins" rows="3">${esc((c.pins || Lib.type(c.type).pins(c).map(p => p.name)).join(', '))}</textarea></label>` : ''}
@@ -183,7 +184,12 @@ const App = (() => {
   // Edit a placed part (or convert a built-in one into an editable custom part).
   function editComponent(ref) {
     const c = Model.comp(ref); if (!c) return;
-    if (c.type === 'part' && Model.S.lib[c.lcsc]) { PartEditor.open(Model.S.lib[c.lcsc], { key: c.lcsc, saveLib: true }); return; }
+    if (c.type === 'part' && Model.S.lib[c.lcsc]) {
+      // other components using the same part: the editor offers "only this one" (its own copy) or all of them
+      const users = Model.S.components.filter(o => o.type === 'part' && o.lcsc === c.lcsc).map(o => o.ref);
+      PartEditor.open(Model.S.lib[c.lcsc], { key: c.lcsc, saveLib: users.length < 2, ref: c.ref, users, onDone: () => Sch.select(c.ref) });
+      return;
+    }
     const d = PartEditor.fromBuiltin(c), key = PartEditor.newKey(d.name);
     PartEditor.open(d, {
       key, isNew: true, saveLib: true, onDone: k => {
@@ -255,7 +261,7 @@ const App = (() => {
     const S = Model.S, g = {};
     for (const c of S.components) {
       const lib = (c.lcsc && S.lib[c.lcsc]) || (c.dbfp && c.footprint === 'LCSC:' + c.dbfp && S.lib[c.dbfp]), fpn = (lib && lib.footprint && lib.footprint.name) || c.footprint;
-      const code = c.type === 'part' ? c.lcsc : c.lcscPart || '';
+      const code = Model.lcscOf(c);
       const k = [c.value, fpn, code].join('|'); (g[k] = g[k] || []).push(c.ref);
     }
     const q = s => '"' + String(s).replace(/"/g, '""') + '"';

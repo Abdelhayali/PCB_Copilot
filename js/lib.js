@@ -163,7 +163,7 @@ const Lib = (() => {
   }
   def('part', {
     name: 'Database part', cat: 'Database', prefix: 'U', value: '', generic: false, hidden: true,
-    fps: c => ['LCSC:' + c.lcsc],
+    fps: c => [(/^C\d+$/.test(c.lcsc) ? 'LCSC:' : 'LIB:') + c.lcsc],
     pins: c => partGeo(c).pins,
     box: c => { const g = partGeo(c); return [-g.hw - 20, -g.hh, g.hw + 20, g.hh]; },
     draw: c => {

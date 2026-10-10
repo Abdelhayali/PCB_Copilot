@@ -2,7 +2,7 @@
 // Part editor: create / modify a part's symbol (pins) and footprint (pads).
 const PartEditor = (() => {
   const $ = s => document.querySelector(s);
-  let def = null, selPad = -1, drag = null, onDone = null, isNew = false;
+  let def = null, selPad = -1, drag = null, onDone = null, isNew = false, scope = null;
 
   const clone = o => JSON.parse(JSON.stringify(o));
   const r4 = v => Math.round(v * 10000) / 10000;
@@ -25,6 +25,9 @@ const PartEditor = (() => {
   // ---------- open / save ----------
   function open(d, opts = {}) {
     def = clone(d); isNew = !!opts.isNew; onDone = opts.onDone || null; selPad = -1;
+    scope = opts.ref && opts.users && opts.users.length > 1 ? { ref: opts.ref, users: opts.users } : null;
+    $('#edScopeL').classList.toggle('hidden', !scope);
+    if (scope) $('#edScope').innerHTML = `<option value="one">only ${esc(scope.ref)}</option><option value="all">all ${scope.users.length} (${esc(scope.users.join(', '))})</option>`;
     def.pins = def.pins || []; def.footprint = def.footprint || { name: 'custom', pads: [], body: null };
     if (!def.key) def.key = opts.key || newKey(def.name);
     $('#edTitle').textContent = isNew ? 'New part' : 'Edit part';
@@ -65,12 +68,19 @@ const PartEditor = (() => {
     f.pads.forEach(p => { if (!p.drill) delete p.drill; });
     f.body = bodyOf(f);
     const out = { key: def.key, name: def.name, prefix: def.prefix, value: def.value, pins: def.pins.map(p => ({ num: String(p.num).trim(), name: String(p.name || p.num).trim(), side: p.side || 'L' })), footprint: f, custom: !/^C\d+$/.test(def.key), source: def.source, lcsc: def.lcsc, manufacturer: def.manufacturer, mfr_part: def.mfr_part, datasheet: def.datasheet, package: def.package };
-    const n = Model.mutate(() => Model.setLibPart(out.key, out));
+    // "only this one": the component gets its own copy of the part (same LCSC number for the BOM), the others keep theirs
+    const one = scope && $('#edScope').value === 'one';
+    if (one) {
+      const base = String(def.key).replace(/-[A-Za-z]+\d+$/, ''), lib = Model.S.lib;
+      let k = base + '-' + scope.ref; for (let i = 2; lib[k] && k !== def.key; i++) k = base + '-' + scope.ref + '_' + i;
+      out.key = k; out.lcsc = Model.lcscOf({ type: 'part', lcsc: def.key }) || out.lcsc; out.custom = !out.lcsc;
+    }
+    const n = Model.mutate(() => { const r = Model.setLibPart(out.key, out); if (one) { Model.assignPart(scope.ref, out.key); return 1; } return r; });
     if ($('#edSaveLib').checked) { try { await Projects.savePart(out); App.refreshParts(); } catch (e) { App.toast(e.message); } }
     const k = out.key; close();
     if (place) App.placeLibPart(k);
     const sz = t => (String(t || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1], fs = sz(f.name), ps = sz(out.package);
-    App.toast(`Saved ${out.name}${n ? ` — updated ${n} placed part${n > 1 ? 's' : ''}` : ''}${!out.custom && fs && ps && fs !== ps ? ` · note: the footprint is now ${fs} but JLCPCB part ${out.key} is ${ps} — pick a ${fs} part for assembly` : ''}`, 9000);
+    App.toast(`Saved ${out.name}${n ? ` — updated ${n} placed part${n > 1 ? 's' : ''}` : ''}${!out.custom && fs && ps && fs !== ps ? ` · note: the footprint is now ${fs} but JLCPCB part ${out.lcsc || out.key} is ${ps} — pick a ${fs} part for assembly` : ''}`, 9000);
     onDone && onDone(k);
   }
 

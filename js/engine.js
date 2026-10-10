@@ -379,7 +379,7 @@ const Engine = (() => {
     const pkgOf = c => { const l = c.dbfp && c.footprint === 'LCSC:' + c.dbfp && S.lib[c.dbfp]; const t = [(l && l.package) || '', (l && l.footprint && l.footprint.name) || '', c.footprint].join(' ').toUpperCase(); const m = t.match(/\b(0201|0402|0603|0805|1206|1210|2512|SOD-?123F?|SOD-?323|SMA|SMB|SOT-?23(-\d)?|SOT-?223|SOIC-?\d+|SOP-?\d+|TSSOP-?\d+|QFN-?\d+)\b/); return m ? m[1] : ''; };
     const norm = (t, v) => { v = String(v).trim(); if (t === 'resistor' && /^[\d.]+[kKmMR]?$/.test(v)) return v.replace(/R$/, '') + (/[kKmM]$/.test(v) ? 'Ω' : 'Ω'); if (/capacitor/.test(t) && /^[\d.]+[pnuμ]$/.test(v)) return v.replace('u', 'µ') + 'F'; if (t === 'inductor' && /^[\d.]+[nuμ]$/.test(v)) return v.replace('u', 'µ') + 'H'; return v; };
     for (const c of S.components) {
-      if (c.type === 'part') { out.push({ ref: c.ref, lcsc: c.lcsc, source: 'database part' }); continue; }
+      if (c.type === 'part') { out.push({ ref: c.ref, lcsc: Model.lcscOf(c) || null, source: 'database part' }); continue; }
       if (c.lcscPart && !overwrite) {
         const d = Lib.dbDefault(c.type, c.value);
         const same = d && d.lcsc === c.lcscPart && (d.byValue || String(c.value).toLowerCase() === String(d.value).toLowerCase());

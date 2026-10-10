@@ -252,6 +252,21 @@ const Model = (() => {
     for (const net in S.nets) S.nets[net] = S.nets[net].map(k => ren[k] || k);
   }
   const fpNameFor = key => (/^C\d+$/.test(key) ? 'LCSC:' : 'LIB:') + key;
+  // JLCPCB/LCSC number of a component (a per-component copy "C15850-C1" keeps the number of the part it came from)
+  function lcscOf(c) {
+    if (c.type !== 'part') return c.lcscPart || '';
+    const l = S.lib[c.lcsc], n = l && l.lcsc;
+    return /^C\d+$/.test(n || '') ? n : /^C\d+$/.test(c.lcsc || '') ? c.lcsc : '';
+  }
+  // point one component at another library part (e.g. its own edited copy); only the copper on its old pads goes
+  function assignPart(ref, key) {
+    const c = comp(ref), def = S.lib[key]; if (!c || !def) throw new Error('No part ' + key);
+    if (!pruneCopper(c.ref)) invalidate(netsOfComp(c.ref));
+    const nums = new Set((def.pins || []).map(p => String(p.num)));
+    for (const [n, keys] of Object.entries(S.nets)) { const k2 = keys.filter(k => !(k.startsWith(c.ref + '.') && !nums.has(k.slice(c.ref.length + 1)))); if (k2.length) S.nets[n] = k2; else delete S.nets[n]; }
+    c.type = 'part'; c.lcsc = key; delete c.pins; c.footprint = fpNameFor(key);
+    return c;
+  }
   // Add or replace a library part definition; every placed instance follows the new definition.
   function setLibPart(key, def) {
     S.lib[key] = Object.assign({}, def, { key });
@@ -387,6 +402,6 @@ const Model = (() => {
     get S() { return S; }, blank, subscribe: f => subs.push(f), emit, begin, mutate, load, undo, redo, snapshot,
     canUndo: () => undoStack.length > 0, canRedo: () => redoStack.length > 0,
     comp, pinsWorld, bbox, pinIndex, netOf, resolvePins, addComponent, removeComponent, updateComponent, connect, disconnect,
-    renameNet, removeNet, clear, setLibPart, fpNameFor, attachDb, erc, autoLayout, spaceOut, labelBox, sheetOf, summary, isPower, isGround, invalidate, netsOfComp
+    renameNet, removeNet, clear, setLibPart, fpNameFor, lcscOf, assignPart, attachDb, erc, autoLayout, spaceOut, labelBox, sheetOf, summary, isPower, isGround, invalidate, netsOfComp
   };
 })();

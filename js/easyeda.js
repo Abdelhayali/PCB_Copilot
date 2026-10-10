@@ -78,7 +78,7 @@ const EasyEDA = (() => {
       const tf = (x, y) => { const [rx, ry] = Lib.rot(x, y, c.rot || 0); return [n2(c.x + rx), n2(c.y + ry)]; };
       const lib = c.lcsc && S.lib[c.lcsc];
       const fp = (lib && lib.footprint && lib.footprint.name) || c.footprint || '';
-      const lcsc = c.type === 'part' ? (/^C\d+$/.test(c.lcsc || '') ? c.lcsc : '') : (c.lcscPart || '');
+      const lcsc = Model.lcscOf(c);
       const para = ['package', fp, 'pre', (c.ref.replace(/\d+$/, '') || d.prefix || 'U') + '?', 'Contributor', 'CircuitPilot', 'Supplier', lcsc ? 'LCSC' : '', 'Supplier Part', lcsc, 'Manufacturer Part', (lib && lib.mfr_part) || c.value || '', 'Manufacturer', (lib && lib.manufacturer) || ''];
       const sub = [];
       // graphics
