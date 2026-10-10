@@ -33,7 +33,20 @@ const PartEditor = (() => {
     $('#edSaveLib').checked = opts.saveLib !== false;
     $('#edPlace').classList.toggle('hidden', !opts.allowPlace);
     $('#edModal').classList.remove('hidden');
-    renderPins(); renderSym(); renderFp(); fitFp();
+    renderPins(); renderSym(); renderFp(); fitFp(); showCurrentFp();
+  }
+  // footprint menu starts on the part's current footprint (listed as "Current: …" when it is not a standard pattern)
+  function showCurrentFp() {
+    const f = def.footprint, nm = String(f.name || 'custom'), sel = $('#edGen'), old = sel.querySelector('option[data-cur]');
+    if (old) old.remove();
+    let pat = null, n = null, m;
+    if (Lib.FOOTPRINT_PATTERNS.includes(nm)) pat = nm;
+    else if ((m = /^(DIP|SOIC|TSSOP|QFN)-(\d+)(-EP)?$/.exec(nm))) { pat = m[1] + '-<n>' + (m[3] || ''); n = +m[2]; }
+    else if ((m = /^PinHeader_1x(\d+)$/.exec(nm))) { pat = 'PinHeader_1x<n>'; n = +m[1]; }
+    if (pat && Lib.FOOTPRINT_PATTERNS.includes(pat)) { sel.value = pat; if (n) $('#edGenN').value = n; return; }
+    const size = (nm.match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1];
+    sel.insertAdjacentHTML('afterbegin', `<option value="" data-cur>Current: ${esc(nm)}${size ? ' (' + size + ')' : ''} · ${f.pads.length} pads</option>`);
+    sel.value = '';
   }
   function close() { $('#edModal').classList.add('hidden'); def = null; }
   function readMeta() { def.name = $('#edName').value.trim() || 'Part'; def.prefix = ($('#edPrefix').value.trim() || 'U').replace(/[^A-Za-z]/g, '') || 'U'; def.value = $('#edValue').value.trim() || def.name; }
@@ -56,7 +69,8 @@ const PartEditor = (() => {
     if ($('#edSaveLib').checked) { try { await Projects.savePart(out); App.refreshParts(); } catch (e) { App.toast(e.message); } }
     const k = out.key; close();
     if (place) App.placeLibPart(k);
-    App.toast(`Saved ${out.name}${n ? ` — updated ${n} placed part${n > 1 ? 's' : ''}` : ''}`);
+    const sz = t => (String(t || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1], fs = sz(f.name), ps = sz(out.package);
+    App.toast(`Saved ${out.name}${n ? ` — updated ${n} placed part${n > 1 ? 's' : ''}` : ''}${!out.custom && fs && ps && fs !== ps ? ` · note: the footprint is now ${fs} but JLCPCB part ${out.key} is ${ps} — pick a ${fs} part for assembly` : ''}`, 9000);
     onDone && onDone(k);
   }
 
@@ -213,10 +227,11 @@ const PartEditor = (() => {
   }
   function generate() {
     let name = $('#edGen').value; const n = +$('#edGenN').value || 8;
+    if (!name) { App.toast('Choose a footprint on the left, then Update'); return; }
     if (name.includes('<n>')) name = name.replace('<n>', n);
     const fp = Lib.footprint(name); if (!fp) { App.toast('Cannot generate ' + name); return; }
     if (def.footprint.pads.length && !confirm(`Replace the ${def.footprint.pads.length} current pads with ${name}?`)) return;
-    def.footprint = { name, pads: clone(fp.pads), body: fp.body ? clone(fp.body) : null }; selPad = -1; fitFp();
+    def.footprint = { name, pads: clone(fp.pads), body: fp.body ? clone(fp.body) : null }; selPad = -1; fitFp(); showCurrentFp();
   }
 
   function key(e) {

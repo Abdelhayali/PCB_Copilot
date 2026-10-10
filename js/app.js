@@ -128,8 +128,10 @@ const App = (() => {
   // "LCSC:C25804" → "0603 · JLCPCB C25804" (the package of the database part behind the footprint)
   function fpLabel(f) {
     const m = /^(LCSC|LIB):(.+)$/.exec(f); if (!m) return f;
-    const l = Model.S.lib[m[2]], pkg = l && (String(l.package || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1] || (l && (l.package || (l.footprint && l.footprint.name)));
-    return pkg ? `${pkg} · ${m[1] === 'LCSC' ? 'JLCPCB ' : ''}${m[2]}` : f;
+    // size from the footprint itself (it may have been edited), then from the part's package
+    const l = Model.S.lib[m[2]], sz = t => (String(t || '').match(/(?:^|\D)(0201|0402|0603|0805|1206|1210|2512)(?!\d)/) || [])[1];
+    const fs = l && l.footprint && sz(l.footprint.name), ps = l && sz(l.package), pkg = fs || ps || (l && (l.package || (l.footprint && l.footprint.name)));
+    return pkg ? `${pkg} · ${m[1] === 'LCSC' ? 'JLCPCB ' : ''}${m[2]}${fs && ps && fs !== ps ? ` (part is ${ps})` : ''}` : f;
   }
   function renderProps() {
     const el = $('#props');
