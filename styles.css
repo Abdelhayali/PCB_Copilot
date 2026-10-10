@@ -425,3 +425,6 @@ ul.cutl li { padding: 2px 0; }
 #props .pnet { color: var(--accent); font-size: 15px; font-weight: 700; }
 #props .pinlist { display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 8px; }
 #props .pinlist span { font-size: 11px; padding: 1px 6px; border-radius: 4px; background: var(--panel2); border: 1px solid var(--line); }
+/* web version (no server.py): hide features that read files on this computer */
+body.static-web #btnKnow, body.static-web #btnFolder { display: none !important; }
+body:not(.static-web) #modal .webonly { display: none; }

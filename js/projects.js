@@ -92,11 +92,12 @@ const Projects = (() => {
     try {
       const ps = await api('GET', '/api/projects'), q = $('#projSearch').value.toLowerCase();
       const rows = ps.filter(p => !q || (p.name || '').toLowerCase().includes(q));
-      list.innerHTML = rows.length ? rows.map(p => `<div class="proj${p.id === Model.S.id ? ' cur' : ''}" data-id="${esc(p.id)}">
+      const note = window.CPStatic && CPStatic.mode === 'static' ? '<div class="muted small" style="margin-bottom:8px">Web version: projects are saved in this browser only. Use Export → Project file (.json) to back them up or move them to another device.</div>' : '';
+      list.innerHTML = note + (rows.length ? rows.map(p => `<div class="proj${p.id === Model.S.id ? ' cur' : ''}" data-id="${esc(p.id)}">
         <div class="pinfo"><div class="pname">${esc(p.name || 'Untitled')}${p.id === Model.S.id ? ' <span class="badge basic">open</span>' : ''}</div>
         <div class="muted small">${p.parts} parts · ${p.nets} nets${p.pcb ? ' · PCB' : ''} · ${ago(p.updated)}</div></div>
         <div class="pact"><button data-a="open" class="primary">Open</button><button data-a="dup" title="Duplicate">⧉</button><button data-a="ren" title="Rename">✎</button><button data-a="del" class="danger" title="Delete">🗑</button></div></div>`).join('')
-        : '<div class="muted">No projects yet.</div>';
+        : '<div class="muted">No projects yet.</div>');
     } catch (e) { list.innerHTML = `<div class="bad">${esc(e.message)}</div>`; }
   }
   function show() { $('#projModal').classList.remove('hidden'); $('#projSearch').value = ''; render(); }

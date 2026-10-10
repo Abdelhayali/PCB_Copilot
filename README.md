@@ -1,8 +1,10 @@
-# PCB Copilot (CircuitPilot)
+# CircuitPilot
 
 An AI copilot for electronics design: describe a circuit in plain language and it picks **real parts from the JLCPCB/LCSC database**, draws the schematic, runs ERC, then places and autoroutes a 2-layer PCB you can export as Gerbers. Use Claude, any OpenAI-compatible model or a **local model**, from the browser, your phone, or **Claude Code via MCP**.
 
 ![CircuitPilot — ESP32-C3 board schematic](docs/media/schematic.png)
+
+**▶ Try it online: [abdelhayali.github.io/CircuitPilot](https://abdelhayali.github.io/CircuitPilot/)**: nothing to install. Open ⚙ Settings, paste an API key (Claude, OpenAI, Gemini, Ollama Cloud, OpenRouter…) and describe your circuit. Projects are saved in your browser. For local models, knowledge folders and Claude Code control, run the desktop version (below).
 
 ## See it in action
 
@@ -94,6 +96,22 @@ The result, a fully routed board with a BOM and the design calculations, from a 
 - **Light / dark theme** — header button cycles 🖥 System → ☀ Light → 🌙 Dark (remembered per browser; the PCB canvas stays black for layer contrast).
 - **Automation** — MCP server for Claude Code / Claude Desktop / Cursor, plus a REST + OpenAPI interface.
 
+## Web version and desktop version
+
+| | Web version (GitHub Pages) | Desktop version (`server.py`) |
+|---|---|---|
+| Install | none, open the link | Python 3, `python server.py 5173` |
+| Projects and My Library | saved in your browser (export `.json` to back up) | `projects.db` on your PC, shared by all your devices |
+| Part search, web search, Ollama Cloud | through the [CircuitPilot relay](relay/README.md) | direct from your PC |
+| Cloud AI (Claude, OpenAI, Gemini, OpenRouter…) | yes | yes |
+| Local models (llama.cpp, LM Studio, Ollama) | yes, with CORS enabled in the model server | yes, no setup |
+| Chat attachments | PDF, images, text | PDF, Word, images, text |
+| Knowledge folders, Claude Code (MCP) | no | yes |
+
+The web version is the same app: when it is not served by `server.py`, `js/static-backend.js` answers the app's requests in the browser.
+
+**Local models in the web version** need the model server to accept requests from the web page (CORS): Ollama with `OLLAMA_ORIGINS=https://abdelhayali.github.io`, LM Studio with *Enable CORS* in the server settings, llama.cpp's `llama-server` allows it by default. Your browser may ask for permission to reach devices on your local network.
+
 ## Run
 
 No build step and no dependencies. Start the bundled server (static files + a proxy for local model servers):
@@ -178,7 +196,7 @@ Only document-type files inside the chosen folder are read (no `..` escapes, hid
 **Claude Code** — this repo ships a `.mcp.json`, so just open the folder in Claude Code (with `server.py` running) and approve the `circuitpilot` server. Or add it globally:
 
 ```bash
-claude mcp add circuitpilot -e CP_URL=http://localhost:5173 -- node /path/to/PCB_Copilot/mcp/circuitpilot-mcp.mjs
+claude mcp add circuitpilot -e CP_URL=http://localhost:5173 -- node /path/to/CircuitPilot/mcp/circuitpilot-mcp.mjs
 ```
 
 Then ask e.g. *"Using circuitpilot, create a project 'ESP32 sensor board' with an ESP32-C3-MINI-1, AMS1117 and USB-C, then generate the PCB and export Gerbers to ./fab"*.

@@ -35,7 +35,7 @@ const AI = (() => {
     const local = ['localhost', '127.0.0.1', '0.0.0.0', '[::1]', location.hostname].includes(u.hostname);
     if (local && u.protocol === 'http:' && await hasProxy()) return `${location.origin}/llm-proxy/${u.port || 80}${u.pathname.replace(/\/+$/, '')}`;
     // cloud APIs that don't allow browser (CORS) calls go through server.py's fixed-destination proxy
-    if (/(^|\.)ollama\.com$/.test(u.hostname) && await hasProxy()) return `${location.origin}/llm-cloud/ollama${u.pathname.replace(/\/+$/, '')}`;
+    if (/(^|\.)ollama\.com$/.test(u.hostname) && (await hasProxy() || (window.CPStatic && await CPStatic.detect() === 'static'))) return `${location.origin}/llm-cloud/ollama${u.pathname.replace(/\/+$/, '')}`;
     return base;
   }
   async function fetchModels(base, key) {

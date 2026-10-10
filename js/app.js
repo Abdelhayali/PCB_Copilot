@@ -765,7 +765,7 @@ const App = (() => {
   function openSettings() {
     const s = AI.settings;
     $('#sAnth').value = s.anthropicKey; $('#sBase').value = s.oaiBase; $('#sOKey').value = s.oaiKey; $('#sOModels').value = s.oaiModels;
-    $('#sMax').value = s.maxTokens; $('#sCtxWin').value = +s.contextWindow > 0 ? s.contextWindow : ''; $('#sCtx').checked = !!s.includeContext; $('#sWeb').checked = s.webAccess !== false; $('#sBrave').value = s.braveKey || '';
+    $('#sMax').value = s.maxTokens; $('#sCtxWin').value = +s.contextWindow > 0 ? s.contextWindow : ''; $('#sCtx').checked = !!s.includeContext; $('#sWeb').checked = s.webAccess !== false; $('#sBrave').value = s.braveKey || ''; $('#sRelay').value = s.relayUrl || '';
     $('#presets').innerHTML = Object.entries(AI.PRESETS).map(([n, u]) => `<button data-u="${esc(u)}">${esc(n)}</button>`).join('');
     $('#modal').classList.remove('hidden');
   }
@@ -796,7 +796,7 @@ const App = (() => {
   function saveSettings() {
     const ids = $('#sOModels').value.split(',').map(x => x.trim()).filter(Boolean);
     if (ids.length && !$('#sAnth').value.trim() && !ids.includes(AI.settings.model)) AI.saveSettings({ model: ids[0] });
-    AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || 'https://api.openai.com/v1', oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, contextWindow: +$('#sCtxWin').value || 0, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim() });
+    AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || 'https://api.openai.com/v1', oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, contextWindow: +$('#sCtxWin').value || 0, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim(), relayUrl: $('#sRelay').value.trim() });
     $('#modal').classList.add('hidden'); renderModels(); AI.probeContext().then(updateCtx); toast('Settings saved (stored only in this browser)');
   }
 
