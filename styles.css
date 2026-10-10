@@ -428,3 +428,17 @@ ul.cutl li { padding: 2px 0; }
 /* web version (no server.py): hide features that read files on this computer */
 body.static-web #btnKnow, body.static-web #btnFolder { display: none !important; }
 body:not(.static-web) #modal .webonly { display: none; }
+/* connect an AI model (first run) */
+#aiSetup .dlg.setup { max-width: 560px; }
+.as-safe { background: color-mix(in srgb, var(--good, #2e9e6a) 12%, transparent); border: 1px solid color-mix(in srgb, var(--good, #2e9e6a) 40%, transparent); border-radius: 8px; padding: 10px 12px; font-size: 13px; line-height: 1.5; margin: 6px 0 12px; }
+.as-tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+.as-tabs button { display: inline-flex; align-items: center; gap: 6px; }
+.as-tabs button.on { border-color: var(--accent); color: var(--accent); box-shadow: inset 0 0 0 1px var(--accent); }
+.as-tabs .tag { font-size: 10px; padding: 1px 6px; border-radius: 999px; border: 1px solid currentColor; opacity: .8; }
+.as-tabs .tag.free { color: var(--good, #2e9e6a); opacity: 1; }
+.as-guide ol { margin: 4px 0 8px 18px; padding: 0; display: grid; gap: 6px; font-size: 13px; line-height: 1.45; }
+.as-guide a { color: var(--accent); }
+.as-guide p { margin: 4px 0 10px; line-height: 1.45; }
+#asStatus { font-size: 12px; line-height: 1.4; }
+#btnConnect { white-space: nowrap; }
+.welcome .connect-cta { margin: 10px 0 6px; }

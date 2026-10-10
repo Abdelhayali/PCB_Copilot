@@ -635,7 +635,8 @@ const App = (() => {
   function renderChat() {
     const H = AI.history, out = [];
     if (!H.length) {
-      out.push(`<div class="welcome"><div class="wt">What should we build?</div><div class="muted">The copilot places parts, wires the schematic, checks ERC and routes the PCB. Pick a model above, choose a mode, and describe your circuit.</div>` +
+      out.push(`<div class="welcome"><div class="wt">What should we build?</div><div class="muted">The copilot places parts, wires the schematic, checks ERC and routes the PCB. ${AI.modelReady() ? 'Choose a mode and describe your circuit.' : 'First connect an AI model. A free Google Gemini or Ollama Cloud key takes about a minute.'}</div>` +
+        (AI.modelReady() ? '' : '<button class="primary connect-cta" data-connect>🔑 Connect an AI model</button>') +
         SUGGEST.map(s => `<button class="sugg">${esc(s)}</button>`).join('') + '</div>');
     }
     const results = {};
@@ -735,6 +736,7 @@ const App = (() => {
     if (typed && pendingFiles.some(f => f.busy)) { toast('Still reading the attached files…'); return; }
     const files = typed ? pendingFiles.filter(f => !f.error).map(({ busy, size, warn, error, ...f }) => f) : [];
     if (!text && !files.length) return;
+    if (!AI.modelReady()) { openSetup(); return; }   // keeps the typed text in the box
     if (!text) text = 'Please look at the attached file' + (files.length > 1 ? 's.' : '.');
     if (typed) { pendingFiles = []; renderAttach(); }
     $('#prompt').value = ''; lastError = null; running = true; setRunning(true);
@@ -758,7 +760,85 @@ const App = (() => {
   function renderModels() {
     const ms = AI.allModels(), cur = AI.settings.model;
     const grp = (p, label) => { const xs = ms.filter(m => m.provider === p); return xs.length ? `<optgroup label="${label}">` + xs.map(m => `<option value="${esc(m.id)}" ${m.id === cur ? 'selected' : ''}>${esc(m.label)}</option>`).join('') + '</optgroup>' : ''; };
-    $('#modelSel').innerHTML = grp('anthropic', 'Anthropic') + grp('openai', 'OpenAI-compatible · ' + AI.settings.oaiBase.replace(/^https?:\/\//, '').split('/')[0]);
+    const html = grp('anthropic', 'Anthropic') + grp('openai', 'OpenAI-compatible · ' + (AI.settings.oaiBase || '').replace(/^https?:\/\//, '').split('/')[0]);
+    $('#modelSel').innerHTML = html || '<option value="">No AI model yet</option>';
+    if (html && !AI.modelReady()) $('#modelSel').insertAdjacentHTML('afterbegin', '<option value="" selected>Choose a model…</option>');
+    const ready = AI.modelReady();
+    $('#btnConnect').classList.toggle('hidden', ready);
+    $('#modelSel').classList.toggle('hidden', !html);
+  }
+
+  // ---------- first run: connect an AI model (free Gemini / Ollama Cloud guides) ----------
+  const SETUP = {
+    gemini: {
+      base: 'https://generativelanguage.googleapis.com/v1beta/openai',
+      steps: ['Open <a href="https://aistudio.google.com/apikey" target="_blank" rel="noopener">aistudio.google.com/apikey</a> and sign in with your Google account.',
+        'Click <b>Create API key</b> (pick or create a project if Google asks).',
+        'Copy the key. It starts with <code>AIza</code>. Paste it below.'],
+      note: 'Free, no credit card. The free plan has daily limits, and Google may use free-plan prompts to improve its products, so turning on billing in AI Studio is better for confidential designs.',
+      pick: ids => {
+        const chat = ids.filter(id => /gemini/i.test(id) && !/embed|image|tts|audio|live|vision|aqa|imagen|veo|learnlm|gemma/i.test(id));
+        const ver = id => parseFloat((/gemini-(\d+(?:\.\d+)?)/i.exec(id) || [])[1] || 0);
+        const flash = chat.filter(id => /flash/i.test(id) && !/lite|preview|exp/i.test(id)).sort((a, b) => ver(b) - ver(a));
+        return { list: chat.length ? chat : ids, model: flash[0] || chat.sort((a, b) => ver(b) - ver(a))[0] || ids[0] };
+      },
+    },
+    ollama: {
+      base: 'https://ollama.com/v1',
+      steps: ['Create a free account at <a href="https://ollama.com/signup" target="_blank" rel="noopener">ollama.com/signup</a>.',
+        'Open <a href="https://ollama.com/settings/keys" target="_blank" rel="noopener">ollama.com/settings/keys</a> and click <b>Add API key</b>.',
+        'Give it a name, copy the key and paste it below.'],
+      note: 'The free plan includes a usage allowance. <b>gpt-oss:120b</b> is selected for you: it handles the copilot\'s tool calls well (it designed the wearable in the demo video). On this web version, Ollama Cloud requests go through the CircuitPilot relay, because Ollama does not accept requests straight from web pages. The relay passes them on and stores nothing; its code is public in the repo.',
+      pick: ids => ({ list: ids, model: ids.find(id => id === 'gpt-oss:120b') || ids.find(id => /gpt-oss/.test(id)) || ids[0] }),
+    },
+    claude: {
+      steps: ['Open <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">console.anthropic.com/settings/keys</a> and sign in.',
+        'Add credit under <b>Billing</b> (pay as you go), then click <b>Create Key</b>.',
+        'Copy the key. It starts with <code>sk-ant-</code>. Paste it below.'],
+      note: 'Paid per use. Claude gives the most reliable results on large designs.',
+    },
+    other: {
+      steps: ['OpenAI, OpenRouter, xAI Grok, or a model running on your own computer (Ollama, LM Studio, llama.cpp) can be set up in ⚙ Settings.'],
+      note: '',
+    },
+  };
+  let setupTab = 'gemini';
+  function setupRender() {
+    const g = SETUP[setupTab];
+    $$('#aiSetup .as-tabs button').forEach(b => b.classList.toggle('on', b.dataset.p === setupTab));
+    $('#asGuide').innerHTML = `<ol>${g.steps.map(s => `<li>${s}</li>`).join('')}</ol>${g.note ? `<p class="muted small">${g.note}</p>` : ''}` +
+      (setupTab === 'other' ? '<div class="row"><button id="asOpenSettings" class="primary">Open ⚙ Settings</button></div>' : '');
+    $('#asForm').classList.toggle('hidden', setupTab === 'other');
+    $('#asStatus').textContent = ''; $('#asStatus').className = 'muted';
+    if ($('#asOpenSettings')) $('#asOpenSettings').onclick = () => { $('#aiSetup').classList.add('hidden'); openSettings(); };
+  }
+  function openSetup(tab) { if (tab) setupTab = tab; $('#asKey').value = ''; setupRender(); $('#aiSetup').classList.remove('hidden'); setTimeout(() => $('#asKey').focus(), 50); }
+  async function setupConnect() {
+    const key = $('#asKey').value.trim(), st = $('#asStatus'), g = SETUP[setupTab];
+    if (!key) { st.className = 'bad'; st.textContent = 'Paste your API key first'; return; }
+    st.className = 'muted'; st.textContent = 'Checking the key…'; $('#asConnect').disabled = true;
+    try {
+      let model;
+      if (setupTab === 'claude') {
+        const r = await fetch('https://api.anthropic.com/v1/models?limit=1', { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01', 'anthropic-dangerous-direct-browser-access': 'true' } });
+        if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(AI.friendlyError(r.status, j.error && j.error.message)); }
+        model = AI.MODELS.find(m => /sonnet/.test(m.id)) || AI.MODELS[0];
+        AI.saveSettings({ anthropicKey: key, model: model.id }); model = model.label;
+      } else {
+        const ids = await AI.fetchModels(g.base, key), p = g.pick(ids);
+        if (setupTab === 'ollama') {   // Ollama lists models without a key, so check the key with a one-token request
+          const base = location.origin + '/llm-cloud/ollama/v1';   // server.py's proxy, or the relay on the web version
+          const r = await fetch(base + '/chat/completions', { method: 'POST', headers: { 'content-type': 'application/json', authorization: 'Bearer ' + key }, body: JSON.stringify({ model: p.model, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1 }), signal: AbortSignal.timeout(30000) });
+          if (!r.ok) { const j = await r.json().catch(() => ({})); throw new Error(AI.friendlyError(r.status, j.error && (j.error.message || j.error))); }
+        }
+        AI.saveSettings({ oaiBase: g.base, oaiKey: key, oaiModels: p.list.join(', '), model: p.model }); model = p.model;
+      }
+      renderModels(); renderChat(); AI.probeContext().then(updateCtx);
+      st.className = 'good'; st.textContent = `✓ Connected · using ${model}. You can switch models in the menu above the chat.`;
+      setTimeout(() => $('#aiSetup').classList.add('hidden'), 1800);
+    } catch (e) {
+      st.className = 'bad'; st.textContent = '✗ ' + (e.name === 'TimeoutError' ? 'The provider did not answer in time. Check your internet connection and try again.' : e.message);
+    } finally { $('#asConnect').disabled = false; }
   }
 
   // ---------- settings ----------
@@ -796,7 +876,7 @@ const App = (() => {
   function saveSettings() {
     const ids = $('#sOModels').value.split(',').map(x => x.trim()).filter(Boolean);
     if (ids.length && !$('#sAnth').value.trim() && !ids.includes(AI.settings.model)) AI.saveSettings({ model: ids[0] });
-    AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || 'https://api.openai.com/v1', oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, contextWindow: +$('#sCtxWin').value || 0, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim(), relayUrl: $('#sRelay').value.trim() });
+    AI.saveSettings({ anthropicKey: $('#sAnth').value.trim(), oaiBase: $('#sBase').value.trim() || ($('#sOKey').value.trim() ? 'https://api.openai.com/v1' : ''), oaiKey: $('#sOKey').value.trim(), oaiModels: $('#sOModels').value, maxTokens: +$('#sMax').value || 8192, contextWindow: +$('#sCtxWin').value || 0, includeContext: $('#sCtx').checked, webAccess: $('#sWeb').checked, braveKey: $('#sBrave').value.trim(), relayUrl: $('#sRelay').value.trim() });
     $('#modal').classList.add('hidden'); renderModels(); AI.probeContext().then(updateCtx); toast('Settings saved (stored only in this browser)');
   }
 
@@ -1017,13 +1097,20 @@ const App = (() => {
     $('#sFetch').onclick = fetchModelsUI;
     let ft; $('#sBase').oninput = $('#sOKey').oninput = () => { clearTimeout(ft); ft = setTimeout(fetchModelsUI, 600); };
     autoFetchModels();
-    if (!AI.settings.anthropicKey && !AI.settings.oaiModels) setTimeout(() => toast('Tip: add an API key in ⚙ Settings to enable the AI Copilot', 5000), 800);
+    // first run (or no model set up in this browser): open the connect dialog
+    $('#btnConnect').onclick = () => openSetup();
+    $('#asClose').onclick = () => $('#aiSetup').classList.add('hidden');
+    $('#aiSetup .as-tabs').onclick = e => { const b = e.target.closest('button[data-p]'); if (b) { setupTab = b.dataset.p; setupRender(); } };
+    $('#asConnect').onclick = setupConnect;
+    $('#asKey').onkeydown = e => { if (e.key === 'Enter') setupConnect(); };
+    $('#chat').addEventListener('click', e => { if (e.target.closest('[data-connect]')) openSetup(); });
+    if (!AI.modelReady()) setTimeout(() => { if (!AI.modelReady()) openSetup(); }, 600);
 
     document.addEventListener('keydown', e => {
       if (!$('#edModal').classList.contains('hidden')) { if (PartEditor.key(e)) e.preventDefault(); return; }
       if (!$('#projModal').classList.contains('hidden')) { if (e.key === 'Escape') Projects.close(); return; }
       if (!$('#knowModal').classList.contains('hidden')) { if (e.key === 'Escape') $('#knowModal').classList.add('hidden'); return; }
-      for (const id of ['#gerberModal', '#shapeModal', '#rulesModal']) if (!$(id).classList.contains('hidden')) { if (e.key === 'Escape') $(id).classList.add('hidden'); return; }
+      for (const id of ['#gerberModal', '#shapeModal', '#rulesModal', '#aiSetup']) if (!$(id).classList.contains('hidden')) { if (e.key === 'Escape') $(id).classList.add('hidden'); return; }
       if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') { e.preventDefault(); e.shiftKey ? Model.redo() : Model.undo(); return; }
       if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'y') { e.preventDefault(); Model.redo(); return; }

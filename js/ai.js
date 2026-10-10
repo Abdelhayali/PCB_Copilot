@@ -17,7 +17,8 @@ const AI = (() => {
     'Ollama Cloud': 'https://ollama.com/v1',
     'LM Studio (local)': 'http://localhost:1234/v1',
   };
-  const defaults = { anthropicKey: '', oaiBase: 'https://api.openai.com/v1', oaiKey: '', oaiModels: '', model: 'claude-sonnet-5-5', maxTokens: 8192, includeContext: true, webAccess: true, braveKey: '' };
+  // no model is preselected: the user connects a provider first (🔑 Connect AI)
+  const defaults = { anthropicKey: '', oaiBase: '', oaiKey: '', oaiModels: '', model: '', maxTokens: 8192, includeContext: true, webAccess: true, braveKey: '' };
   let settings = Object.assign({}, defaults);
   try { Object.assign(settings, JSON.parse(localStorage.getItem('cp.settings') || '{}')); } catch (e) { }
   const saveSettings = s => { settings = Object.assign(settings, s); try { localStorage.setItem('cp.settings', JSON.stringify(settings)); } catch (e) { } };
@@ -42,12 +43,23 @@ const AI = (() => {
     const headers = {}; if (key) headers.authorization = 'Bearer ' + key;
     const res = await fetch(await resolveBase(base) + '/models', { headers, signal: AbortSignal.timeout(8000) });
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`${res.status}: ${j.error?.message || res.statusText}`);
-    const ids = (j.data || j.models || []).map(m => m.id || m.name).filter(Boolean);
+    if (!res.ok) throw new Error(friendlyError(res.status, (Array.isArray(j) ? j[0] : j)?.error?.message || res.statusText));
+    const ids = (j.data || j.models || []).map(m => String(m.id || m.name || '').replace(/^models\//, '')).filter(Boolean);
     if (!ids.length) throw new Error('Server returned no models');
     return ids;
   }
-  const allModels = () => [...MODELS, ...settings.oaiModels.split(',').map(s => s.trim()).filter(Boolean).map(id => ({ id, label: id, provider: 'openai' }))];
+  // the provider's error plus what to do about it
+  function friendlyError(status, msg) {
+    msg = String(msg || '').trim() || 'request failed';
+    const hint = status === 401 || /api.?key not valid|invalid api.?key|valid api.?key|incorrect api.?key|unauthori[sz]ed|authentication/i.test(msg) ? 'The API key was not accepted. Check that you pasted the whole key (⚙ Settings or 🔑 Connect AI).'
+      : status === 402 || status === 403 || /subscription|upgrade|paid plan|billing|permission/i.test(msg) ? 'Your plan may not include this model. Pick another model in the menu above the chat.'
+      : status === 404 || /model .*not found|no such model|does not exist/i.test(msg) ? 'This model is not available with this key. Pick another model in the menu above the chat.'
+      : status === 429 || /rate limit|quota|too many requests|resource.?exhausted/i.test(msg) ? 'The provider\'s rate limit was reached (free plans allow a limited number of requests per minute or day). Wait a minute and try again, or pick a smaller model.'
+      : /tool/i.test(msg) ? 'This model does not support tool calling, which the copilot needs. Pick another model (e.g. gpt-oss:120b on Ollama Cloud or a Gemini Flash model).'
+      : '';
+    return `API ${status}: ${msg}${hint ? ' — ' + hint : ''}`;
+  }
+  const allModels = () => [...(settings.anthropicKey ? MODELS : []), ...settings.oaiModels.split(',').map(s => s.trim()).filter(Boolean).map(id => ({ id, label: id, provider: 'openai' }))];
 
   // Tools live in engine.js (shared with the MCP server / REST API).
   const TOOLS = Engine.TOOLS, execTool = Engine.exec;
@@ -138,6 +150,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
     return out;
   }
   async function callModel(model, system, hist, tools, signal, extra = {}) {
+    if (model.provider === 'none') throw new Error('No AI model is connected yet. Click 🔑 Connect AI above the chat: a free Google Gemini or Ollama Cloud key takes about a minute.');
     if (model.provider === 'anthropic') {
       if (!settings.anthropicKey) throw new Error('No Anthropic API key — open ⚙ Settings to add one.');
       const res = await fetch('https://api.anthropic.com/v1/messages', {
@@ -161,7 +174,7 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
       body: JSON.stringify(Object.assign({ model: model.id, messages: toOpenAI(hist, system) }, extra.body || {}, tools.length ? { tools: tools.map(t => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.input_schema } })) } : {}))
     });
     const j = await res.json().catch(() => ({}));
-    if (!res.ok) throw new Error(`API ${res.status}: ${j.error?.message || JSON.stringify(j).slice(0, 300) || res.statusText}`);
+    if (!res.ok) throw new Error(friendlyError(res.status, (Array.isArray(j) ? j[0] : j)?.error?.message || JSON.stringify(j).slice(0, 300) || res.statusText));
     const m = j.choices?.[0]?.message || {};
     return {
       text: (m.content || '').trim(),
@@ -183,7 +196,8 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
     for (const n of [3, 1, 0]) { try { localStorage.setItem('cp.chat', JSON.stringify(strip(n))); return; } catch (e) { } }
     try { localStorage.setItem('cp.chat', JSON.stringify(strip(0).map(m => m.checkpoint ? Object.assign({}, m, { checkpoint: undefined }) : m))); } catch (e) { }
   };
-  const currentModel = () => allModels().find(m => m.id === settings.model) || MODELS[2];
+  const NO_MODEL = { id: '', label: 'No model', provider: 'none' };
+  const currentModel = () => allModels().find(m => m.id === settings.model) || NO_MODEL;
 
   // ---------- context window, usage estimate, compression ----------
   const ctxCache = {};
@@ -350,8 +364,8 @@ Use refs and pin names exactly as they will be used with the tools. End by telli
   const reset = () => { history = []; lastIn = null; persist(); };
   // a message from an app feature (e.g. AI place) shown in the chat
   const note = (text, model) => { history.push({ role: 'assistant', text, model: model || currentModel().label, mode: 'agent' }); persist(); };
-  const modelReady = () => { const m = currentModel(); return m.provider === 'anthropic' ? !!settings.anthropicKey : !!(settings.oaiBase && settings.oaiModels.split(',').map(s => s.trim()).includes(m.id)); };
+  const modelReady = () => { const m = currentModel(); if (m.provider === 'none') return false; return m.provider === 'anthropic' ? !!settings.anthropicKey : !!(settings.oaiBase && settings.oaiModels.split(',').map(s => s.trim()).includes(m.id)); };
 
   const partsApi = Engine.partsApi, loadPart = Engine.loadPart;
-  return { MODELS, PRESETS, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, complete, note, modelReady, currentModel, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
+  return { MODELS, PRESETS, friendlyError, allModels, fetchModels, partsApi, loadPart, get settings() { return settings; }, saveSettings, run, complete, note, modelReady, currentModel, stop, busy, reset, get history() { return history; }, execTool, TOOLS, contextInfo, probeContext, compress };
 })();

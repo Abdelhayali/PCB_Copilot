@@ -136,6 +136,7 @@
         <button data-mode="agent">Agent</button><button data-mode="ask">Ask</button><button data-mode="plan">Plan</button>
       </div>
       <select id="modelSel" title="Model"></select>
+      <button id="btnConnect" class="primary hidden" title="Connect an AI model with your own API key">🔑 Connect AI</button>
     </div>
     <div id="chat"></div>
     <div class="cp-input">
@@ -184,6 +185,23 @@
       <label class="webonly">Relay address (web version: part search, web search, Ollama Cloud)<input id="sRelay" autocomplete="off" placeholder="https://circuitpilot-relay.your-name.workers.dev"></label>
     </fieldset>
     <div class="row end"><button id="sCancel">Cancel</button><button id="sSave" class="primary">Save</button></div>
+  </div>
+</div>
+<div id="aiSetup" class="hidden modal">
+  <div class="dlg setup">
+    <div class="row-h"><h2>Connect an AI model</h2><button id="asClose" title="Close">✕</button></div>
+    <p class="as-safe"><b>🔒 Your key stays on your device.</b> CircuitPilot runs in your browser. Your API key is saved only in this browser and sent straight to the AI provider you choose. We never see it or store it. You can remove it any time in ⚙ Settings.</p>
+    <div class="as-tabs" role="tablist">
+      <button data-p="gemini" role="tab">Google Gemini <span class="tag free">free</span></button>
+      <button data-p="ollama" role="tab">Ollama Cloud <span class="tag free">free plan</span></button>
+      <button data-p="claude" role="tab">Claude <span class="tag">paid</span></button>
+      <button data-p="other" role="tab">Other</button>
+    </div>
+    <div id="asGuide" class="as-guide"></div>
+    <div id="asForm">
+      <label>API key<input id="asKey" type="password" autocomplete="off" spellcheck="false" placeholder="Paste your key here"></label>
+      <div class="row"><button id="asConnect" class="primary">Connect</button><span id="asStatus" class="muted"></span></div>
+    </div>
   </div>
 </div>
 <div id="projModal" class="hidden modal">
