@@ -12,6 +12,12 @@ An AI copilot for electronics design: describe a circuit in plain language and i
 
 ▶ [Watch the full-speed video (MP4)](docs/media/demo-esp32-board.mp4)
 
+**A wearable sensor board, end to end** — with a local model (gpt-oss:120b) from *"Create ESP32-C3 with IMU BMI160 and ECG BMD101 in 4 cm × 4 cm"*: the copilot searches the JLCPCB catalogue and datasheets, wires the schematic (I²C IMU, UART ECG front-end, 3.3 V LDO, USB-C), places and routes the 40 × 40 mm board (all nets routed), shows it in 3D, builds an enclosure and an ECG electrode patch from the wearable templates, and generates the product datasheet PDF (sped up 5×).
+
+[![ESP32-C3 + BMI160 + BMD101 wearable: prompt to datasheet](docs/media/demo-esp32-imu-ecg.gif)](docs/media/demo-esp32-imu-ecg.mp4)
+
+▶ [Watch the video (MP4)](docs/media/demo-esp32-imu-ecg.mp4)
+
 **AI copilot designing a circuit** (local Qwen 27B model, real tool calls, sped up)
 
 ![AI copilot building a circuit](docs/media/ai-copilot.gif)
